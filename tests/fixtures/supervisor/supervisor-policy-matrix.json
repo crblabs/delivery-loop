@@ -1,0 +1,163 @@
+{
+  "note": "The v1 supervisor decision table as data. test_supervisor_decide.py binds every row to supervisor_decide.decide(). A guard test proves the floor is never crossed: no row auto-answers a promotion, a failed run, or an off-allowlist change.",
+  "rows": [
+    {
+      "name": "running_not_stale_noop",
+      "record": {"condition": "ok", "status": "running", "is_stale": false},
+      "allowlist": [], "question": null, "notify_only": false,
+      "action": "noop", "reply": null
+    },
+    {
+      "name": "running_stale_hidden_gate_escalate",
+      "record": {"condition": "ok", "status": "running", "is_stale": true},
+      "allowlist": [], "question": {"outcome": "pending", "tool_use_id": "toolu_1"},
+      "notify_only": false, "action": "escalate", "reply": null
+    },
+    {
+      "name": "running_stale_no_gate_noop",
+      "record": {"condition": "ok", "status": "running", "is_stale": true},
+      "allowlist": [], "question": {"outcome": "none"}, "notify_only": false,
+      "action": "noop", "reply": null
+    },
+    {
+      "name": "guard_changed_on_allowlist_auto_accept",
+      "record": {
+        "condition": "ok", "status": "awaiting_human", "paused_reason": "guard_changed",
+        "guard_files_seen": [{".claude/skills/pipeline/stages/ship.md": "aaa"}],
+        "guard_pending": {".claude/skills/pipeline/stages/ship.md": "bbb"}
+      },
+      "allowlist": [".claude/skills/pipeline/stages/ship.md"], "question": null, "notify_only": false,
+      "action": "auto_accept", "reply": "accept"
+    },
+    {
+      "name": "guard_changed_carveout_on_allowlist_escalate",
+      "record": {
+        "condition": "ok", "status": "awaiting_human", "paused_reason": "guard_changed",
+        "guard_files_seen": [{".claude/hooks/pipeline_stop.py": "aaa"}],
+        "guard_pending": {".claude/hooks/pipeline_stop.py": "bbb"}
+      },
+      "allowlist": [".claude/hooks/pipeline_stop.py"], "question": null, "notify_only": false,
+      "action": "escalate", "reply": null
+    },
+    {
+      "name": "guard_changed_irregular_value_escalate",
+      "record": {
+        "condition": "ok", "status": "awaiting_human", "paused_reason": "guard_changed",
+        "guard_files_seen": [{".claude/skills/pipeline/stages/ship.md": "aaa"}],
+        "guard_pending": {".claude/skills/pipeline/stages/ship.md": "irregular"}
+      },
+      "allowlist": [".claude/skills/pipeline/stages/ship.md"], "question": null, "notify_only": false,
+      "action": "escalate", "reply": null
+    },
+    {
+      "name": "guard_changed_on_allowlist_with_hidden_gate_escalate",
+      "record": {
+        "condition": "ok", "status": "awaiting_human", "paused_reason": "guard_changed",
+        "guard_files_seen": [{".claude/skills/pipeline/stages/ship.md": "aaa"}],
+        "guard_pending": {".claude/skills/pipeline/stages/ship.md": "bbb"}
+      },
+      "allowlist": [".claude/skills/pipeline/stages/ship.md"],
+      "question": {"outcome": "pending", "tool_use_id": "toolu_gate"}, "notify_only": false,
+      "action": "escalate", "reply": null
+    },
+    {
+      "name": "guard_changed_off_allowlist_escalate",
+      "record": {
+        "condition": "ok", "status": "awaiting_human", "paused_reason": "guard_changed",
+        "guard_files_seen": [{".claude/hooks/pipeline_stop.py": "aaa"}],
+        "guard_pending": {".claude/hooks/pipeline_stop.py": "bbb"}
+      },
+      "allowlist": [".claude/settings.json"], "question": null, "notify_only": false,
+      "action": "escalate", "reply": null
+    },
+    {
+      "name": "guard_changed_on_allowlist_notify_only_escalate",
+      "record": {
+        "condition": "ok", "status": "awaiting_human", "paused_reason": "guard_changed",
+        "guard_files_seen": [{".claude/settings.json": "aaa"}],
+        "guard_pending": {".claude/settings.json": "bbb"}
+      },
+      "allowlist": [".claude/settings.json"], "question": null, "notify_only": true,
+      "action": "escalate", "reply": null
+    },
+    {
+      "name": "guard_changed_empty_diff_escalate",
+      "record": {
+        "condition": "ok", "status": "awaiting_human", "paused_reason": "guard_changed",
+        "guard_files_seen": [{".claude/settings.json": "aaa"}],
+        "guard_pending": {".claude/settings.json": "aaa"}
+      },
+      "allowlist": [".claude/settings.json"], "question": null, "notify_only": false,
+      "action": "escalate", "reply": null
+    },
+    {
+      "name": "qa_needs_human_escalate",
+      "record": {"condition": "ok", "status": "awaiting_human", "paused_reason": "needs_human"},
+      "allowlist": [], "question": null, "notify_only": false,
+      "action": "escalate", "reply": null
+    },
+    {
+      "name": "promotion_escalate",
+      "record": {
+        "condition": "ok", "status": "awaiting_human", "paused_reason": "needs_human",
+        "pending_promotion": ["PROMOTION: data/budgets/spend.csv@abc"]
+      },
+      "allowlist": [], "question": null, "notify_only": false,
+      "action": "escalate", "reply": null
+    },
+    {
+      "name": "branch_mismatch_escalate",
+      "record": {"condition": "ok", "status": "awaiting_human", "paused_reason": "branch_mismatch"},
+      "allowlist": [], "question": null, "notify_only": false,
+      "action": "escalate", "reply": null
+    },
+    {
+      "name": "no_message_escalate",
+      "record": {"condition": "ok", "status": "awaiting_human", "paused_reason": "no_message"},
+      "allowlist": [], "question": null, "notify_only": false,
+      "action": "escalate", "reply": null
+    },
+    {
+      "name": "failed_escalate",
+      "record": {"condition": "ok", "status": "failed"},
+      "allowlist": [], "question": null, "notify_only": false,
+      "action": "escalate", "reply": null
+    },
+    {
+      "name": "done_escalate",
+      "record": {"condition": "ok", "status": "done"},
+      "allowlist": [], "question": null, "notify_only": false,
+      "action": "escalate", "reply": null
+    },
+    {
+      "name": "unobservable_escalate",
+      "record": {"condition": "corrupt"},
+      "allowlist": [], "question": null, "notify_only": false,
+      "action": "escalate", "reply": null
+    },
+    {
+      "name": "guard_changed_traversal_path_off_allowlist",
+      "record": {
+        "condition": "ok", "status": "awaiting_human", "paused_reason": "guard_changed",
+        "guard_files_seen": [{"../hooks/x.py": "aaa"}],
+        "guard_pending": {"../hooks/x.py": "bbb"}
+      },
+      "allowlist": ["../hooks/x.py"], "question": null, "notify_only": false,
+      "action": "escalate", "reply": null
+    },
+    {
+      "name": "permission_prompt_on_done_escalate",
+      "record": {"condition": "ok", "status": "done"},
+      "allowlist": [],
+      "question": {"outcome": "permission_prompt", "tool": "Bash", "command": "git push", "tool_use_id": "toolu_b"},
+      "notify_only": false, "action": "escalate", "reply": null
+    },
+    {
+      "name": "permission_prompt_running_not_stale_escalate",
+      "record": {"condition": "ok", "status": "running", "is_stale": false},
+      "allowlist": [],
+      "question": {"outcome": "permission_prompt", "tool": "Bash", "command": "git push", "tool_use_id": "toolu_b"},
+      "notify_only": false, "action": "escalate", "reply": null
+    }
+  ]
+}
