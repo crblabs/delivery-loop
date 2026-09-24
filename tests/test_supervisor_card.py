@@ -4,7 +4,9 @@ The fixtures are one real ship pause of 2026-09-22 08:30, twice: as the run
 wrote it in prose (the last 500 characters the hook kept), and as a stage prompt
 writes it once the card shape landed (the card last, so the tail keeps it
 whole). Both must render as a card under the word budget with a one-token
-reply. The other pause shapes the supervisor synthesises are pinned here too.
+reply. The other pause shapes the supervisor synthesises are pinned here too,
+and the card a run writes must satisfy the same checker the stage prompts
+self-check with.
 """
 
 from __future__ import annotations
@@ -14,6 +16,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+from core import card_shape as cs
 from core import supervisor_card as sc
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "supervisor"
@@ -49,8 +52,10 @@ def test_prose_pause_renders_as_a_card() -> None:
 
 
 def test_card_pause_passes_through_whole() -> None:
-    """A card the run wrote is kept word for word under a fresh header."""
+    """A card the run wrote is kept word for word under a fresh header, and it
+    satisfies the checker the stage prompts self-check with."""
     fixture = json.loads((FIXTURES / "pause-card.json").read_text(encoding="utf-8"))
+    assert cs.needs_human_shape_violations(fixture["full_message"]) == []
     card = sc.render(fixture["record"])
     assert _labels(card) == ["ASK", "REC", "ALT", "COST", "REPLY"]
     assert "ASK   TASK-11 landed the same match-log table on main with another schema." in card
