@@ -1,0 +1,141 @@
+# loop.toml
+#
+# The per-repo configuration seam for the delivery loop. Copy this file into a
+# host repository and change what differs there.
+#
+# Two kinds of key live here. The keys `core/config.py` reads are shown below
+# with the value the loop uses when the key is absent, so deleting a key is the
+# same as writing its default. The keys marked "not read yet" are the shape the
+# loop is heading for; nothing reads them today, and an unread key is ignored
+# rather than refused.
+#
+# This is a template. Nothing in templates/ is read at run time.
+#
+# Placeholders. A path key may write `{state_dir}`, `{state_file}` or
+# `{state_stem}` and the loader substitutes them once when the config is built,
+# so moving the harness directory moves the carve-outs, the loop prefixes, the
+# worktree glob and the ledger with it. The tracker pattern takes
+# `{tracker_prefix}` the same way, and the ledger name takes `{slug}`.
+#
+# What the loader refuses: an absolute or parent-escaping path, an empty value,
+# a tracker pattern that does not compile, and a value of the wrong type.
+
+
+[harness]
+# The directory the harness keeps its own files in, inside a worktree, and the
+# run state file the turn-end hook writes there.
+state_dir = ".claude"
+state_file = "pipeline.local.json"
+
+# How the supervisor finds every run: a glob over worktree state files. The
+# default matches worktrees nested one level below a per-repository container.
+worktree_glob = "~/emdash/worktrees/*/*/{state_dir}/{state_file}"
+
+# How a decision card names the session the run is in.
+session_label = "Emdash session"
+
+
+[ledger]
+# The supervisor's own ledger: one file per repository slug, in this directory
+# under the operator's home. The lock sits beside it.
+dir = "{state_dir}/supervisor"
+name = "{slug}-ledger.local.jsonl"
+
+
+[loop_paths]
+# The enforcement files no declaration may ever authorize. Keep this list
+# short and exact: every entry is a file the loop refuses to let a run edit
+# while it is running.
+carve_outs = [
+    "{state_dir}/settings.json",
+    "{state_dir}/settings.local.json",
+    "{state_dir}/hooks/pipeline_guard.py",
+    "{state_dir}/hooks/pipeline_stop.py",
+    "{state_dir}/hooks/pipeline-guard",
+    "{state_dir}/hooks/pipeline-stop",
+    "{state_dir}/hooks/pipeline_loop_paths.py",
+]
+
+# Carve-out by prefix, for a whole directory. Each entry ends in a slash.
+carve_out_prefixes = ["{state_dir}/pipeline-runs.local.d/"]
+
+# The region a declaration may name at all, by prefix and exactly. A path
+# outside it is rejected before the carve-out is even consulted.
+prefixes = ["{state_dir}/hooks/", "{state_dir}/skills/pipeline/"]
+exact = ["{state_dir}/settings.json"]
+
+# The shorthand a declaration may use for a stage prompt, and what it expands
+# to. `stages/ship.md` is the same declaration as the full path.
+stage_shorthand = "stages/"
+stage_target = "{state_dir}/skills/pipeline/stages/"
+
+
+[commands]
+# The operator commands a decision card quotes, in the host harness's own
+# spelling. A card tells a person what to type, so these must be real.
+resume = "/pipeline resume"
+abort = "/pipeline abort"
+
+# Not read yet. The command-name map a prompt refers to by a neutral key.
+# plan = ""
+# review = ""
+# ship = ""
+
+
+[tracker]
+# The issue prefix, and the pattern that recognises one issue identifier
+# inside a longer name such as a worktree directory. The pattern is matched
+# case-sensitively, so spell it the way the worktree names are spelled.
+prefix = "cod"
+pattern = "({tracker_prefix}-\\d+)"
+
+# Not read yet. The tracker team, project and milestone the loop files and
+# updates work against, named as the tracker itself shows them.
+# team = ""
+# project = ""
+# milestone = ""
+
+
+[gates]
+# Not read yet. Commands the loop invokes to decide whether work passes. The
+# host repository defines what each one runs. The loop only runs the command
+# and reads its exit code.
+#
+# check: the single gate the loop runs before it will advance past implement.
+# A host repository typically points this at its own aggregate target.
+check = ""
+
+# Further named gates the host wants the loop to be able to invoke. The key is
+# the name a prompt refers to; the value is the command. Which extra names the
+# loop understands is unsettled.
+# [gates.extra]
+# lint = ""
+# test = ""
+
+
+[qa]
+# Not read yet. The qa route table. Maps a kind of change to the qa route that
+# change takes. The key is the route name a prompt refers to; the value is what
+# the host runs or the procedure it follows. The closed set of route names is
+# unsettled.
+# [qa.routes]
+# data = ""
+# tool = ""
+# docs = ""
+
+
+[repo]
+# Not read yet. The repository slug, in owner/name form. The supervisor takes
+# it on the command line today.
+slug = ""
+
+# The pattern the loop expands to build a pull request URL. Placeholders are
+# unsettled; the current intent is one placeholder for the pull request number.
+pull_request_url = ""
+
+
+[zones]
+# Not read yet. Path to the zone map, relative to the host repository root. The
+# zone map says which part of the repository a path belongs to. Its file format
+# is unsettled.
+map = ""
