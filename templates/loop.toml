@@ -1,0 +1,76 @@
+# loop.toml
+#
+# The per-repo configuration seam for the delivery loop. Copy this file into a
+# host repository and fill it in. Every value is empty here on purpose: the
+# loop holds no default for any of them.
+#
+# This is a template. Nothing in templates/ is read at run time.
+
+
+[gates]
+# Commands the loop invokes to decide whether work passes. The host repository
+# defines what each one runs. The loop only runs the command and reads its exit
+# code.
+#
+# check: the single gate the loop runs before it will advance past implement.
+# A host repository typically points this at its own aggregate target.
+check = ""
+
+# Further named gates the host wants the loop to be able to invoke. The key is
+# the name a prompt refers to; the value is the command. Which extra names the
+# loop understands is unsettled.
+# [gates.extra]
+# lint = ""
+# test = ""
+
+
+[qa]
+# The qa route table. Maps a kind of change to the qa route that change takes.
+# The key is the route name a prompt refers to; the value is what the host runs
+# or the procedure it follows. The closed set of route names is unsettled.
+# [qa.routes]
+# data = ""
+# tool = ""
+# docs = ""
+
+
+[repo]
+# The repository slug, in owner/name form.
+slug = ""
+
+# The pattern the loop expands to build a pull request URL. Placeholders are
+# unsettled; the current intent is one placeholder for the pull request number.
+pull_request_url = ""
+
+
+[tracker]
+# The issue tracker prefix, for example the leading token on an issue
+# identifier.
+prefix = ""
+
+# The tracker team, project and milestone the loop files and updates work
+# against. Names as the tracker itself shows them.
+team = ""
+project = ""
+milestone = ""
+
+
+[carve_outs]
+# Paths the loop is allowed to touch that a guard would otherwise deny. One
+# path per entry. Keep this list short: every entry is a hole in a guard.
+paths = []
+
+
+[zones]
+# Path to the zone map, relative to the host repository root. The zone map says
+# which part of the repository a path belongs to. Its file format is unsettled.
+map = ""
+
+
+[commands]
+# The command-name map. A prompt refers to a command by a neutral key; this map
+# turns that key into the name the host harness actually uses. The full key set
+# is unsettled.
+# plan = ""
+# review = ""
+# ship = ""
