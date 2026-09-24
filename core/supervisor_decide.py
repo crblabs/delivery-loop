@@ -30,6 +30,8 @@ import json
 import sys
 from pathlib import Path, PurePosixPath
 
+from core.config import DEFAULTS, LoopConfig, load_config
+
 # The carve-out list has one home; import it rather than copy it, so the
 # supervisor and the guard cannot disagree on what is an enforcement file.
 from core.pipeline_loop_paths import is_carveout as _is_carveout
@@ -100,21 +102,23 @@ def _has_unsafe_value(record: dict, paths: list[str]) -> bool:
     return any(pending.get(p) in ("missing", "irregular") for p in paths)
 
 
-def _safe_norm_paths(paths: list[str]) -> list[str] | None:
+def _safe_norm_paths(paths: list[str], config: LoopConfig = DEFAULTS) -> list[str] | None:
     # Normalize once; an unsafe path or a carve-out file makes the whole set
     # unauthorizable, so both checks run on one form.
     norm = [normalize(p) for p in paths]
-    if any(p is None or _is_carveout(p) for p in norm):
+    if any(p is None or _is_carveout(p, config) for p in norm):
         return None
     return norm
 
 
-def _all_authorized(paths: list[str] | None, allowlist: list[str]) -> bool:
+def _all_authorized(
+    paths: list[str] | None, allowlist: list[str], config: LoopConfig = DEFAULTS
+) -> bool:
     if not paths:
         return False
     allowed = {normalize(a) for a in allowlist}
     allowed.discard(None)
-    norm = _safe_norm_paths(paths)
+    norm = _safe_norm_paths(paths, config)
     if not allowed or norm is None:
         return False
     return all(p in allowed for p in norm)
@@ -125,7 +129,11 @@ def _escalate(reason: str, notify: str) -> dict:
 
 
 def _decide_awaiting(
-    record: dict, allowlist: list[str], question: dict | None, notify_only: bool
+    record: dict,
+    allowlist: list[str],
+    question: dict | None,
+    notify_only: bool,
+    config: LoopConfig,
 ) -> dict:
     # A concurrent hidden gate on a paused run (a pending approval, or a
     # transcript that cannot be read) is evidence to escalate, never to
@@ -137,19 +145,21 @@ def _decide_awaiting(
         return _escalate("transcript_unobservable", "paused run, transcript unreadable")
     reason = record.get("paused_reason")
     if reason == "guard_changed":
-        return _decide_guard(record, allowlist, notify_only)
+        return _decide_guard(record, allowlist, notify_only, config)
     if reason in ("branch_mismatch", "no_message"):
         return _escalate(str(reason), f"paused: {reason}")
     return _escalate("needs_human", "a pause needs a human; qa-continue is deferred")
 
 
-def _decide_guard(record: dict, allowlist: list[str], notify_only: bool) -> dict:
+def _decide_guard(
+    record: dict, allowlist: list[str], notify_only: bool, config: LoopConfig
+) -> dict:
     paths = changed_guard_paths(record)
     if paths is None:
         return _escalate("guard_untrusted", "guard evidence cannot be trusted")
     if _has_unsafe_value(record, paths):
         return _escalate("guard_irregular", "a changed guard path is missing or not a regular file")
-    if not notify_only and _all_authorized(paths, allowlist):
+    if not notify_only and _all_authorized(paths, allowlist, config):
         return {
             "action": "auto_accept",
             "reply": "accept",
@@ -179,6 +189,7 @@ def decide(
     allowlist: list[str] | None = None,
     question: dict | None = None,
     notify_only: bool = False,
+    config: LoopConfig = DEFAULTS,
 ) -> dict:
     """Classify one run. See the module docstring for the policy."""
     allowlist = allowlist or []
@@ -203,7 +214,7 @@ def decide(
     if status == "done":
         return _escalate("done", "run finished")
     if status == "awaiting_human":
-        return _decide_awaiting(record, allowlist, question, notify_only)
+        return _decide_awaiting(record, allowlist, question, notify_only, config)
     return _decide_running(record, question)
 
 
@@ -245,6 +256,7 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--question-file", default=None)
     parser.add_argument("--allow-path", action="append", default=[])
     parser.add_argument("--notify-only", action="store_true")
+    parser.add_argument("--config", default=None, help="a loop.toml, or the directory holding one")
     return parser.parse_args(argv)
 
 
@@ -266,7 +278,7 @@ def main(argv: list[str] | None = None) -> int:
     if question is not None and not isinstance(question, dict):
         print("MALFORMED_INPUT: --question-file must be a JSON object", file=sys.stderr)
         return 2
-    decision = decide(record, args.allow_path, question, args.notify_only)
+    decision = decide(record, args.allow_path, question, args.notify_only, load_config(args.config))
     print(json.dumps(decision, indent=2, sort_keys=True))
     return 0
 

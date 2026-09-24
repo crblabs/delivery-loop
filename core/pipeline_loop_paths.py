@@ -19,6 +19,11 @@ Three things live here:
   * `classify_loop_path`: "authorized" | "denied-carveout" | "not-declared" for
     one repo-relative path against a declared set.
 
+Which paths those are is not written here. The carve-out set, the carve-out
+prefixes, the loop prefixes and the stage-prompt target are fields on
+``LoopConfig``, so this module names no harness directory of its own. Every
+public function takes the config and falls back to the built-in defaults.
+
 Standard library only.
 """
 
@@ -27,39 +32,7 @@ from __future__ import annotations
 import re
 from pathlib import PurePosixPath
 
-# --- carve-out: never authorizable, checked after the allow-list --------------
-# Exact repo-relative paths the enforcement boundary owns.
-CARVEOUT = frozenset(
-    {
-        ".claude/settings.json",
-        ".claude/settings.local.json",
-        ".claude/hooks/pipeline_guard.py",
-        ".claude/hooks/pipeline_stop.py",
-        ".claude/hooks/pipeline-guard",
-        ".claude/hooks/pipeline-stop",
-        ".claude/hooks/pipeline_loop_paths.py",
-    }
-)
-# The archive directory of terminal runs.
-_CARVEOUT_PREFIX = (".claude/pipeline-runs.local.d/",)
-# The state file `.claude/pipeline.local.json` and its siblings
-# (`.blocked`, `.lock`, `.corrupt-*`, `.tmp-*`). Case-insensitive: on a
-# case-insensitive filesystem `.claude/PIPELINE.local.json` is the same file.
-_CARVEOUT_STATE_RE = re.compile(r"^\.claude/pipeline\.local\b", re.IGNORECASE)
-# Casefolded copies of the exact set and the prefix(es), so the carve-out also
-# catches a case-variant spelling of an enforcement file
-# (`.claude/hooks/PIPELINE_GUARD.py`) that names the same file on a
-# case-insensitive filesystem and could otherwise be declared and edited.
-_CARVEOUT_CF = frozenset(c.casefold() for c in CARVEOUT)
-_CARVEOUT_PREFIX_CF = tuple(p.casefold() for p in _CARVEOUT_PREFIX)
-
-# --- the loop set a declaration MAY name (subject to the carve-out) -----------
-_LOOP_PREFIX = (".claude/hooks/", ".claude/skills/pipeline/")
-_LOOP_EXACT = frozenset({".claude/settings.json"})
-
-# The `stages/<name>` shorthand resolves to the stage-prompt directory.
-_STAGE_SHORTHAND = "stages/"
-_STAGE_TARGET = ".claude/skills/pipeline/stages/"
+from core.config import DEFAULTS, LoopConfig
 
 _CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")
 _FENCE_OPEN_RE = re.compile(r"^[ \t]*```loop-edits[ \t]*$")
@@ -74,24 +47,23 @@ def _normalize(rel: str) -> str:
     return rel
 
 
-def is_carveout(rel: str) -> bool:
+def is_carveout(rel: str, config: LoopConfig = DEFAULTS) -> bool:
     """Whether `rel` is an enforcement file no declaration can ever authorize.
 
     Matched case-insensitively: on a case-insensitive filesystem a case-variant
-    spelling (`.claude/hooks/PIPELINE_GUARD.py`, `.claude/settings.JSON`) names
-    the SAME file, so it must be caught too."""
+    spelling names the SAME file, so it must be caught too."""
     rel = _normalize(rel)
     cf = rel.casefold()
-    if cf in _CARVEOUT_CF:
+    if cf in config.carve_outs_cf:
         return True
-    if cf.startswith(_CARVEOUT_PREFIX_CF):
+    if cf.startswith(config.carve_out_prefixes_cf):
         return True
-    return bool(_CARVEOUT_STATE_RE.match(rel))
+    return bool(config.state_file_re.match(rel))
 
 
-def _in_loop_set(rel: str) -> bool:
+def _in_loop_set(rel: str, config: LoopConfig) -> bool:
     """Whether `rel` is inside the region a declaration may name at all."""
-    return rel in _LOOP_EXACT or rel.startswith(_LOOP_PREFIX)
+    return rel in config.loop_exact or rel.startswith(config.loop_prefixes)
 
 
 def _clean_token(line: str) -> str:
@@ -103,7 +75,7 @@ def _clean_token(line: str) -> str:
     return tok
 
 
-def _parse(text: str) -> tuple[list[str], list[str]]:
+def _parse(text: str, config: LoopConfig) -> tuple[list[str], list[str]]:
     """(accepted, rejected) from every ```loop-edits fenced block in `text`.
 
     `accepted` is the sorted, de-duplicated set of authorized repo-relative
@@ -130,36 +102,36 @@ def _parse(text: str) -> tuple[list[str], list[str]]:
             rejected.append(tok)
             continue
         rel = _normalize(tok)
-        if rel.startswith(_STAGE_SHORTHAND):
-            rel = _STAGE_TARGET + rel[len(_STAGE_SHORTHAND) :]
+        if rel.startswith(config.stage_shorthand):
+            rel = config.stage_target + rel[len(config.stage_shorthand) :]
         rel = _normalize(rel)
-        if _in_loop_set(rel) and not is_carveout(rel):
+        if _in_loop_set(rel, config) and not is_carveout(rel, config):
             accepted.add(rel)
         else:
             rejected.append(tok)
     return sorted(accepted), rejected
 
 
-def parse_loop_edits_block(text: str) -> list[str]:
+def parse_loop_edits_block(text: str, config: LoopConfig = DEFAULTS) -> list[str]:
     """The sorted, de-duplicated set of authorized declared loop paths."""
-    return _parse(text)[0]
+    return _parse(text, config)[0]
 
 
-def parse_loop_edits_rejected(text: str) -> list[str]:
+def parse_loop_edits_rejected(text: str, config: LoopConfig = DEFAULTS) -> list[str]:
     """The path-looking tokens that were dropped (carve-out, out-of-root, `..`)."""
-    return _parse(text)[1]
+    return _parse(text, config)[1]
 
 
 def _is_segment_ancestor(dir_entry: str, rel: str) -> bool:
     """Whether `dir_entry` (a directory declaration) is a segment-boundary
-    ancestor of `rel`. Uses path parts, never a raw `startswith`, so
-    `.claude/hooks-evil/x` does NOT match a `.claude/hooks/` entry."""
+    ancestor of `rel`. Uses path parts, never a raw `startswith`, so a sibling
+    directory whose name merely begins with the same letters does NOT match."""
     prefix = PurePosixPath(dir_entry.rstrip("/")).parts
     parts = PurePosixPath(rel).parts
     return len(parts) > len(prefix) and parts[: len(prefix)] == prefix
 
 
-def classify_loop_path(rel: str, declared) -> str:
+def classify_loop_path(rel: str, declared, config: LoopConfig = DEFAULTS) -> str:
     """Classify one repo-relative path against a declared set.
 
     Returns:
@@ -171,7 +143,7 @@ def classify_loop_path(rel: str, declared) -> str:
     The carve-out is checked first, so it always wins over the allow-list.
     """
     rel = _normalize(rel)
-    if is_carveout(rel):
+    if is_carveout(rel, config):
         return "denied-carveout"
     for entry in declared or []:
         if not isinstance(entry, str):

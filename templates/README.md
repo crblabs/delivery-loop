@@ -19,5 +19,8 @@ live configuration: nothing in this directory is read at run time.
 
 ## Note
 
-The key set in `loop.toml` is the current shape, not a frozen schema. Where a
-key's exact form is not yet decided, the file says "unsettled" in the comment.
+`loop.toml` now holds two kinds of key. The ones `core/config.py` reads carry
+the value the loop uses when the key is absent, so deleting a key is the same
+as writing its default, and the template as it ships reproduces the built-in
+defaults exactly. The ones marked "not read yet" are the shape the loop is
+heading for: nothing reads them, and an unread key is ignored, not refused.

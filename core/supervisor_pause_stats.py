@@ -21,6 +21,7 @@ import sys
 from collections import Counter
 
 from core import supervisor_decide as sd
+from core.config import DEFAULTS, LoopConfig, load_config
 
 CATEGORIES = (
     "removable_auto_accept",
@@ -38,7 +39,7 @@ CATEGORIES = (
 )
 
 
-def classify_pause(record: object, allowlist: list[str]) -> str:
+def classify_pause(record: object, allowlist: list[str], config: LoopConfig = DEFAULTS) -> str:
     """One category for one scan record. See ``CATEGORIES`` for the vocabulary."""
     if not isinstance(record, dict):
         return "unobservable"
@@ -54,25 +55,25 @@ def classify_pause(record: object, allowlist: list[str]) -> str:
     if reason != "guard_changed":
         known = {"needs_human", "branch_mismatch", "no_message"}
         return f"pause_{reason}" if reason in known else "pause_other"
-    return _classify_guard(record, allowlist)
+    return _classify_guard(record, allowlist, config)
 
 
-def _classify_guard(record: dict, allowlist: list[str]) -> str:
+def _classify_guard(record: dict, allowlist: list[str], config: LoopConfig) -> str:
     paths = sd.changed_guard_paths(record)
     if paths is None:
         return "guard_untrusted"
     if sd._has_unsafe_value(record, paths):
         return "guard_irregular"
-    if any(sd._is_carveout(p) for p in paths):
+    if any(sd._is_carveout(p, config) for p in paths):
         return "carveout"
-    if sd._all_authorized(paths, allowlist):
+    if sd._all_authorized(paths, allowlist, config):
         return "removable_auto_accept"
     return "undeclared_off_allowlist"
 
 
-def summarize(records: list, allowlist: list[str]) -> dict[str, int]:
+def summarize(records: list, allowlist: list[str], config: LoopConfig = DEFAULTS) -> dict[str, int]:
     """Counts by category over every record, every category key present."""
-    counts = Counter(classify_pause(r, allowlist) for r in records)
+    counts = Counter(classify_pause(r, allowlist, config) for r in records)
     return {category: counts.get(category, 0) for category in CATEGORIES}
 
 
@@ -92,6 +93,7 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
         "--scan-file", default=None, help="supervisor_scan.py output; stdin if unset"
     )
     parser.add_argument("--allow-path", action="append", default=[])
+    parser.add_argument("--config", default=None, help="a loop.toml, or the directory holding one")
     return parser.parse_args(argv)
 
 
@@ -101,7 +103,7 @@ def main(argv: list[str] | None = None) -> int:
     if not isinstance(records, list):
         print("MALFORMED_INPUT: expected a JSON array of scan records", file=sys.stderr)
         return 2
-    summary = summarize(records, args.allow_path)
+    summary = summarize(records, args.allow_path, load_config(args.config))
     print(json.dumps({"total": len(records), "by_category": summary}, indent=2, sort_keys=True))
     return 0
 

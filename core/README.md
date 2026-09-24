@@ -24,12 +24,41 @@ against the loop's own vocabulary, never a harness's.
   did, for audit and for replay.
 - **The tracker write path.** The single place that writes to the issue
   tracker, so tracker access is one seam and not scattered.
+- **The configuration seam.** `config.py`: one frozen `LoopConfig` holding
+  every value that names the harness or the tracker, and the loader that reads
+  a `loop.toml` over it.
+
+## How a value gets into the config, and not into a literal
+
+Every value that names the harness or the tracker is a field on `LoopConfig` in
+`config.py`, and nowhere else. To add one:
+
+1. Add the field to `LoopConfig` with today's value as its default. Write a
+   path under the harness state directory with the `{state_dir}`,
+   `{state_file}` or `{state_stem}` placeholder, so one setting moves every
+   path that names it. A tracker value takes `{tracker_prefix}` the same way.
+2. Add its table and key to `_STRING_KEYS` or `_LIST_KEYS`, so a `loop.toml`
+   can set it, and validate it in `_validate` if a wrong value could do damage.
+3. Take the config as a parameter where the value is used. A public function
+   gives that parameter the default config, so every existing caller keeps
+   working; a private one takes it positionally, from its public caller.
+4. Write the key into `templates/loop.toml` with the same default and a comment
+   saying what it is.
+
+The config is built once, at the entry point, from a `loop.toml` when the
+operator names one, and is passed down from there. No module reads a file, an
+environment variable or a mutable global at import time. A missing, empty or
+partial `loop.toml` yields the defaults, so a host that has configured nothing
+gets exactly the behaviour the loop had when the values were literals.
 
 ## What does not belong here
 
-- **Any harness name.** Not in a module name, not in a function name, not in a
-  string, not in a comment. If a harness name is needed, the code is in the
-  wrong directory: it belongs in an adapter.
+- **Any harness name, outside `config.py`.** Not in a module name, not in a
+  function name, not in a string, not in a comment. `config.py` is the one
+  place a harness default may be spelled, because writing it there is what
+  makes it replaceable; everywhere else the value comes from the config. If a
+  harness name is needed in logic, the code is in the wrong directory: it
+  belongs in an adapter.
 - Harness payload shapes, hook names, exit-code conventions, or transcript
   formats. An adapter translates those before core sees them.
 - Prompt text. That lives in `prompts/`.

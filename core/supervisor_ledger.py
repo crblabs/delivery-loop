@@ -2,10 +2,10 @@
 """The supervisor's private ledger and single-supervisor lock.
 
 The ledger is dedup and re-escalation memory, home-scoped and namespaced per
-repository at ``~/.claude/supervisor/<repo-slug>-ledger.local.jsonl``. It is not
-a run's state file; the supervisor owns it. Notifications are at-least-once, not
-exactly-once: a crash after an external send but before the ledger append
-re-notifies on restart.
+repository: one file per repository slug, in the directory the config names
+under the operator's home. It is not a run's state file; the supervisor owns it.
+Notifications are at-least-once, not exactly-once: a crash after an external
+send but before the ledger append re-notifies on restart.
 
 Two supervisors on one repository would both read "not notified", both send, and
 both append, which no atomic append can fix, so a ``flock`` lock refuses a second
@@ -27,10 +27,12 @@ import re
 from datetime import datetime
 from pathlib import Path
 
+from core.config import DEFAULTS, LoopConfig
+
 _SLUG_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 
 
-def ledger_path(repo_slug: str, home: Path | None = None) -> Path:
+def ledger_path(repo_slug: str, home: Path | None = None, config: LoopConfig = DEFAULTS) -> Path:
     """Where this repository's ledger lives.
 
     The slug names one file, never a path: a slug with a separator or ``..``
@@ -38,13 +40,12 @@ def ledger_path(repo_slug: str, home: Path | None = None) -> Path:
     """
     if not _SLUG_RE.match(repo_slug) or repo_slug in (".", ".."):
         raise ValueError(f"unsafe repo slug: {repo_slug!r}")
-    base = (home or Path.home()) / ".claude" / "supervisor"
-    return base / f"{repo_slug}-ledger.local.jsonl"
+    return (home or Path.home()) / config.ledger_dir / config.ledger_file(repo_slug)
 
 
-def acquire_lock(repo_slug: str, home: Path | None = None):
+def acquire_lock(repo_slug: str, home: Path | None = None, config: LoopConfig = DEFAULTS):
     """Take the single-supervisor lock, or return ``None`` if another holds it."""
-    path = ledger_path(repo_slug, home).with_suffix(".lock")
+    path = ledger_path(repo_slug, home, config).with_suffix(".lock")
     path.parent.mkdir(parents=True, exist_ok=True)
     # O_NOFOLLOW refuses to open the lock through a symlink, so a planted symlink
     # cannot redirect the truncate below onto a run's state file.

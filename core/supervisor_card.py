@@ -2,15 +2,19 @@
 """Render one paused run as a decision card the operator answers in a minute.
 
 The card is the one shape every pause takes on its way to a person: the
-supervisor reply, the desktop alert (its first line), and the Linear comment.
+supervisor reply, the desktop alert (its first line), and the tracker comment.
 It puts the decision first and numbers the options, so the reply is one digit.
 
-    TASK-14 | ship | paused 2026-09-22 08:30 | Emdash session 8aff523e (task-14)
+    TASK-14 | ship | paused 2026-09-22 08:30 | session 8aff523e (task-14)
     ASK   Main landed the same match-log table with another schema. Which stays?
     REC   1. Rework this branch onto main's schema via the --record interface
     ALT   2. Keep this log, redo main   3. Refile the branch as a scorer
     COST  1 reworks this branch. 2 reworks main. 3 writes nothing now.
     REPLY 1 | 2 | 3
+
+The session label, the operator commands a card quotes, and the shape of an
+issue identifier are config fields, so no harness or tracker name is written
+here.
 
 A run that already wrote its question as a card (the delivery-loop stages do) is
 passed through under a fresh header. Every other pause is synthesised from the
@@ -32,25 +36,24 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
+from core.config import DEFAULTS, LoopConfig, load_config
+
 WORD_BUDGET = 60
 FIRST_LINE_CHARS = 200
 LABELS = ("ASK", "REC", "ALT", "COST", "REPLY")
 _LABEL_RE = re.compile(r"^(ASK|REC|ALT|COST|REPLY)\b[ \t]*(.*)$")
 _OPTION_RE = re.compile(r"^[ \t]*[-*+][ \t]+(.*)$")
 _TOKEN = "<promise>NEEDS HUMAN</promise>"
-# One tracker's identifier shape, still hardcoded. It belongs in loop.toml
-# beside the tracker prefix; until it moves, this is the value in use.
-_WORKTREE_TASK_RE = re.compile(r"(cod-\d+)")
 
 
 def _short_session(session_id: object) -> str:
     return str(session_id or "?")[:8]
 
 
-def _short_worktree(worktree: object) -> str:
+def _short_worktree(worktree: object, config: LoopConfig) -> str:
     """The task-identifier part of a worktree name, or the basename."""
     base = Path(str(worktree or "")).name
-    m = _WORKTREE_TASK_RE.search(base)
+    m = config.tracker_re.search(base)
     return m.group(1) if m else (base or "?")
 
 
@@ -80,12 +83,12 @@ def _pr_number(url: object) -> str:
     return f"PR #{m.group(1)}" if m else "no PR"
 
 
-def header(record: dict, state_word: str) -> str:
+def header(record: dict, state_word: str, config: LoopConfig = DEFAULTS) -> str:
     task = record.get("task") or "?"
     stage = record.get("current_stage") or record.get("stage") or "?"
     where = (
-        f"Emdash session {_short_session(record.get('session_id'))} "
-        f"({_short_worktree(record.get('worktree'))})"
+        f"{config.session_label} {_short_session(record.get('session_id'))} "
+        f"({_short_worktree(record.get('worktree'), config)})"
     )
     return f"{task} | {stage} | {state_word} {_when(record.get('updated_at'))} | {where}"
 
@@ -197,24 +200,24 @@ def _permission_card(q: dict) -> dict[str, str]:
     )
 
 
-def _failed_card(reason: object) -> dict[str, str]:
+def _failed_card(reason: object, config: LoopConfig) -> dict[str, str]:
     return _card(
         f"Run failed ({reason or 'unknown'}). Recover?",
-        "1. Fix the cause, then /pipeline resume",
-        "2. /pipeline abort",
+        f"1. Fix the cause, then {config.resume_command}",
+        f"2. {config.abort_command}",
         "1 retries the stage. 2 archives the run.",
         "resume | abort",
     )
 
 
-def _guard_card(text: str) -> dict[str, str]:
+def _guard_card(text: str, config: LoopConfig) -> dict[str, str]:
     m = re.search(r"\((.*?)\)", text)
     names = [Path(p.strip()).name for p in m.group(1).split(",")] if m else []
     paths = _cut(", ".join(n for n in names if n), 10) if names else "loop files"
     return _card(
         f"Loop files changed: {paths}. Accept?",
         "1. accept (main's version after a merge, or your own edit)",
-        "2. /pipeline abort",
+        f"2. {config.abort_command}",
         "1 records the change and continues. 2 archives the run.",
         "accept | abort",
     )
@@ -231,11 +234,11 @@ def _promotion_card(promotion: list) -> dict[str, str]:
     )
 
 
-def _paused_card(record: dict) -> dict[str, str]:
+def _paused_card(record: dict, config: LoopConfig) -> dict[str, str]:
     """A paused run: its own prose question, or the guard or promotion pause."""
     text = record.get("pending_question") or ""
     if record.get("paused_reason") == "guard_changed":
-        return _guard_card(text)
+        return _guard_card(text, config)
     options = _legacy_options(text)
     # A stale pending_promotion from an earlier stage must not outrank the
     # question the run actually wrote, so the promotion card needs the run's
@@ -247,21 +250,21 @@ def _paused_card(record: dict) -> dict[str, str]:
     return _card(_ask_from_prose(text), rec, alt, "", reply)
 
 
-def _liveness_card(record: dict) -> dict[str, str]:
+def _liveness_card(record: dict, config: LoopConfig) -> dict[str, str]:
     if not record.get("is_stale"):
         return _card("Nothing to decide: the run is live.", "1. Wait", "", "", "wait")
     age = record.get("age_seconds")
     hours = f"{float(age) / 3600:.0f}h" if isinstance(age, (int, float)) else "?"
     return _card(
         f"Run looks dead: running, no hook for {hours}. Adopt?",
-        "1. /pipeline resume from a new session in the worktree",
+        f"1. {config.resume_command} from a new session in the worktree",
         "2. Wait",
         "1 adopts the run. 2 leaves it.",
         "resume | wait",
     )
 
 
-def _synthesise(record: dict, question: dict | None) -> dict[str, str]:
+def _synthesise(record: dict, question: dict | None, config: LoopConfig) -> dict[str, str]:
     """A card for a pause the run did not write as one. A gate in the transcript
     outranks the state file, and paused_reason outlives the pause it named, so
     only a run paused now gets a pause card."""
@@ -272,10 +275,10 @@ def _synthesise(record: dict, question: dict | None) -> dict[str, str]:
     if q.get("outcome") == "permission_prompt":
         return _permission_card(q)
     if status == "failed":
-        return _failed_card(record.get("paused_reason"))
+        return _failed_card(record.get("paused_reason"), config)
     if status == "awaiting_human":
-        return _paused_card(record)
-    return _liveness_card(record)
+        return _paused_card(record, config)
+    return _liveness_card(record, config)
 
 
 def _fit(card: dict[str, str]) -> dict[str, str]:
@@ -302,15 +305,17 @@ def _body_lines(card: dict[str, str]) -> list[str]:
     return lines
 
 
-def render(record: dict, question: dict | None = None) -> str:
+def render(record: dict, question: dict | None = None, config: LoopConfig = DEFAULTS) -> str:
     """The card for one run, header first. A done run is one line, unless a
     permission prompt is parked on it."""
     prompt = isinstance(question, dict) and question.get("outcome") == "permission_prompt"
     if record.get("status") == "done" and not prompt:
         task, pr = record.get("task") or "?", _pr_number(record.get("pr_url"))
         return f"{task} | done | {pr} | merge or close"
-    card = extract_card(record.get("pending_question") or "") or _synthesise(record, question)
-    return "\n".join([header(record, _state_word(record)), *_body_lines(_fit(card))])
+    card = extract_card(record.get("pending_question") or "") or _synthesise(
+        record, question, config
+    )
+    return "\n".join([header(record, _state_word(record), config), *_body_lines(_fit(card))])
 
 
 def first_line(card: str) -> str:
@@ -335,7 +340,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--first-line", action="store_true", help="print only the notification line"
     )
+    parser.add_argument("--config", default=None, help="a loop.toml, or the directory holding one")
     args = parser.parse_args(argv)
+    config = load_config(args.config)
     try:
         record = _load(args.record_file)
         question = _load(args.question_file)
@@ -347,7 +354,7 @@ def main(argv: list[str] | None = None) -> int:
     if not isinstance(record, dict):
         print("supervisor_card: the record must be one JSON object", file=sys.stderr)
         return 2
-    card = render(record, question)
+    card = render(record, question, config)
     print(first_line(card) if args.first_line else card)
     return 0
 

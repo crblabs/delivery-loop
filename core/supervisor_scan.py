@@ -2,9 +2,9 @@
 """Discover every delivery-loop run and report its state, read-only.
 
 The supervisor watches every run at once. Runs are found by a glob over worktree
-state files. ``DEFAULT_GLOB`` is only a default: it matches the common layout
-where worktrees are nested one level below a per-repository container. Any other
-layout is passed with ``--worktrees-glob``.
+state files. The config's worktree glob is only a default: it matches the common
+layout where worktrees are nested one level below a per-repository container.
+Any other layout is passed with ``--worktrees-glob`` or set in the config.
 
 Discovery binds to one repository: a worktree whose ``repo`` differs from
 ``--repo`` is excluded, so an allowlist or ledger for one repository never
@@ -27,10 +27,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from core import pipeline_state as ps
+from core.config import DEFAULTS, LoopConfig, load_config
 
-# A default for one common worktree layout, not a fact about any one
-# machine: --worktrees-glob replaces it wholesale.
-DEFAULT_GLOB = "~/emdash/worktrees/*/*/.claude/pipeline.local.json"
 DEFAULT_STALE_S = 600
 _RECORD_KEYS = (
     "run_id",
@@ -73,9 +71,13 @@ def _age_seconds(updated_at: object, now: datetime) -> float | None:
     return None if dt is None else (now - dt).total_seconds()
 
 
-def build_record(state_file: Path, now: datetime, stale_after: int) -> dict:
+def build_record(
+    state_file: Path, now: datetime, stale_after: int, config: LoopConfig = DEFAULTS
+) -> dict:
     """One report object for one worktree, whatever the file's condition."""
-    worktree = str(state_file.parent.parent)
+    # The state file sits one level below the harness directory, which the config
+    # may spell with more than one segment, so the root is that many levels up.
+    worktree = str(state_file.parents[config.state_depth - 1])
     condition, state = ps.read_state(state_file)
     if state is None:
         return {"worktree": worktree, "condition": condition}
@@ -98,9 +100,15 @@ def _needs_attention(record: dict) -> bool:
     )
 
 
-def scan(pattern: str, repo: str | None, now: datetime, stale_after: int) -> list[dict]:
+def scan(
+    pattern: str,
+    repo: str | None,
+    now: datetime,
+    stale_after: int,
+    config: LoopConfig = DEFAULTS,
+) -> list[dict]:
     """Discover, repo-filter, and report every run."""
-    records = [build_record(p, now, stale_after) for p in discover(pattern)]
+    records = [build_record(p, now, stale_after, config) for p in discover(pattern)]
     if repo is not None:
         records = [r for r in records if _repo_ok(r, repo)]
     return records
@@ -121,22 +129,31 @@ def _now_from(arg: str | None) -> datetime:
     return parsed
 
 
-def _parse_args(argv: list[str]) -> argparse.Namespace:
+def _parse_args(argv: list[str], config: LoopConfig) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Report every delivery-loop run.")
     parser.add_argument(
         "--worktrees-glob",
-        default=DEFAULT_GLOB,
+        default=config.worktree_glob,
         help="state-file glob; the default matches one common worktree layout",
     )
     parser.add_argument("--repo", default=None, help="owner/name to bind discovery to")
     parser.add_argument("--now", default=None, help="ISO-8601 override for tests")
     parser.add_argument("--stale-after-seconds", type=int, default=DEFAULT_STALE_S)
+    parser.add_argument("--config", default=None, help="a loop.toml, or the directory holding one")
     return parser.parse_args(argv)
 
 
-def main(argv: list[str] | None = None) -> int:
-    args = _parse_args(sys.argv[1:] if argv is None else argv)
-    records = scan(args.worktrees_glob, args.repo, _now_from(args.now), args.stale_after_seconds)
+def main(argv: list[str] | None = None, config: LoopConfig = DEFAULTS) -> int:
+    args = _parse_args(sys.argv[1:] if argv is None else argv, config)
+    # The config is loaded once here and passed down; nothing below reads a file.
+    config = load_config(args.config) if args.config else config
+    records = scan(
+        args.worktrees_glob,
+        args.repo,
+        _now_from(args.now),
+        args.stale_after_seconds,
+        config,
+    )
     print(json.dumps(records, indent=2, sort_keys=True))
     if not records:
         print(

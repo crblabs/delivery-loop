@@ -19,6 +19,8 @@ import re
 from datetime import datetime
 from pathlib import Path
 
+from core.config import DEFAULTS, LoopConfig
+
 # Must stay equal to the stage list the writer uses, or a valid file reads
 # as corrupt.
 STAGES = ("autoplan", "implement", "qa", "review", "ship")
@@ -28,9 +30,9 @@ SUPPORTED_VERSION = 1
 UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.I)
 
 
-def state_path(worktree: Path) -> Path:
+def state_path(worktree: Path, config: LoopConfig = DEFAULTS) -> Path:
     """Where the hook keeps the state file for one worktree."""
-    return worktree / ".claude" / "pipeline.local.json"
+    return worktree / config.state_dir / config.state_file
 
 
 def parse_iso(value: object) -> datetime | None:
