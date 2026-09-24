@@ -6,13 +6,22 @@ distribute. See `LICENSE`.
 ## What this is
 
 The delivery loop is a state machine that drives one coding-agent task through
-five stages, in order:
+a declared sequence of stages, in order. The default sequence is the five the
+loop shipped with:
 
 1. autoplan
 2. implement
 3. qa
 4. review
 5. ship
+
+The sequence is configuration, not code. A host repository that works another
+way writes its own stages in `loop.toml` and the loop drives those instead. A
+stage declares the contract the loop depends on, not only a name: the command it
+invokes, the prompt it is given, what it leaves for the next stage, whether it
+must end over a clean worktree, whether it stops for a person, and whether it
+needs the agent sandbox off. `templates/loop.toml` writes the five defaults out
+in full.
 
 The loop advances a run from stage to stage without a person in the seat. When
 a decision needs a human, the loop pauses and records why. A supervisor watches

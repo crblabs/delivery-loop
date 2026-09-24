@@ -78,13 +78,15 @@ def build_record(
     # The state file sits one level below the harness directory, which the config
     # may spell with more than one segment, so the root is that many levels up.
     worktree = str(state_file.parents[config.state_depth - 1])
-    condition, state = ps.read_state(state_file)
+    condition, state = ps.read_state(state_file, config)
     if state is None:
         return {"worktree": worktree, "condition": condition}
     record = {"worktree": worktree, "condition": condition}
     for key in _RECORD_KEYS:
         record[key] = state.get(key)
     record["stage_num"] = state["current"] + 1
+    # How a run reads as "stage 2 of N", with N read off the configured list.
+    record["stage_count"] = len(config.stages)
     record["history_len"] = len(state.get("history", []))
     age = _age_seconds(state.get("updated_at"), now)
     record["age_seconds"] = age
