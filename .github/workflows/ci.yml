@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v7
+
+      - name: Install uv and Python 3.13
+        uses: astral-sh/setup-uv@v7
+        with:
+          python-version: "3.13"
+
+      - name: Install the project and the dev group
+        run: uv sync
+
+      - name: Run the tests
+        run: uv run pytest -q
+
+      - name: Lint
+        run: uv run ruff check .
+
+      - name: Check formatting
+        run: uv run ruff format --check .
+
+      - name: Check the house rules
+        run: |
+          fail=0
+          # Fixed strings, so the U+0085 in a tracked fixture cannot read as a dash.
+          en=$(printf '\342\200\223')
+          em=$(printf '\342\200\224')
+          if git grep -n -F -e "$en" -e "$em" -- .; then
+            echo "::error::The lines above use an en dash or an em dash. Use a hyphen, a comma, a colon or a new sentence."
+            fail=1
+          fi
+          if git grep -n -E -e 'COD-[0-9]+' -- .; then
+            echo "::error::The lines above carry a ticket id. The repository history carries ids, so remove it from the file."
+            fail=1
+          fi
+          # Bracketed final letter, so the pattern cannot match its own line.
+          if git grep -n -E -e 'codename-defense-dat[a]' -- .; then
+            echo "::error::The lines above name the private data repository. Remove the name."
+            fail=1
+          fi
+          exit $fail
