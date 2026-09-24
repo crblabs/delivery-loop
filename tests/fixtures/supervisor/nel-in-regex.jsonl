@@ -1,0 +1,2 @@
+{"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "toolu_edit", "name": "Edit", "input": {"new_string": "re.compile(r\"ab\")"}}]}}
+{"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "toolu_gate", "name": "AskUserQuestion", "input": {"questions": [{"question": "Approve the plan?", "options": [{"label": "Yes (recommended)"}, {"label": "No"}]}]}}]}}
