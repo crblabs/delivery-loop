@@ -10,6 +10,11 @@ exposes. Anything it needs but cannot trust makes the run ``unreadable`` or
 The reader never writes. It returns a ``(condition, state)`` pair where
 ``condition`` is one of ``CONDITIONS`` and ``state`` is the parsed dict when the
 condition is ``ok``, else ``None``.
+
+The stage list comes from the config, never from a constant here. The state file
+records the list the run started under, and a file whose recorded list is not the
+configured one reads as ``corrupt``. That is deliberate: it is what stops a run
+started under one skillset being resumed under another.
 """
 
 from __future__ import annotations
@@ -21,9 +26,9 @@ from pathlib import Path
 
 from core.config import DEFAULTS, LoopConfig
 
-# Must stay equal to the stage list the writer uses, or a valid file reads
-# as corrupt.
-STAGES = ("autoplan", "implement", "qa", "review", "ship")
+# The stage names of the default config, for a caller that reads this module
+# with no config of its own. A configured loop reads ``stage_names(config)``.
+STAGES = DEFAULTS.stage_names
 STATUSES = ("running", "awaiting_human", "done", "failed")
 CONDITIONS = ("ok", "missing", "corrupt", "unsupported", "unreadable")
 SUPPORTED_VERSION = 1
@@ -33,6 +38,11 @@ UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]
 def state_path(worktree: Path, config: LoopConfig = DEFAULTS) -> Path:
     """Where the hook keeps the state file for one worktree."""
     return worktree / config.state_dir / config.state_file
+
+
+def stage_names(config: LoopConfig = DEFAULTS) -> tuple[str, ...]:
+    """The stage names this loop runs, in order."""
+    return config.stage_names
 
 
 def parse_iso(value: object) -> datetime | None:
@@ -50,18 +60,19 @@ def _int_ok(value: object) -> bool:
     return isinstance(value, int) and not isinstance(value, bool)
 
 
-def _stages_ok(state: dict) -> bool:
+def _stages_ok(state: dict, config: LoopConfig) -> bool:
+    names = config.stage_names
     cur = state.get("current")
-    if state.get("stages") != list(STAGES) or not _int_ok(cur):
+    if state.get("stages") != list(names) or not _int_ok(cur):
         return False
-    if not 0 <= cur < len(STAGES) or state.get("current_stage") != STAGES[cur]:
+    if not 0 <= cur < len(names) or state.get("current_stage") != names[cur]:
         return False
     return state.get("status") in STATUSES
 
 
-def _counters_ok(state: dict) -> bool:
+def _counters_ok(state: dict, config: LoopConfig) -> bool:
     attempts = state.get("attempts")
-    if not isinstance(attempts, dict) or set(attempts) != set(STAGES):
+    if not isinstance(attempts, dict) or set(attempts) != set(config.stage_names):
         return False
     if any(not _int_ok(v) for v in attempts.values()):
         return False
@@ -77,16 +88,20 @@ def _identity_ok(state: dict) -> bool:
     return isinstance(state.get("history"), list)
 
 
-def valid(state: object) -> bool:
-    """True when every field the supervisor reads is present and well typed."""
+def valid(state: object, config: LoopConfig = DEFAULTS) -> bool:
+    """True when every field the supervisor reads is present and well typed.
+
+    The recorded stage list must equal the configured one, so a state written
+    under another skillset is not read as a run of this one.
+    """
     if not isinstance(state, dict):
         return False
-    if not (_stages_ok(state) and _counters_ok(state) and _identity_ok(state)):
+    if not (_stages_ok(state, config) and _counters_ok(state, config) and _identity_ok(state)):
         return False
     return parse_iso(state.get("updated_at")) is not None
 
 
-def read_state(path: Path) -> tuple[str, dict | None]:
+def read_state(path: Path, config: LoopConfig = DEFAULTS) -> tuple[str, dict | None]:
     """Read and validate one state file. Never raises on a bad file."""
     if not path.exists():
         return ("missing", None)
@@ -102,6 +117,6 @@ def read_state(path: Path) -> tuple[str, dict | None]:
         return ("corrupt", None)
     if not isinstance(state, dict) or state.get("version") != SUPPORTED_VERSION:
         return ("unsupported", None)
-    if not valid(state):
+    if not valid(state, config):
         return ("corrupt", None)
     return ("ok", state)

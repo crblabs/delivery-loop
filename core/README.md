@@ -5,8 +5,9 @@ against the loop's own vocabulary, never a harness's.
 
 ## What belongs here
 
-- **The stage machine.** The five stages, the legal transitions between them,
-  and the rules that decide when a stage is done.
+- **The stage machine.** The stages, the legal transitions between them, and
+  the rules that decide when a stage is done. The stage list itself is
+  declared, not hard-coded: see "A stage is declared" below.
 - **The state file schema.** The on-disk record of one run: which stage it is
   in, what it has done, why it is paused. The schema, its version, and the read
   and write path.
@@ -28,6 +29,28 @@ against the loop's own vocabulary, never a harness's.
   every value that names the harness or the tracker, and the loader that reads
   a `loop.toml` over it.
 
+## A stage is declared, not hard-coded
+
+The loop runs the stages its config names, in the order it names them. There is
+no stage list in the code: `LoopConfig.stages` is a tuple of `StageSpec`, and a
+host repository replaces it with an array of `[[stages]]` tables in its
+`loop.toml`. The default tuple is the five stages the loop shipped with, so a
+host that declares nothing runs exactly what it ran before. Anything that used
+to assume five, a message or a count, reads the length of the list instead.
+
+A stage declares its contract, not only its name, because the loop depends on
+more than the command a stage calls. One stage ends with a path the next stage
+builds from. One stage calls no command at all and the model works directly.
+One stage cannot run under the agent sandbox. One stage always stops for a
+person. Each of those is a field on `StageSpec`: `name`, `command`, `prompt`,
+`emits`, `clean_tree`, `gate` and `sandbox_off`. `templates/loop.toml` writes
+the five defaults out in full, and is the clearest statement of what a stage is.
+
+The stage list is also an identity. The state file records the list the run
+started under, and the reader refuses a state whose recorded list is not the
+configured one. That is what stops a run started under one skillset being
+resumed under another.
+
 ## How a value gets into the config, and not into a literal
 
 Every value that names the harness or the tracker is a field on `LoopConfig` in
@@ -44,6 +67,9 @@ Every value that names the harness or the tracker is a field on `LoopConfig` in
    working; a private one takes it positionally, from its public caller.
 4. Write the key into `templates/loop.toml` with the same default and a comment
    saying what it is.
+
+A field of a stage rather than of the loop goes on `StageSpec` instead, and is
+read by `_stages` in the loader from the `[[stages]]` table.
 
 The config is built once, at the entry point, from a `loop.toml` when the
 operator names one, and is passed down from there. No module reads a file, an
