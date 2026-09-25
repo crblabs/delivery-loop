@@ -5,6 +5,14 @@ description = "A harness-neutral delivery loop and the supervisor that watches i
 requires-python = ">=3.13"
 dependencies = []
 
+[project.scripts]
+loop-scan = "core.supervisor_scan:main"
+loop-decide = "core.supervisor_decide:main"
+loop-card = "core.supervisor_card:main"
+loop-card-check = "core.card_shape:main"
+loop-pause-stats = "core.supervisor_pause_stats:main"
+loop-transcript = "adapters.claude_code.supervisor_transcript:main"
+
 [dependency-groups]
 dev = [
     "pytest>=8.4.0",

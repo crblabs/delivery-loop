@@ -152,8 +152,8 @@ def _read_input(args: list[str]) -> tuple[str | None, int]:
     return sys.stdin.read(), 0
 
 
-def main(argv: list[str]) -> int:
-    text, code = _read_input(argv[1:])
+def main(argv: list[str] | None = None) -> int:
+    text, code = _read_input((sys.argv if argv is None else argv)[1:])
     if text is None:
         return code
     if not text.strip():
@@ -173,4 +173,4 @@ def main(argv: list[str]) -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main(sys.argv))
+    raise SystemExit(main())
