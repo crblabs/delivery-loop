@@ -71,6 +71,26 @@ event it will not let the adapter block is not supported.
 Capability 2 and capability 3 are also required, but they are boundaries rather
 than the engine. Capability 4 is the only one that degrades.
 
+## Commands
+
+The tools ship as console entry points, so a runbook calls them by name and not
+by file path. A path can move; a name is stable. `uv sync` installs them into
+the project environment, and `uv run <name>` runs one. The names share the
+`loop-` prefix so they group together in a shell.
+
+| Command | Does |
+|---|---|
+| `loop-scan` | Finds every run under a worktree glob and prints one JSON record each. |
+| `loop-decide` | Reads one scan record and prints the decision for that run. |
+| `loop-card` | Renders one run's pause as the decision card a person reads. |
+| `loop-card-check` | Checks that a pause question carries the required card shape. |
+| `loop-pause-stats` | Counts the pauses in a scan by category. |
+| `loop-transcript` | Reads the pending question out of one harness session. |
+
+Each command takes `--help`. `[project.scripts]` in `pyproject.toml` is the
+table that declares them, and `tests/test_entry_points.py` reads that table and
+fails if a name does not resolve to a callable `main`.
+
 ## Layout
 
 | Directory | Holds |
