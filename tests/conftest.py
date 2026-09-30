@@ -17,6 +17,8 @@ from pathlib import Path
 
 import pytest
 
+from core.pipeline_state import GIT_REPO_VARS
+
 _ISOLATED = {
     "GIT_CONFIG_GLOBAL": os.devnull,
     "GIT_CONFIG_NOSYSTEM": "1",
@@ -25,18 +27,11 @@ _ISOLATED = {
     "GIT_COMMITTER_NAME": "test",
     "GIT_COMMITTER_EMAIL": "test@example.com",
 }
-_REDIRECTS = (
-    "GIT_DIR",
-    "GIT_WORK_TREE",
-    "GIT_COMMON_DIR",
-    "GIT_INDEX_FILE",
-    "GIT_OBJECT_DIRECTORY",
-)
 
 
 @pytest.fixture(autouse=True)
 def _isolated_git(monkeypatch: pytest.MonkeyPatch) -> None:
-    for name in _REDIRECTS:
+    for name in GIT_REPO_VARS:
         monkeypatch.delenv(name, raising=False)
     for name, value in _ISOLATED.items():
         monkeypatch.setenv(name, value)

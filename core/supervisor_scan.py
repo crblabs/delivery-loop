@@ -30,7 +30,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from core import pipeline_state as ps
-from core.config import DEFAULTS, LoopConfig, load_config
+from core.config import DEFAULTS, ConfigError, LoopConfig, load_config
 
 DEFAULT_STALE_S = 600
 _RECORD_KEYS = (
@@ -83,23 +83,28 @@ def _git(repo_dir: Path, *args: str) -> str:
     return result.stdout
 
 
-def worktrees(repo_dir: Path) -> list[Path]:
-    """Every checked-out worktree of the repository that holds ``repo_dir``.
+def _entries(repo_dir: Path) -> list[tuple[Path, bool]]:
+    """Each checked-out worktree, paired with whether it is the main one.
 
     A bare entry has no working tree and a prunable one no longer exists on
-    disk, so neither can hold a run.
+    disk, so neither can hold a run. git lists the main worktree first.
     """
     output = _git(repo_dir, "worktree", "list", "--porcelain", "-z")
-    found: list[Path] = []
+    found: list[tuple[Path, bool]] = []
     # One NUL ends each line and an empty line ends each worktree entry.
-    for entry in output.split("\0\0"):
+    for index, entry in enumerate(output.split("\0\0")):
         lines = [line for line in entry.split("\0") if line]
         if not lines or not lines[0].startswith("worktree "):
             continue
         if any(line == "bare" or line.startswith("prunable") for line in lines[1:]):
             continue
-        found.append(Path(lines[0].removeprefix("worktree ")))
+        found.append((Path(lines[0].removeprefix("worktree ")), index == 0))
     return found
+
+
+def worktrees(repo_dir: Path) -> list[Path]:
+    """Every checked-out worktree of the repository that holds ``repo_dir``."""
+    return [path for path, _ in _entries(repo_dir)]
 
 
 def common_dir(repo_dir: Path) -> Path:
@@ -108,10 +113,22 @@ def common_dir(repo_dir: Path) -> Path:
     return Path(output.strip()).resolve()
 
 
-def _belongs(git_directory: Path, common: Path) -> bool:
-    # The main worktree's git directory is the common one; a linked worktree's
-    # sits one level below its `worktrees` directory.
-    return git_directory == common or git_directory.parent == common / "worktrees"
+def _owns(worktree: Path, git_directory: Path, common: Path, is_main: bool) -> bool:
+    """Whether ``git_directory`` is this worktree's own, not another's.
+
+    Only the main worktree owns the common directory. A linked worktree owns
+    one directory under ``worktrees``, and git records there, in ``gitdir``,
+    the ``.git`` file that points back at it.
+    """
+    if is_main:
+        return git_directory == common
+    if git_directory.parent != common / "worktrees":
+        return False
+    try:
+        back = (git_directory / "gitdir").read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeDecodeError):
+        return False
+    return Path(back).resolve() == (worktree / ".git").resolve()
 
 
 def discover(
@@ -119,20 +136,24 @@ def discover(
 ) -> list[tuple[Path, Path | None]]:
     """Every (worktree, state file) pair whose state file is a regular file.
 
-    A listed worktree whose git directory cannot be resolved, or resolves
-    outside the scanned repository, is returned with ``None`` for its state
-    file, so the report surfaces it rather than dropping it.
+    A listed worktree whose git directory cannot be resolved, or is not its
+    own, is returned with ``None`` for its state file, so the report surfaces
+    it rather than dropping it or crediting it with another worktree's run. A
+    listed worktree whose directory is gone, such as a locked one on a disk
+    that is not mounted, holds nothing to read and is left out.
     """
     hits: dict[Path, Path | None] = {}
     for repo_dir in repo_dirs:
         common = common_dir(repo_dir)
-        for worktree in worktrees(repo_dir):
+        for worktree, is_main in _entries(repo_dir):
+            if not worktree.exists():
+                continue
             try:
                 git_directory = ps.git_dir(worktree)
             except ps.NotAWorktree:
                 hits[worktree] = None
                 continue
-            if not _belongs(git_directory, common):
+            if not _owns(worktree, git_directory, common, is_main):
                 hits[worktree] = None
                 continue
             path = ps.state_path_in(git_directory, config)
@@ -235,7 +256,11 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
 def main(argv: list[str] | None = None, config: LoopConfig = DEFAULTS) -> int:
     args = _parse_args(sys.argv[1:] if argv is None else argv)
     # The config is loaded once here and passed down; nothing below reads a file.
-    config = load_config(args.config) if args.config else config
+    try:
+        config = load_config(args.config) if args.config else config
+    except ConfigError as exc:
+        print(f"SUPERVISOR_CONFIG_INVALID: {exc}", file=sys.stderr)
+        return 2
     repo_dirs = args.repo_dir or [Path.cwd()]
     try:
         records = scan(repo_dirs, args.repo, _now_from(args.now), args.stale_after_seconds, config)

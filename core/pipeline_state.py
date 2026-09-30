@@ -26,6 +26,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import stat
 import subprocess
 from datetime import datetime
 from pathlib import Path
@@ -42,9 +43,10 @@ UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]
 
 
 # Variables that make git answer for another repository than the one ``-C``
-# names. A caller running inside a git hook exports them, so every git call
-# here runs without them.
-_GIT_REPO_VARS = frozenset(
+# names, or configure it as the calling git did. A caller running inside a git
+# hook exports them, so every git call here runs without them. The operator's
+# own limits on repository search, such as GIT_CEILING_DIRECTORIES, are kept.
+GIT_REPO_VARS = frozenset(
     {
         "GIT_DIR",
         "GIT_WORK_TREE",
@@ -52,10 +54,14 @@ _GIT_REPO_VARS = frozenset(
         "GIT_INDEX_FILE",
         "GIT_OBJECT_DIRECTORY",
         "GIT_NAMESPACE",
-        "GIT_CEILING_DIRECTORIES",
-        "GIT_DISCOVERY_ACROSS_FILESYSTEM",
+        "GIT_CONFIG_PARAMETERS",
+        "GIT_CONFIG_COUNT",
     }
 )
+# `git -c` exports numbered pairs, GIT_CONFIG_KEY_0 and GIT_CONFIG_VALUE_0 on.
+_GIT_CONFIG_PAIR_PREFIXES = ("GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_")
+# A `gitdir: <path>` pointer is one short line. Anything larger is not one.
+_MAX_POINTER_BYTES = 4096
 
 
 class NotAWorktree(ValueError):
@@ -64,7 +70,11 @@ class NotAWorktree(ValueError):
 
 def git_env() -> dict[str, str]:
     """The caller's environment without the variables that redirect git."""
-    return {k: v for k, v in os.environ.items() if k not in _GIT_REPO_VARS}
+    return {
+        k: v
+        for k, v in os.environ.items()
+        if k not in GIT_REPO_VARS and not k.startswith(_GIT_CONFIG_PAIR_PREFIXES)
+    }
 
 
 def run_git(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
@@ -89,8 +99,16 @@ def _pointed_git_dir(worktree: Path) -> Path | None:
     the caller asks git instead.
     """
     dotgit = worktree / ".git"
-    if dotgit.is_dir():
+    try:
+        mode = dotgit.stat()
+    except OSError:
+        return None
+    if stat.S_ISDIR(mode.st_mode):
         return dotgit.resolve()
+    # A pipe or a device would block the read, and git itself reads only a
+    # regular file here.
+    if not stat.S_ISREG(mode.st_mode) or mode.st_size > _MAX_POINTER_BYTES:
+        return None
     try:
         text = dotgit.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError):

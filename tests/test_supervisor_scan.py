@@ -281,3 +281,106 @@ def test_a_git_without_z_names_the_version_needed(tmp_path, repo, monkeypatch, c
     monkeypatch.setenv("PATH", f"{shim}{os.pathsep}{os.environ['PATH']}")
     assert ss.main(["--repo-dir", str(repo)]) == 2
     assert f"needs git {ss.MIN_GIT} or later" in capsys.readouterr().err
+
+
+# Value: protects=a worktree whose .git points at a sibling's git dir is not given its run;
+#   fails_when=the ownership check accepts any directory under <common>/worktrees;
+#   why_new=only a pointer into another repository was tested;
+#   seam=none
+def test_a_worktree_pointing_at_a_sibling_git_dir_is_reported_unreadable(repo, worktree):
+    owner = worktree("owner", make_state())
+    thief = worktree("thief")
+    (thief / ".git").write_text(f"gitdir: {ps.git_dir(owner)}\n", encoding="utf-8")
+    records = {r["worktree"]: r for r in ss.scan([repo], None, NOW, 600)}
+    assert records[str(thief)] == {"worktree": str(thief), "condition": "unreadable"}
+    assert records[str(owner)]["condition"] == "ok"
+
+
+# Value: protects=a nested worktree with no .git entry is not credited with the main run;
+#   fails_when=git's upward search lands on the main git dir and is accepted;
+#   why_new=every tested worktree sits outside the main one;
+#   seam=none
+def test_a_nested_worktree_without_its_git_entry_is_not_given_the_main_run(repo, add_worktree, git):
+    put_state(repo, make_state())
+    nested = add_worktree(repo, repo / ".worktrees" / "nested")
+    git(repo, "worktree", "lock", str(nested))
+    (nested / ".git").unlink()
+    records = {r["worktree"]: r for r in ss.scan([repo], None, NOW, 600)}
+    assert records[str(repo)]["condition"] == "ok"
+    assert records[str(nested)] == {"worktree": str(nested), "condition": "unreadable"}
+
+
+# Value: protects=a locked worktree whose directory is gone raises no alert;
+#   fails_when=a missing, locked worktree is reported unreadable on every scan;
+#   why_new=only prunable (unlocked) missing worktrees were tested;
+#   seam=none
+def test_a_locked_worktree_on_a_missing_disk_is_left_out(tmp_path, repo, add_worktree, git, capsys):
+    away = add_worktree(repo, tmp_path / "usb" / "task")
+    git(repo, "worktree", "lock", "--reason", "usb", str(away))
+    shutil.rmtree(tmp_path / "usb")
+    assert ss.discover([repo]) == []
+    assert ss.main(["--repo-dir", str(repo)]) == 2
+    assert "SUPERVISOR_DISCOVERY_EMPTY" in capsys.readouterr().err
+
+
+# Value: protects=a .git entry that is a pipe cannot hang the scan;
+#   fails_when=the pointer read opens anything but a small regular file;
+#   why_new=every .git entry in other tests is a file or a directory;
+#   seam=none
+def test_a_git_entry_that_is_a_pipe_does_not_block_the_scan(repo, worktree):
+    odd = worktree("pipe")
+    (odd / ".git").unlink()
+    os.mkfifo(odd / ".git")
+    records = {r["worktree"]: r for r in ss.scan([repo], None, NOW, 600)}
+    assert records[str(odd)]["condition"] == "unreadable"
+
+
+# Value: protects=a binary .git file is reported, not a crash;
+#   fails_when=UnicodeDecodeError escapes the pointer read;
+#   why_new=the malformed pointer test writes valid text;
+#   seam=none
+def test_an_undecodable_git_entry_is_reported_unreadable(repo, worktree):
+    odd = worktree("binary")
+    (odd / ".git").write_bytes(b"\xff\xfe\x00")
+    records = {r["worktree"]: r for r in ss.scan([repo], None, NOW, 600)}
+    assert records[str(odd)]["condition"] == "unreadable"
+
+
+# Value: protects=a scan run from inside a git hook lists this repository's runs;
+#   fails_when=worktree list or the common dir query inherits GIT_DIR or GIT_WORK_TREE;
+#   why_new=the GIT_DIR test covers git_dir only, not the scanner's own git calls;
+#   seam=none
+def test_a_scan_from_inside_a_git_hook_reports_this_repos_runs(
+    tmp_path, repo, worktree, make_repo, monkeypatch
+):
+    one = worktree("one", make_state())
+    other = make_repo(tmp_path / "other")
+    monkeypatch.setenv("GIT_DIR", str(other / ".git"))
+    monkeypatch.setenv("GIT_WORK_TREE", str(other))
+    monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
+    monkeypatch.setenv("GIT_CONFIG_KEY_0", "core.worktree")
+    monkeypatch.setenv("GIT_CONFIG_VALUE_0", str(other))
+    assert [r["worktree"] for r in ss.scan([repo], None, NOW, 600)] == [str(one)]
+
+
+# Value: protects=an unreadable worktree survives the --repo filter;
+#   fails_when=the repo filter drops records that carry no repo field;
+#   why_new=every unreadable-worktree test scans with no --repo;
+#   seam=none
+def test_the_repo_filter_keeps_an_unreadable_worktree(repo, worktree):
+    worktree("good", make_state())
+    broken = worktree("broken", make_state())
+    (broken / ".git").write_text("not a pointer\n", encoding="utf-8")
+    records = ss.scan([repo], "crblabs/delivery-loop", NOW, 600)
+    assert sorted(r["condition"] for r in records) == ["ok", "unreadable"]
+
+
+# Value: protects=a loop.toml the loader refuses exits 2 (cannot observe), not a traceback;
+#   fails_when=ConfigError escapes main and reads as exit 1 (needs attention);
+#   why_new=no scan test passes a bad --config;
+#   seam=none
+def test_a_refused_config_means_cannot_observe(tmp_path, repo, capsys):
+    bad = tmp_path / "loop.toml"
+    bad.write_text('[harness]\nworktree_glob = "~/trees/*/*"\n', encoding="utf-8")
+    assert ss.main(["--repo-dir", str(repo), "--config", str(bad)]) == 2
+    assert "SUPERVISOR_CONFIG_INVALID" in capsys.readouterr().err

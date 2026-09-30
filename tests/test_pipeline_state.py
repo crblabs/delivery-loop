@@ -136,3 +136,16 @@ def test_a_relative_gitdir_pointer_is_resolved_from_the_worktree(repo, tmp_path,
     target = repo / ".git" / "worktrees" / "linked"
     (linked / ".git").write_text(f"gitdir: {os.path.relpath(target, linked)}\n", encoding="utf-8")
     assert ps.git_dir(linked) == target
+
+
+# Value: protects=git_dir reports a missing git as NotAWorktree, which adapters handle;
+#   fails_when=OSError escapes git_dir when git cannot be started;
+#   why_new=the missing-git scan test fails earlier, in the scanner;
+#   seam=none
+def test_git_dir_without_git_raises_not_a_worktree(repo, tmp_path, monkeypatch):
+    (repo / "sub").mkdir()
+    empty = tmp_path / "no-git"
+    empty.mkdir()
+    monkeypatch.setenv("PATH", str(empty))
+    with pytest.raises(ps.NotAWorktree):
+        ps.git_dir(repo / "sub")
