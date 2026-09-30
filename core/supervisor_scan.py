@@ -102,11 +102,6 @@ def _entries(repo_dir: Path) -> list[tuple[Path, bool]]:
     return found
 
 
-def worktrees(repo_dir: Path) -> list[Path]:
-    """Every checked-out worktree of the repository that holds ``repo_dir``."""
-    return [path for path, _ in _entries(repo_dir)]
-
-
 def common_dir(repo_dir: Path) -> Path:
     """The git directory every worktree of the repository shares."""
     output = _git(repo_dir, "rev-parse", "--path-format=absolute", "--git-common-dir")
@@ -118,17 +113,20 @@ def _owns(worktree: Path, git_directory: Path, common: Path, is_main: bool) -> b
 
     Only the main worktree owns the common directory. A linked worktree owns
     one directory under ``worktrees``, and git records there, in ``gitdir``,
-    the ``.git`` file that points back at it.
+    the ``.git`` file that points back at it. That file may be written relative
+    to the directory that holds it. Its parent must be this worktree, so a
+    ``.git`` that is a symlink to another worktree's does not pass.
     """
     if is_main:
         return git_directory == common
     if git_directory.parent != common / "worktrees":
         return False
-    try:
-        back = (git_directory / "gitdir").read_text(encoding="utf-8").strip()
-    except (OSError, UnicodeDecodeError):
+    back = ps.read_pointer(git_directory / "gitdir")
+    if back is None:
         return False
-    return Path(back).resolve() == (worktree / ".git").resolve()
+    target = Path(back.strip())
+    target = target if target.is_absolute() else git_directory / target
+    return target.parent.resolve() == worktree.resolve()
 
 
 def discover(

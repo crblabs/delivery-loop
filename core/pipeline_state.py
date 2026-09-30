@@ -91,6 +91,35 @@ def run_git(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
     )
 
 
+def read_pointer(path: Path) -> str | None:
+    """The text of a small regular file, or ``None``.
+
+    git keeps each worktree link in a one-line file. The file is opened once,
+    without following a symlink and without blocking on a pipe, and its type
+    and size are checked on that same open file, so it cannot change between
+    the check and the read.
+    """
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
+    except OSError:
+        return None
+    try:
+        mode = os.fstat(fd)
+        if not stat.S_ISREG(mode.st_mode) or mode.st_size > _MAX_POINTER_BYTES:
+            return None
+        data = os.read(fd, _MAX_POINTER_BYTES + 1)
+    except OSError:
+        return None
+    finally:
+        os.close(fd)
+    if len(data) > _MAX_POINTER_BYTES:
+        return None
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+
+
 def _pointed_git_dir(worktree: Path) -> Path | None:
     """The git directory a worktree's ``.git`` entry names, read without git.
 
@@ -100,20 +129,13 @@ def _pointed_git_dir(worktree: Path) -> Path | None:
     """
     dotgit = worktree / ".git"
     try:
-        mode = dotgit.stat()
+        mode = dotgit.lstat()
     except OSError:
         return None
     if stat.S_ISDIR(mode.st_mode):
         return dotgit.resolve()
-    # A pipe or a device would block the read, and git itself reads only a
-    # regular file here.
-    if not stat.S_ISREG(mode.st_mode) or mode.st_size > _MAX_POINTER_BYTES:
-        return None
-    try:
-        text = dotgit.read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError):
-        return None
-    if not text.startswith("gitdir: "):
+    text = read_pointer(dotgit)
+    if text is None or not text.startswith("gitdir: "):
         return None
     target = Path(text.removeprefix("gitdir: ").strip())
     target = target if target.is_absolute() else worktree / target

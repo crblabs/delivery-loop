@@ -229,8 +229,9 @@ def test_a_missing_git_means_cannot_observe(tmp_path, repo):
 def test_a_prunable_worktree_is_not_listed(repo, worktree):
     gone = worktree("gone", make_state())
     shutil.rmtree(gone)
-    assert gone not in ss.worktrees(repo)
-    assert repo in ss.worktrees(repo)
+    listed = [path for path, _ in ss._entries(repo)]
+    assert gone not in listed
+    assert repo in listed
 
 
 # Value: protects=a listed worktree whose git dir cannot be read is reported unreadable;
@@ -384,3 +385,45 @@ def test_a_refused_config_means_cannot_observe(tmp_path, repo, capsys):
     bad.write_text('[harness]\nworktree_glob = "~/trees/*/*"\n', encoding="utf-8")
     assert ss.main(["--repo-dir", str(repo), "--config", str(bad)]) == 2
     assert "SUPERVISOR_CONFIG_INVALID" in capsys.readouterr().err
+
+
+# Value: protects=a worktree whose .git is a symlink to another's is not given that run;
+#   fails_when=the ownership check resolves the .git entry through the symlink;
+#   why_new=the sibling test rewrites the pointer text, not the entry itself;
+#   seam=none
+def test_a_git_entry_symlinked_to_another_worktree_is_reported_unreadable(repo, worktree):
+    owner = worktree("owner", make_state())
+    thief = worktree("thief")
+    (thief / ".git").unlink()
+    (thief / ".git").symlink_to(owner / ".git")
+    records = {r["worktree"]: r for r in ss.scan([repo], None, NOW, 600)}
+    assert records[str(thief)] == {"worktree": str(thief), "condition": "unreadable"}
+    assert records[str(owner)]["condition"] == "ok"
+
+
+# Value: protects=a worktree git links with relative paths is found with its run;
+#   fails_when=the gitdir back-pointer is resolved against the working directory;
+#   why_new=every other worktree is added with git's default absolute links;
+#   seam=none
+def test_a_worktree_with_relative_links_is_found(tmp_path, repo, git):
+    relative = ("-c", "worktree.useRelativePaths=true")
+    git(repo, *relative, "worktree", "add", "-q", "-b", "rel", "../rel")
+    rel = (repo.parent / "rel").resolve()
+    if not (repo / ".git" / "worktrees" / "rel" / "gitdir").read_text().startswith(".."):
+        pytest.skip("this git writes absolute worktree links only")
+    put_state(rel, make_state())
+    records = {r["worktree"]: r for r in ss.scan([repo], None, NOW, 600)}
+    assert records[str(rel)]["condition"] == "ok"
+
+
+# Value: protects=config a hook inherits from `git -c` does not reach the scan;
+#   fails_when=the GIT_CONFIG_KEY_n and VALUE_n pairs pass through to git;
+#   why_new=the hook test also sets GIT_DIR, which alone makes it pass;
+#   seam=none
+def test_git_c_config_from_a_hook_does_not_reach_the_scan(repo, worktree, monkeypatch):
+    one = worktree("one", make_state())
+    monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
+    monkeypatch.setenv("GIT_CONFIG_KEY_0", "core.bare")
+    monkeypatch.setenv("GIT_CONFIG_VALUE_0", "true")
+    monkeypatch.setenv("GIT_CONFIG_PARAMETERS", "'core.bare'='true'")
+    assert [r["worktree"] for r in ss.scan([repo], None, NOW, 600)] == [str(one)]

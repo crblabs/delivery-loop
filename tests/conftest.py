@@ -17,7 +17,7 @@ from pathlib import Path
 
 import pytest
 
-from core.pipeline_state import GIT_REPO_VARS
+from core.pipeline_state import git_env
 
 _ISOLATED = {
     "GIT_CONFIG_GLOBAL": os.devnull,
@@ -31,7 +31,8 @@ _ISOLATED = {
 
 @pytest.fixture(autouse=True)
 def _isolated_git(monkeypatch: pytest.MonkeyPatch) -> None:
-    for name in GIT_REPO_VARS:
+    # Scrub exactly what the code under test scrubs.
+    for name in set(os.environ) - set(git_env()):
         monkeypatch.delenv(name, raising=False)
     for name, value in _ISOLATED.items():
         monkeypatch.setenv(name, value)
