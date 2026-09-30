@@ -2,8 +2,10 @@
 
 The run state lives in a worktree's git directory, so a test that writes or
 finds one needs a repository with a commit, and sometimes a linked worktree.
-Git runs with the operator's global and system configuration switched off, so a
-signing key or a hook on the machine cannot change what a test sees.
+Every git call, the fixtures' own and the code's under test, runs with the
+operator's global and system configuration switched off and with no variable
+that points git at another repository. A signing key, a hook on the machine, or
+a test run from inside a git hook cannot change what a test sees.
 """
 
 from __future__ import annotations
@@ -15,8 +17,7 @@ from pathlib import Path
 
 import pytest
 
-_GIT_ENV = {
-    **os.environ,
+_ISOLATED = {
     "GIT_CONFIG_GLOBAL": os.devnull,
     "GIT_CONFIG_NOSYSTEM": "1",
     "GIT_AUTHOR_NAME": "test",
@@ -24,13 +25,32 @@ _GIT_ENV = {
     "GIT_COMMITTER_NAME": "test",
     "GIT_COMMITTER_EMAIL": "test@example.com",
 }
+_REDIRECTS = (
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_COMMON_DIR",
+    "GIT_INDEX_FILE",
+    "GIT_OBJECT_DIRECTORY",
+)
 
 
-def git(cwd: Path, *args: str) -> str:
-    result = subprocess.run(
-        ["git", *args], cwd=cwd, env=_GIT_ENV, capture_output=True, text=True, check=True
-    )
+@pytest.fixture(autouse=True)
+def _isolated_git(monkeypatch: pytest.MonkeyPatch) -> None:
+    for name in _REDIRECTS:
+        monkeypatch.delenv(name, raising=False)
+    for name, value in _ISOLATED.items():
+        monkeypatch.setenv(name, value)
+
+
+def _git(cwd: Path, *args: str) -> str:
+    result = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True, check=True)
     return result.stdout
+
+
+@pytest.fixture
+def git() -> Callable[..., str]:
+    """Run one git command in a directory and return its output."""
+    return _git
 
 
 @pytest.fixture
@@ -39,10 +59,10 @@ def make_repo() -> Callable[[Path], Path]:
 
     def build(path: Path) -> Path:
         path.mkdir(parents=True)
-        git(path, "init", "-q", "-b", "main")
+        _git(path, "init", "-q", "-b", "main")
         (path / "README.md").write_text("host\n", encoding="utf-8")
-        git(path, "add", "README.md")
-        git(path, "commit", "-q", "-m", "init")
+        _git(path, "add", "README.md")
+        _git(path, "commit", "-q", "-m", "init")
         return path.resolve()
 
     return build
@@ -53,7 +73,7 @@ def add_worktree() -> Callable[[Path, Path], Path]:
     """Add a linked worktree of ``repo`` at ``path``, on a new branch."""
 
     def add(repo: Path, path: Path) -> Path:
-        git(repo, "worktree", "add", "-q", "-b", path.name, str(path))
+        _git(repo, "worktree", "add", "-q", "-b", path.name, str(path))
         return path.resolve()
 
     return add

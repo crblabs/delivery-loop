@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -111,3 +112,27 @@ def test_a_linked_worktree_keeps_its_state_in_its_own_git_dir(repo, tmp_path, ad
 def test_a_directory_outside_git_has_no_state_path(tmp_path):
     with pytest.raises(ps.NotAWorktree):
         ps.state_path(tmp_path)
+
+
+# Value: protects=git_dir names the worktree's own git dir even inside a git hook;
+#   fails_when=the GIT_* variables leak into the git call again;
+#   why_new=no test ran with GIT_DIR exported;
+#   seam=none
+def test_git_dir_ignores_an_inherited_git_dir(repo, tmp_path, add_worktree, monkeypatch):
+    linked = add_worktree(repo, tmp_path / "linked")
+    (linked / "sub").mkdir()
+    monkeypatch.setenv("GIT_DIR", str(repo / ".git"))
+    # A subdirectory has no .git entry of its own, so this path asks git.
+    assert ps.git_dir(linked / "sub") == repo / ".git" / "worktrees" / "linked"
+    assert ps.git_dir(linked) == repo / ".git" / "worktrees" / "linked"
+
+
+# Value: protects=a linked worktree's git dir is read from its .git pointer file;
+#   fails_when=the pointer is misread, or a relative gitdir is not joined to the worktree;
+#   why_new=no test writes a relative gitdir pointer;
+#   seam=none
+def test_a_relative_gitdir_pointer_is_resolved_from_the_worktree(repo, tmp_path, add_worktree):
+    linked = add_worktree(repo, tmp_path / "linked")
+    target = repo / ".git" / "worktrees" / "linked"
+    (linked / ".git").write_text(f"gitdir: {os.path.relpath(target, linked)}\n", encoding="utf-8")
+    assert ps.git_dir(linked) == target

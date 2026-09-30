@@ -38,8 +38,9 @@ _CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")
 _FENCE_OPEN_RE = re.compile(r"^[ \t]*```loop-edits[ \t]*$")
 _FENCE_CLOSE_RE = re.compile(r"^[ \t]*```[ \t]*$")
 # The git directory of a main worktree, where the run state lives. A linked
-# worktree keeps its git directory outside the tree, out of reach of any
-# repo-relative path.
+# worktree keeps its git directory outside the tree, where no repo-relative
+# path reaches it, so this check does not cover that state file. A guard that
+# accepts absolute paths must refuse the git directory itself.
 _GIT_DIR_RE = re.compile(r"^\.git(/|$)", re.IGNORECASE)
 
 

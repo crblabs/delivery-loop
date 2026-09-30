@@ -7,6 +7,9 @@ state file is a run. No layout is assumed, so worktrees may sit anywhere on disk
 ``--repo-dir`` names a directory inside the repository, and may be given once
 per repository. It defaults to the current directory.
 
+Listing worktrees with ``-z`` needs git 2.36 or later. An older git is reported as
+cannot observe, with the version it needs.
+
 Discovery binds to one repository: a worktree whose ``repo`` differs from
 ``--repo`` is excluded, so an allowlist or ledger for one repository never
 authorizes another.
@@ -22,7 +25,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import subprocess
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
@@ -64,23 +66,33 @@ class ScanError(RuntimeError):
     """A repository the scanner cannot list the worktrees of."""
 
 
+# git exits 129 on an option it does not know. `worktree list -z` needs 2.36.
+_GIT_USAGE_EXIT = 129
+MIN_GIT = "2.36"
+
+
+def _git(repo_dir: Path, *args: str) -> str:
+    try:
+        result = ps.run_git(repo_dir, *args)
+    except OSError as exc:
+        raise ScanError(f"cannot run git for {repo_dir}: {exc}") from exc
+    if result.returncode == _GIT_USAGE_EXIT:
+        raise ScanError(f"loop-scan needs git {MIN_GIT} or later: {result.stderr.strip()}")
+    if result.returncode != 0:
+        raise ScanError(f"cannot read the repository at {repo_dir}: {result.stderr.strip()}")
+    return result.stdout
+
+
 def worktrees(repo_dir: Path) -> list[Path]:
     """Every checked-out worktree of the repository that holds ``repo_dir``.
 
     A bare entry has no working tree and a prunable one no longer exists on
     disk, so neither can hold a run.
     """
-    result = subprocess.run(
-        ["git", "-C", str(repo_dir), "worktree", "list", "--porcelain", "-z"],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    if result.returncode != 0:
-        raise ScanError(f"cannot list the worktrees of {repo_dir}: {result.stderr.strip()}")
+    output = _git(repo_dir, "worktree", "list", "--porcelain", "-z")
     found: list[Path] = []
     # One NUL ends each line and an empty line ends each worktree entry.
-    for entry in result.stdout.split("\0\0"):
+    for entry in output.split("\0\0"):
         lines = [line for line in entry.split("\0") if line]
         if not lines or not lines[0].startswith("worktree "):
             continue
@@ -90,18 +102,43 @@ def worktrees(repo_dir: Path) -> list[Path]:
     return found
 
 
-def discover(repo_dirs: list[Path], config: LoopConfig = DEFAULTS) -> list[tuple[Path, Path]]:
-    """Every (worktree, state file) pair whose state file is a regular file."""
-    hits: set[tuple[Path, Path]] = set()
+def common_dir(repo_dir: Path) -> Path:
+    """The git directory every worktree of the repository shares."""
+    output = _git(repo_dir, "rev-parse", "--path-format=absolute", "--git-common-dir")
+    return Path(output.strip()).resolve()
+
+
+def _belongs(git_directory: Path, common: Path) -> bool:
+    # The main worktree's git directory is the common one; a linked worktree's
+    # sits one level below its `worktrees` directory.
+    return git_directory == common or git_directory.parent == common / "worktrees"
+
+
+def discover(
+    repo_dirs: list[Path], config: LoopConfig = DEFAULTS
+) -> list[tuple[Path, Path | None]]:
+    """Every (worktree, state file) pair whose state file is a regular file.
+
+    A listed worktree whose git directory cannot be resolved, or resolves
+    outside the scanned repository, is returned with ``None`` for its state
+    file, so the report surfaces it rather than dropping it.
+    """
+    hits: dict[Path, Path | None] = {}
     for repo_dir in repo_dirs:
+        common = common_dir(repo_dir)
         for worktree in worktrees(repo_dir):
             try:
-                path = ps.state_path(worktree, config)
+                git_directory = ps.git_dir(worktree)
             except ps.NotAWorktree:
+                hits[worktree] = None
                 continue
+            if not _belongs(git_directory, common):
+                hits[worktree] = None
+                continue
+            path = ps.state_path_in(git_directory, config)
             if path.is_file():
-                hits.add((worktree, path))
-    return sorted(hits)
+                hits[worktree] = path
+    return sorted(hits.items())
 
 
 def _age_seconds(updated_at: object, now: datetime) -> float | None:
@@ -111,13 +148,19 @@ def _age_seconds(updated_at: object, now: datetime) -> float | None:
 
 def build_record(
     worktree_path: Path,
-    state_file: Path,
+    state_file: Path | None,
     now: datetime,
     stale_after: int,
     config: LoopConfig = DEFAULTS,
 ) -> dict:
-    """One report object for one worktree, whatever the file's condition."""
+    """One report object for one worktree, whatever the file's condition.
+
+    ``state_file`` is ``None`` when the worktree's git directory could not be
+    trusted, and the run reads as ``unreadable``.
+    """
     worktree = str(worktree_path)
+    if state_file is None:
+        return {"worktree": worktree, "condition": "unreadable"}
     condition, state = ps.read_state(state_file, config)
     if state is None:
         return {"worktree": worktree, "condition": condition}

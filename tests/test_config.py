@@ -100,6 +100,11 @@ def test_defaults_still_classify_the_paths_they_used_to() -> None:
     # The run state lives in the git directory, which no declaration reaches.
     assert lp.is_carveout(".git/delivery-loop/state.json") is True
     assert lp.is_carveout(".GIT/config") is True
+    # Value: protects=a linked worktree's .git pointer file stays a carve-out;
+    #   fails_when=the rule needs a slash after .git;
+    #   why_new=only paths under .git/ were pinned;
+    #   seam=none
+    assert lp.is_carveout(".git") is True
     assert lp.is_carveout(".gitignore") is False
     assert lp.is_carveout(".claude/skills/pipeline/stages/ship.md") is False
     declared = "```loop-edits\nstages/ship.md\n```"
@@ -297,3 +302,12 @@ def test_broken_toml_is_refused(tmp_path: Path) -> None:
 def test_the_config_is_frozen() -> None:
     with pytest.raises(AttributeError):
         cfg.DEFAULTS.state_dir = ".other"
+
+
+# Value: protects=a loop.toml that still sets worktree_glob fails loudly and names --repo-dir;
+#   fails_when=the removed key is silently ignored again;
+#   why_new=only unknown future keys were tested;
+#   seam=none
+def test_a_removed_worktree_glob_is_refused_with_its_replacement(tmp_path: Path) -> None:
+    with pytest.raises(cfg.ConfigError, match="--repo-dir"):
+        cfg.load_config(write(tmp_path, '[harness]\nworktree_glob = "~/trees/*/*"\n'))

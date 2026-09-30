@@ -24,6 +24,7 @@ started under one skillset being resumed under another.
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 from datetime import datetime
@@ -40,30 +41,95 @@ SUPPORTED_VERSION = 1
 UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.I)
 
 
+# Variables that make git answer for another repository than the one ``-C``
+# names. A caller running inside a git hook exports them, so every git call
+# here runs without them.
+_GIT_REPO_VARS = frozenset(
+    {
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_COMMON_DIR",
+        "GIT_INDEX_FILE",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_NAMESPACE",
+        "GIT_CEILING_DIRECTORIES",
+        "GIT_DISCOVERY_ACROSS_FILESYSTEM",
+    }
+)
+
+
 class NotAWorktree(ValueError):
     """A path git does not recognise as inside a worktree."""
+
+
+def git_env() -> dict[str, str]:
+    """The caller's environment without the variables that redirect git."""
+    return {k: v for k, v in os.environ.items() if k not in _GIT_REPO_VARS}
+
+
+def run_git(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
+    """Run one git command in ``cwd`` without the redirecting variables.
+
+    Raises ``OSError`` when git cannot be started at all.
+    """
+    return subprocess.run(
+        ["git", "-C", str(cwd), *args],
+        env=git_env(),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def _pointed_git_dir(worktree: Path) -> Path | None:
+    """The git directory a worktree's ``.git`` entry names, read without git.
+
+    ``.git`` is the directory itself in a main worktree and a one-line
+    ``gitdir: <path>`` file in a linked one. Anything else returns ``None`` and
+    the caller asks git instead.
+    """
+    dotgit = worktree / ".git"
+    if dotgit.is_dir():
+        return dotgit.resolve()
+    try:
+        text = dotgit.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+    if not text.startswith("gitdir: "):
+        return None
+    target = Path(text.removeprefix("gitdir: ").strip())
+    target = target if target.is_absolute() else worktree / target
+    return target.resolve() if target.is_dir() else None
 
 
 def git_dir(worktree: Path) -> Path:
     """The absolute git directory of one worktree.
 
     That is ``.git`` for the main worktree and ``.git/worktrees/<name>`` for a
-    linked one.
+    linked one. The worktree's own ``.git`` entry is read first, so a scan over
+    many worktrees starts no process per worktree. A path below the worktree
+    root, or an entry that cannot be read, is resolved by git.
     """
-    result = subprocess.run(
-        ["git", "-C", str(worktree), "rev-parse", "--absolute-git-dir"],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    pointed = _pointed_git_dir(worktree)
+    if pointed is not None:
+        return pointed
+    try:
+        result = run_git(worktree, "rev-parse", "--absolute-git-dir")
+    except OSError as exc:
+        raise NotAWorktree(f"cannot run git for {worktree}: {exc}") from exc
     if result.returncode != 0:
         raise NotAWorktree(f"{worktree} is not inside a git worktree: {result.stderr.strip()}")
-    return Path(result.stdout.strip())
+    return Path(result.stdout.strip()).resolve()
+
+
+def state_path_in(git_directory: Path, config: LoopConfig = DEFAULTS) -> Path:
+    """Where the state file sits inside one worktree's git directory."""
+    return git_directory / config.run_dir / config.state_file
 
 
 def state_path(worktree: Path, config: LoopConfig = DEFAULTS) -> Path:
     """Where the hook keeps the state file for one worktree."""
-    return git_dir(worktree) / config.run_dir / config.state_file
+    return state_path_in(git_dir(worktree), config)
 
 
 def stage_names(config: LoopConfig = DEFAULTS) -> tuple[str, ...]:

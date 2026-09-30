@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
+import subprocess
+import sys
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -11,7 +14,6 @@ import pytest
 
 from core import pipeline_state as ps
 from core import supervisor_scan as ss
-from tests.conftest import git
 
 NOW = datetime(2026, 9, 16, 10, 0, 0, tzinfo=UTC)
 
@@ -83,22 +85,14 @@ def test_a_worktree_with_no_state_is_not_a_run(repo, worktree):
     assert ss.discover([repo]) == []
 
 
-def test_the_state_lives_in_each_worktree_git_dir(repo, worktree):
-    one = worktree("one")
-    assert ps.state_path(repo) == repo / ".git" / "delivery-loop" / "state.json"
-    assert ps.state_path(one) == repo / ".git" / "worktrees" / "task-one" / "delivery-loop" / (
-        "state.json"
-    )
-
-
-def test_a_run_leaves_git_status_clean(repo, worktree):
+def test_a_run_leaves_git_status_clean(repo, worktree, git):
     put_state(repo, make_state())
     one = worktree("one", make_state())
     assert git(repo, "status", "--porcelain", "--ignored") == ""
     assert git(one, "status", "--porcelain", "--ignored") == ""
 
 
-def test_a_removed_worktree_takes_its_state_with_it(repo, worktree):
+def test_a_removed_worktree_takes_its_state_with_it(repo, worktree, git):
     one = worktree("one", make_state())
     path = ps.state_path(one)
     git(repo, "worktree", "remove", "--force", str(one))
@@ -163,3 +157,127 @@ def test_the_current_directory_is_the_default_repo(worktree, repo, monkeypatch, 
     monkeypatch.chdir(repo)
     assert ss.main(["--now", NOW.isoformat()]) == 0
     capsys.readouterr()
+
+
+# Value: protects=--repo-dir repeats and each repository's runs are all reported once;
+#   fails_when=only the last --repo-dir is kept, or one run is listed twice;
+#   why_new=every test scans one directory;
+#   seam=none
+def test_every_repo_dir_is_scanned_and_each_run_reported_once(
+    tmp_path, repo, worktree, make_repo, capsys
+):
+    one = worktree("one", make_state())
+    other = make_repo(tmp_path / "other")
+    put_state(other, make_state())
+    # Two directories of the same repository name the same run twice.
+    argv = ["--repo-dir", str(repo), "--repo-dir", str(one), "--repo-dir", str(other)]
+    assert ss.main([*argv, "--now", NOW.isoformat()]) == 0
+    records = json.loads(capsys.readouterr().out)
+    assert sorted(r["worktree"] for r in records) == sorted([str(one), str(other)])
+
+
+# Value: protects=a bare repository's linked worktrees are found and the bare entry is skipped;
+#   fails_when=the bare entry is scanned or its listing breaks the parser;
+#   why_new=only non-bare repos are tested;
+#   seam=none
+def test_a_bare_repository_reports_its_linked_worktrees(tmp_path, repo, add_worktree, git):
+    bare = tmp_path / "bare.git"
+    git(tmp_path, "clone", "-q", "--bare", str(repo), str(bare))
+    linked = add_worktree(bare, tmp_path / "trees" / "task")
+    put_state(linked, make_state())
+    # A state file where the bare entry's own path would point must not count.
+    put_state(bare, make_state())
+    records = ss.scan([bare], None, NOW, 600)
+    assert [r["worktree"] for r in records] == [str(linked)]
+
+
+# Value: protects=worktree paths with a newline are parsed intact;
+#   fails_when=the -z flag is dropped and entries split on newlines;
+#   why_new=every tested path is plain ASCII;
+#   seam=none
+def test_a_worktree_path_with_a_newline_is_found(tmp_path, repo, add_worktree):
+    odd = add_worktree(repo, tmp_path / "odd\ndir" / "task")
+    put_state(odd, make_state())
+    records = ss.scan([repo], None, NOW, 600)
+    assert [r["worktree"] for r in records] == [str(odd)]
+
+
+# Value: protects=exit 2 (cannot observe) when git is not on PATH;
+#   fails_when=a missing git crashes with a traceback and exit 1 (needs attention);
+#   why_new=git was never absent in a test;
+#   seam=none
+def test_a_missing_git_means_cannot_observe(tmp_path, repo):
+    empty = tmp_path / "no-git"
+    empty.mkdir()
+    root = Path(__file__).resolve().parent.parent
+    result = subprocess.run(
+        [sys.executable, "-m", "core.supervisor_scan", "--repo-dir", str(repo)],
+        cwd=root,
+        env={"PATH": str(empty), "PYTHONPATH": str(root)},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 2, result.stderr
+    assert "SUPERVISOR_DISCOVERY_FAILED" in result.stderr
+
+
+# Value: protects=a worktree git marks prunable is not listed;
+#   fails_when=the prunable filter is dropped from worktrees();
+#   why_new=the deleted-worktree scan test passes through a second skip as well;
+#   seam=none
+def test_a_prunable_worktree_is_not_listed(repo, worktree):
+    gone = worktree("gone", make_state())
+    shutil.rmtree(gone)
+    assert gone not in ss.worktrees(repo)
+    assert repo in ss.worktrees(repo)
+
+
+# Value: protects=a listed worktree whose git dir cannot be read is reported unreadable;
+#   fails_when=a rev-parse failure drops the run from the report silently;
+#   why_new=every listed worktree in other tests resolves;
+#   seam=none
+def test_a_worktree_git_cannot_read_is_reported_unreadable(repo, worktree):
+    broken = worktree("broken", make_state())
+    (broken / ".git").write_text("not a pointer\n", encoding="utf-8")
+    records = {r["worktree"]: r for r in ss.scan([repo], None, NOW, 600)}
+    assert records[str(broken)] == {"worktree": str(broken), "condition": "unreadable"}
+
+
+# Value: protects=a worktree whose git dir points into another repository is not trusted;
+#   fails_when=the scanner reads a state file from outside the scanned repository;
+#   why_new=no test repoints a .git file;
+#   seam=none
+def test_a_worktree_pointing_at_another_repository_is_reported_unreadable(
+    tmp_path, repo, worktree, make_repo, add_worktree
+):
+    stray = worktree("stray")
+    other = make_repo(tmp_path / "other")
+    foreign = add_worktree(other, tmp_path / "foreign")
+    put_state(foreign, make_state(repo="someone/else"))
+    (stray / ".git").write_text(f"gitdir: {ps.git_dir(foreign)}\n", encoding="utf-8")
+    records = {r["worktree"]: r for r in ss.scan([repo], None, NOW, 600)}
+    assert records[str(stray)]["condition"] == "unreadable"
+
+
+# Value: protects=an old git that rejects -z is reported with the version loop-scan needs;
+#   fails_when=the usage error reads as a generic failure with no upgrade hint;
+#   why_new=every test runs a current git;
+#   seam=none
+def test_a_git_without_z_names_the_version_needed(tmp_path, repo, monkeypatch, capsys):
+    shim = tmp_path / "shim"
+    shim.mkdir()
+    real = shutil.which("git")
+    # Stands in for a git older than 2.36: it rejects -z the way git does.
+    script = (
+        "#!/bin/sh\n"
+        'for a in "$@"; do\n'
+        '  [ "$a" = -z ] && echo "error: unknown switch" >&2 && exit 129\n'
+        "done\n"
+        f'exec {real} "$@"\n'
+    )
+    (shim / "git").write_text(script, encoding="utf-8")
+    (shim / "git").chmod(0o755)
+    monkeypatch.setenv("PATH", f"{shim}{os.pathsep}{os.environ['PATH']}")
+    assert ss.main(["--repo-dir", str(repo)]) == 2
+    assert f"needs git {ss.MIN_GIT} or later" in capsys.readouterr().err

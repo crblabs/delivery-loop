@@ -87,6 +87,9 @@ the project environment, and `uv run <name>` runs one. The names share the
 | `loop-pause-stats` | Counts the pauses in a scan by category. |
 | `loop-transcript` | Reads the pending question out of one harness session. |
 
+`loop-scan` finds runs through `git worktree list --porcelain -z`, so it needs
+git 2.36 or later on the machine that runs it.
+
 Each command takes `--help`. `[project.scripts]` in `pyproject.toml` is the
 table that declares them, and `tests/test_entry_points.py` reads that table and
 fails if a name does not resolve to a callable `main`.

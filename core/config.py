@@ -9,14 +9,17 @@ the code behaved with the literals inline.
 
 ``load_config`` reads one ``loop.toml`` with ``tomllib`` and falls back to the
 default for every key the file does not set. A key the loop does not read yet is
-ignored, so a host may keep the whole template in place. What is read is
+ignored, so a host may keep the whole template in place. A key the loop no
+longer reads is refused, so a host learns that its meaning changed. What is read is
 validated: a path may not be absolute and may not escape its root, a prefix may
 not be empty, and the tracker pattern must compile.
 
 Path fields are written with placeholders, ``{state_dir}``, ``{state_file}`` and
 ``{state_stem}``, substituted once when the object is built. A host that moves
 the harness state directory therefore moves the carve-outs, the loop prefixes
-and the ledger with it, from one setting. The tracker pattern takes
+and the ledger with it, from one setting. ``{state_file}`` and ``{state_stem}``
+expand to the state file's name only: the file itself lives in the git
+directory, so a worktree path built from them names nothing. The tracker pattern takes
 ``{tracker_prefix}`` the same way.
 
 The run state does not live in the worktree. It lives in ``run_dir`` inside the
@@ -86,12 +89,12 @@ def _refuse_empty(name: str, value: object) -> None:
         raise ConfigError(f"{name} may not be empty")
 
 
-def _refuse_unsafe(name: str, value: str) -> None:
-    """Refuse an absolute path and one that climbs out of the repository root."""
+def _refuse_unsafe(name: str, value: str, root: str = "repository") -> None:
+    """Refuse an absolute path and one that climbs out of its root."""
     if value.startswith("/") or value.startswith("~"):
-        raise ConfigError(f"{name} must be a repository-relative path: {value!r}")
+        raise ConfigError(f"{name} must be a {root}-relative path: {value!r}")
     if ".." in PurePosixPath(value).parts:
-        raise ConfigError(f"{name} may not escape the repository root: {value!r}")
+        raise ConfigError(f"{name} may not escape the {root} root: {value!r}")
 
 
 GATES = ("none", "approval", "review_batch")
@@ -224,7 +227,7 @@ class LoopConfig:
         _refuse_empty("state_dir", self.state_dir)
         _refuse_unsafe("state_dir", self.state_dir)
         _refuse_empty("run_dir", self.run_dir)
-        _refuse_unsafe("run_dir", self.run_dir)
+        _refuse_unsafe("run_dir", self.run_dir, root="git directory")
         _refuse_empty("state_file", self.state_file)
         if "/" in self.state_file or self.state_file in (".", ".."):
             raise ConfigError(f"state_file names one file, not a path: {self.state_file!r}")
@@ -388,17 +391,33 @@ def _table(data: dict, key: str) -> dict:
     return value
 
 
+# Keys the loop once read and no longer does. Ignoring one would silently change
+# what the loop does, so each is refused with what replaced it.
+_REMOVED_KEYS = (
+    (
+        "harness",
+        "worktree_glob",
+        "runs are now found through `git worktree list`; "
+        "pass the repository to loop-scan with --repo-dir instead",
+    ),
+)
+
+
 def from_mapping(data: dict) -> LoopConfig:
     """One config from a parsed loop.toml, defaulting every key the file omits.
 
     A key the file leaves out keeps the field's own default, placeholders and
     all, so setting only the state directory moves every path that names it, and
     setting only the tracker prefix reshapes the tracker pattern. A key the loop
-    does not read is ignored. An array of ``[[stages]]`` tables replaces the
-    whole stage list; a file with no such array keeps the default five.
+    does not read yet is ignored, but a key it no longer reads is refused, with
+    what replaced it. An array of ``[[stages]]`` tables replaces the whole stage
+    list; a file with no such array keeps the default five.
     """
     if not isinstance(data, dict):
         raise ConfigError(f"a loop.toml must be a table, got {data!r}")
+    for table_name, key, replacement in _REMOVED_KEYS:
+        if key in _table(data, table_name):
+            raise ConfigError(f"[{table_name}] {key} is no longer read: {replacement}")
     values: dict[str, object] = {}
     for field_name, table_name, key in _STRING_KEYS:
         table = _table(data, table_name)
