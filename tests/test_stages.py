@@ -155,10 +155,14 @@ def test_three_declared_stages_replace_the_five(three: cfg.LoopConfig) -> None:
     assert three.state_dir == cfg.DEFAULTS.state_dir
 
 
+@pytest.fixture
+def worktree(tmp_path: Path, make_repo) -> Path:
+    return make_repo(tmp_path / "repo")
+
+
 def test_the_state_reader_reads_a_run_of_the_declared_stages(
-    three: cfg.LoopConfig, tmp_path: Path
+    three: cfg.LoopConfig, worktree: Path
 ) -> None:
-    worktree = tmp_path / "repo" / "task"
     path = write_state(worktree, make_state(three.stage_names, current=1), three)
     condition, state = ps.read_state(path, three)
     assert condition == "ok"
@@ -166,12 +170,10 @@ def test_the_state_reader_reads_a_run_of_the_declared_stages(
 
 
 def test_the_scanner_reports_a_run_of_the_declared_stages(
-    three: cfg.LoopConfig, tmp_path: Path
+    three: cfg.LoopConfig, worktree: Path
 ) -> None:
-    worktree = tmp_path / "repo" / "task"
     write_state(worktree, make_state(three.stage_names, current=2), three)
-    pattern = str(tmp_path / "*" / "*" / ".claude" / "pipeline.local.json")
-    (record,) = ss.scan(pattern, None, NOW, 600, three)
+    (record,) = ss.scan([worktree], None, NOW, 600, three)
     assert record["condition"] == "ok"
     # The count a person is shown is read off the list, not written as five.
     assert (record["stage_num"], record["stage_count"]) == (3, 3)
@@ -181,34 +183,32 @@ def test_the_scanner_reports_a_run_of_the_declared_stages(
 
 
 def test_a_state_recorded_under_another_stage_list_is_refused(
-    three: cfg.LoopConfig, tmp_path: Path
+    three: cfg.LoopConfig, worktree: Path
 ) -> None:
-    worktree = tmp_path / "repo" / "task"
     path = write_state(worktree, make_state(cfg.DEFAULTS.stage_names))
     assert ps.read_state(path, cfg.DEFAULTS)[0] == "ok"
     assert ps.read_state(path, three)[0] == "corrupt"
 
 
 def test_a_state_of_the_declared_stages_is_refused_under_the_defaults(
-    three: cfg.LoopConfig, tmp_path: Path
+    three: cfg.LoopConfig, worktree: Path
 ) -> None:
-    worktree = tmp_path / "repo" / "task"
     path = write_state(worktree, make_state(three.stage_names), three)
     assert ps.read_state(path, three)[0] == "ok"
     assert ps.read_state(path)[0] == "corrupt"
 
 
-def test_the_same_names_in_another_order_are_refused(tmp_path: Path) -> None:
+def test_the_same_names_in_another_order_are_refused(worktree: Path) -> None:
     reversed_names = tuple(reversed(cfg.DEFAULTS.stage_names))
-    path = write_state(tmp_path / "w", make_state(reversed_names))
+    path = write_state(worktree, make_state(reversed_names))
     assert ps.read_state(path)[0] == "corrupt"
 
 
 def test_an_attempts_map_of_another_stage_list_is_refused(
-    three: cfg.LoopConfig, tmp_path: Path
+    three: cfg.LoopConfig, worktree: Path
 ) -> None:
     state = make_state(three.stage_names, attempts=dict.fromkeys(cfg.DEFAULTS.stage_names, 0))
-    path = write_state(tmp_path / "w", state, three)
+    path = write_state(worktree, state, three)
     assert ps.read_state(path, three)[0] == "corrupt"
 
 

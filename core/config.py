@@ -15,9 +15,15 @@ not be empty, and the tracker pattern must compile.
 
 Path fields are written with placeholders, ``{state_dir}``, ``{state_file}`` and
 ``{state_stem}``, substituted once when the object is built. A host that moves
-the harness state directory therefore moves the carve-outs, the loop prefixes,
-the worktree glob and the ledger with it, from one setting. The tracker pattern
-takes ``{tracker_prefix}`` the same way.
+the harness state directory therefore moves the carve-outs, the loop prefixes
+and the ledger with it, from one setting. The tracker pattern takes
+``{tracker_prefix}`` the same way.
+
+The run state does not live in the worktree. It lives in ``run_dir`` inside the
+worktree's git directory, the one ``git rev-parse --git-dir`` names, so git
+never tracks it and a host repository needs no ignore rule for it. Each worktree
+has its own git directory, so each run has its own state, and removing the
+worktree removes the state with it.
 
 The stage list is configuration too. ``stages`` is a tuple of ``StageSpec``, one
 per stage, and each spec declares the contract the loop depends on and not only
@@ -46,7 +52,7 @@ CONFIG_FILENAME = "loop.toml"
 # Substituted into the path fields when the object is built, so one setting
 # moves every path that lives under the harness state directory.
 _STATE_TOKENS = ("state_dir", "state_file", "state_stem")
-_EXPANDED_STRINGS = ("ledger_dir", "stage_target", "worktree_glob")
+_EXPANDED_STRINGS = ("ledger_dir", "stage_target")
 _EXPANDED_TUPLES = ("carve_outs", "carve_out_prefixes", "loop_prefixes", "loop_exact")
 
 
@@ -175,20 +181,22 @@ DEFAULT_STAGES = (
 class LoopConfig:
     """Every value the loop takes from its host, with today's values as defaults.
 
-    ``state_dir`` and ``state_file`` name the harness directory and the run state
-    file inside a worktree. ``ledger_dir`` and ``ledger_name`` place the
-    supervisor's own ledger under the operator's home directory.
-    ``carve_outs``, ``carve_out_prefixes``, ``loop_prefixes``, ``loop_exact``,
-    ``stage_shorthand`` and ``stage_target`` are the loop-path vocabulary.
-    ``stages`` is the stage list itself, one ``StageSpec`` per stage, in order.
-    ``worktree_glob`` finds runs, ``session_label`` names the session in a card
-    header, ``resume_command`` and ``abort_command`` are the operator commands a
-    card quotes, and ``tracker_prefix`` with ``tracker_pattern`` recognise an
-    issue identifier in a worktree name.
+    ``state_dir`` names the harness directory inside a worktree. ``run_dir`` and
+    ``state_file`` name the directory inside the worktree's git directory that
+    holds the run state, and the state file in it. ``ledger_dir`` and
+    ``ledger_name`` place the supervisor's own ledger under the operator's home
+    directory. ``carve_outs``, ``carve_out_prefixes``, ``loop_prefixes``,
+    ``loop_exact``, ``stage_shorthand`` and ``stage_target`` are the loop-path
+    vocabulary. ``stages`` is the stage list itself, one ``StageSpec`` per stage,
+    in order. ``session_label`` names the session in a card header,
+    ``resume_command`` and ``abort_command`` are the operator commands a card
+    quotes, and ``tracker_prefix`` with ``tracker_pattern`` recognise an issue
+    identifier in a worktree name.
     """
 
     state_dir: str = ".claude"
-    state_file: str = "pipeline.local.json"
+    run_dir: str = "delivery-loop"
+    state_file: str = "state.json"
     ledger_dir: str = "{state_dir}/supervisor"
     ledger_name: str = "{slug}-ledger.local.jsonl"
     carve_outs: tuple[str, ...] = (
@@ -200,13 +208,12 @@ class LoopConfig:
         "{state_dir}/hooks/pipeline-stop",
         "{state_dir}/hooks/pipeline_loop_paths.py",
     )
-    carve_out_prefixes: tuple[str, ...] = ("{state_dir}/pipeline-runs.local.d/",)
+    carve_out_prefixes: tuple[str, ...] = ()
     loop_prefixes: tuple[str, ...] = ("{state_dir}/hooks/", "{state_dir}/skills/pipeline/")
     loop_exact: tuple[str, ...] = ("{state_dir}/settings.json",)
     stage_shorthand: str = "stages/"
     stage_target: str = "{state_dir}/skills/pipeline/stages/"
     stages: tuple[StageSpec, ...] = DEFAULT_STAGES
-    worktree_glob: str = "~/emdash/worktrees/*/*/{state_dir}/{state_file}"
     session_label: str = "Emdash session"
     resume_command: str = "/pipeline resume"
     abort_command: str = "/pipeline abort"
@@ -216,6 +223,8 @@ class LoopConfig:
     def __post_init__(self) -> None:
         _refuse_empty("state_dir", self.state_dir)
         _refuse_unsafe("state_dir", self.state_dir)
+        _refuse_empty("run_dir", self.run_dir)
+        _refuse_unsafe("run_dir", self.run_dir)
         _refuse_empty("state_file", self.state_file)
         if "/" in self.state_file or self.state_file in (".", ".."):
             raise ConfigError(f"state_file names one file, not a path: {self.state_file!r}")
@@ -248,7 +257,7 @@ class LoopConfig:
             for value in getattr(self, name):
                 _refuse_empty(name, value)
                 _refuse_unsafe(name, value)
-        for name in ("worktree_glob", "session_label", "resume_command", "abort_command"):
+        for name in ("session_label", "resume_command", "abort_command"):
             _refuse_empty(name, getattr(self, name))
         _refuse_empty("tracker_prefix", self.tracker_prefix)
         try:
@@ -270,11 +279,6 @@ class LoopConfig:
                     f"two stages are named {stage.name!r}; every stage name must be unique"
                 )
             seen.add(stage.name)
-
-    @cached_property
-    def state_depth(self) -> int:
-        """How many path segments separate a worktree root from its state file."""
-        return len(PurePosixPath(self.state_dir).parts) + 1
 
     @cached_property
     def stage_names(self) -> tuple[str, ...]:
@@ -299,12 +303,6 @@ class LoopConfig:
         return tuple(p.casefold() for p in self.carve_out_prefixes)
 
     @cached_property
-    def state_file_re(self) -> re.Pattern[str]:
-        """Matches the state file and its siblings, whatever suffix they carry."""
-        stem = PurePosixPath(self.state_file).stem
-        return re.compile("^" + re.escape(f"{self.state_dir}/{stem}") + r"\b", re.IGNORECASE)
-
-    @cached_property
     def tracker_re(self) -> re.Pattern[str]:
         """Matches one issue identifier inside a longer name."""
         return re.compile(self.tracker_pattern)
@@ -320,8 +318,8 @@ DEFAULTS = LoopConfig()
 # Where each field is written in a loop.toml: the field, its table, its key.
 _STRING_KEYS = (
     ("state_dir", "harness", "state_dir"),
+    ("run_dir", "harness", "run_dir"),
     ("state_file", "harness", "state_file"),
-    ("worktree_glob", "harness", "worktree_glob"),
     ("session_label", "harness", "session_label"),
     ("ledger_dir", "ledger", "dir"),
     ("ledger_name", "ledger", "name"),

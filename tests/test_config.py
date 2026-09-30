@@ -29,8 +29,8 @@ NOW = datetime(2026, 9, 16, 10, 0, 0, tzinfo=UTC)
 MOVED = """
 [harness]
 state_dir = ".harness"
-state_file = "run.local.json"
-worktree_glob = "~/trees/*/*/{state_dir}/{state_file}"
+run_dir = "harness-runs"
+state_file = "run.json"
 
 [loop_paths]
 carve_outs = ["{state_dir}/settings.json", "{state_dir}/hooks/stop.py"]
@@ -70,7 +70,8 @@ def moved(tmp_path: Path) -> cfg.LoopConfig:
 def test_defaults_are_the_values_the_modules_held_inline() -> None:
     d = cfg.DEFAULTS
     assert d.state_dir == ".claude"
-    assert d.state_file == "pipeline.local.json"
+    assert d.run_dir == "delivery-loop"
+    assert d.state_file == "state.json"
     assert d.ledger_dir == ".claude/supervisor"
     assert d.ledger_file("slug") == "slug-ledger.local.jsonl"
     assert d.carve_outs == (
@@ -82,12 +83,11 @@ def test_defaults_are_the_values_the_modules_held_inline() -> None:
         ".claude/hooks/pipeline-stop",
         ".claude/hooks/pipeline_loop_paths.py",
     )
-    assert d.carve_out_prefixes == (".claude/pipeline-runs.local.d/",)
+    assert d.carve_out_prefixes == ()
     assert d.loop_prefixes == (".claude/hooks/", ".claude/skills/pipeline/")
     assert d.loop_exact == (".claude/settings.json",)
     assert d.stage_shorthand == "stages/"
     assert d.stage_target == ".claude/skills/pipeline/stages/"
-    assert d.worktree_glob == "~/emdash/worktrees/*/*/.claude/pipeline.local.json"
     assert d.session_label == "Emdash session"
     assert d.resume_command == "/pipeline resume"
     assert d.abort_command == "/pipeline abort"
@@ -97,8 +97,10 @@ def test_defaults_are_the_values_the_modules_held_inline() -> None:
 
 def test_defaults_still_classify_the_paths_they_used_to() -> None:
     assert lp.is_carveout(".claude/hooks/pipeline_stop.py") is True
-    assert lp.is_carveout(".claude/PIPELINE.local.json") is True
-    assert lp.is_carveout(".claude/pipeline-runs.local.d/x.json") is True
+    # The run state lives in the git directory, which no declaration reaches.
+    assert lp.is_carveout(".git/delivery-loop/state.json") is True
+    assert lp.is_carveout(".GIT/config") is True
+    assert lp.is_carveout(".gitignore") is False
     assert lp.is_carveout(".claude/skills/pipeline/stages/ship.md") is False
     declared = "```loop-edits\nstages/ship.md\n```"
     assert lp.parse_loop_edits_block(declared) == [".claude/skills/pipeline/stages/ship.md"]
@@ -129,10 +131,8 @@ def test_a_directory_argument_finds_the_file(tmp_path: Path) -> None:
 def test_moving_only_the_state_dir_moves_every_path_that_names_it(tmp_path: Path) -> None:
     config = cfg.load_config(write(tmp_path, '[harness]\nstate_dir = ".harness"\n'))
     assert config.carve_outs[0] == ".harness/settings.json"
-    assert config.carve_out_prefixes == (".harness/pipeline-runs.local.d/",)
     assert config.loop_prefixes == (".harness/hooks/", ".harness/skills/pipeline/")
     assert config.ledger_dir == ".harness/supervisor"
-    assert config.worktree_glob.endswith(".harness/pipeline.local.json")
 
 
 def test_the_shipped_template_reproduces_the_defaults() -> None:
@@ -145,13 +145,15 @@ def test_the_shipped_template_reproduces_the_defaults() -> None:
 # --- one loop.toml, honoured by every module that reads it -------------------
 
 
-def test_moved_state_dir_reaches_the_state_reader(moved: cfg.LoopConfig, tmp_path: Path) -> None:
-    assert ps.state_path(tmp_path, moved) == tmp_path / ".harness" / "run.local.json"
+def test_moved_run_dir_reaches_the_state_reader(
+    moved: cfg.LoopConfig, tmp_path: Path, make_repo
+) -> None:
+    repo = make_repo(tmp_path / "repo")
+    assert ps.state_path(repo, moved) == repo / ".git" / "harness-runs" / "run.json"
 
 
 def test_moved_state_dir_reaches_the_loop_paths(moved: cfg.LoopConfig) -> None:
     assert lp.is_carveout(".harness/hooks/stop.py", moved) is True
-    assert lp.is_carveout(".harness/run.local.lock", moved) is True
     assert lp.is_carveout(".harness/archive/run.json", moved) is True
     # The old spelling is nobody's enforcement file once the directory moved.
     assert lp.is_carveout(".claude/hooks/pipeline_stop.py", moved) is False
@@ -167,9 +169,11 @@ def test_moved_state_dir_reaches_the_ledger(moved: cfg.LoopConfig, tmp_path: Pat
     assert (tmp_path / ".harness" / "watch" / "slug-ledger.local.lock").exists()
 
 
-def test_moved_state_dir_reaches_the_scanner(moved: cfg.LoopConfig, tmp_path: Path) -> None:
-    worktree = tmp_path / "repo" / "task"
-    (worktree / ".harness").mkdir(parents=True)
+def test_moved_run_dir_reaches_the_scanner(
+    moved: cfg.LoopConfig, tmp_path: Path, make_repo
+) -> None:
+    worktree = make_repo(tmp_path / "repo")
+    ps.state_path(worktree, moved).parent.mkdir()
     state = {
         "version": 1,
         "run_id": "9f1c2e7a-3b4d-4e5f-8a6b-7c8d9e0f1a2b",
@@ -185,8 +189,7 @@ def test_moved_state_dir_reaches_the_scanner(moved: cfg.LoopConfig, tmp_path: Pa
         "history": [],
     }
     ps.state_path(worktree, moved).write_text(json.dumps(state), encoding="utf-8")
-    pattern = str(tmp_path / "*" / "*" / ".harness" / "run.local.json")
-    records = ss.scan(pattern, None, NOW, 600, moved)
+    records = ss.scan([worktree], None, NOW, 600, moved)
     assert [r["condition"] for r in records] == ["ok"]
     assert records[0]["worktree"] == str(worktree)
 
@@ -243,6 +246,8 @@ def test_moved_tracker_pattern_is_the_only_one_recognised(moved: cfg.LoopConfig)
         '[loop_paths]\ncarve_outs = ["a/../../outside"]\n',
         '[loop_paths]\nexact = ["/absolute"]\n',
         '[loop_paths]\ncarve_out_prefixes = ["/absolute/"]\n',
+        '[harness]\nrun_dir = "../outside"\n',
+        '[harness]\nrun_dir = "/absolute"\n',
     ],
 )
 def test_an_unsafe_path_is_refused(tmp_path: Path, table: str) -> None:
@@ -258,6 +263,7 @@ def test_an_unsafe_path_is_refused(tmp_path: Path, table: str) -> None:
         '[loop_paths]\ncarve_outs = [""]\n',
         '[harness]\nstate_dir = ""\n',
         '[harness]\nstate_file = ""\n',
+        '[harness]\nrun_dir = ""\n',
         '[commands]\nabort = ""\n',
     ],
 )

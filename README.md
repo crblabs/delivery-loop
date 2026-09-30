@@ -80,7 +80,7 @@ the project environment, and `uv run <name>` runs one. The names share the
 
 | Command | Does |
 |---|---|
-| `loop-scan` | Finds every run under a worktree glob and prints one JSON record each. |
+| `loop-scan` | Finds every run in the worktrees of a repository and prints one JSON record each. |
 | `loop-decide` | Reads one scan record and prints the decision for that run. |
 | `loop-card` | Renders one run's pause as the decision card a person reads. |
 | `loop-card-check` | Checks that a pause question carries the required card shape. |

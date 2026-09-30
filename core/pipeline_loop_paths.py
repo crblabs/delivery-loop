@@ -9,8 +9,8 @@ copy.
 Three things live here:
 
   * The carve-out: the enforcement files a declaration can NEVER authorize (the
-    two hooks, their shims, this module itself, the two settings files, the state
-    file and its siblings, and the archive directory). It is checked AFTER the
+    two hooks, their shims, this module itself, the two settings files, and the
+    git directory, which holds the run state). It is checked AFTER the
     allow-list and always wins, so a task that must edit the guard itself keeps
     the pauses, while a task that edits a stage prompt or a doc runs hands-off.
   * `parse_loop_edits_block` / `parse_loop_edits_rejected`: extract the declared
@@ -37,6 +37,10 @@ from core.config import DEFAULTS, LoopConfig
 _CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")
 _FENCE_OPEN_RE = re.compile(r"^[ \t]*```loop-edits[ \t]*$")
 _FENCE_CLOSE_RE = re.compile(r"^[ \t]*```[ \t]*$")
+# The git directory of a main worktree, where the run state lives. A linked
+# worktree keeps its git directory outside the tree, out of reach of any
+# repo-relative path.
+_GIT_DIR_RE = re.compile(r"^\.git(/|$)", re.IGNORECASE)
 
 
 def _normalize(rel: str) -> str:
@@ -58,7 +62,7 @@ def is_carveout(rel: str, config: LoopConfig = DEFAULTS) -> bool:
         return True
     if cf.startswith(config.carve_out_prefixes_cf):
         return True
-    return bool(config.state_file_re.match(rel))
+    return bool(_GIT_DIR_RE.match(rel))
 
 
 def _in_loop_set(rel: str, config: LoopConfig) -> bool:

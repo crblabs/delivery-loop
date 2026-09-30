@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Discover every delivery-loop run and report its state, read-only.
 
-The supervisor watches every run at once. Runs are found by a glob over worktree
-state files. The config's worktree glob is only a default: it matches the common
-layout where worktrees are nested one level below a per-repository container.
-Any other layout is passed with ``--worktrees-glob`` or set in the config.
+The supervisor watches every run at once. Runs are found through
+``git worktree list``: every worktree of a repository whose git directory holds a
+state file is a run. No layout is assumed, so worktrees may sit anywhere on disk.
+``--repo-dir`` names a directory inside the repository, and may be given once
+per repository. It defaults to the current directory.
 
 Discovery binds to one repository: a worktree whose ``repo`` differs from
 ``--repo`` is excluded, so an allowlist or ledger for one repository never
@@ -20,8 +21,8 @@ The tool never writes and never touches the network.
 from __future__ import annotations
 
 import argparse
-import glob as globlib
 import json
+import subprocess
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
@@ -59,11 +60,48 @@ _RECORD_KEYS = (
 )
 
 
-def discover(pattern: str) -> list[Path]:
-    """Every state-file path the glob matches that is a regular file."""
-    expanded = str(Path(pattern).expanduser())
-    hits = sorted({Path(p) for p in globlib.glob(expanded) if Path(p).is_file()})
-    return hits
+class ScanError(RuntimeError):
+    """A repository the scanner cannot list the worktrees of."""
+
+
+def worktrees(repo_dir: Path) -> list[Path]:
+    """Every checked-out worktree of the repository that holds ``repo_dir``.
+
+    A bare entry has no working tree and a prunable one no longer exists on
+    disk, so neither can hold a run.
+    """
+    result = subprocess.run(
+        ["git", "-C", str(repo_dir), "worktree", "list", "--porcelain", "-z"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise ScanError(f"cannot list the worktrees of {repo_dir}: {result.stderr.strip()}")
+    found: list[Path] = []
+    # One NUL ends each line and an empty line ends each worktree entry.
+    for entry in result.stdout.split("\0\0"):
+        lines = [line for line in entry.split("\0") if line]
+        if not lines or not lines[0].startswith("worktree "):
+            continue
+        if any(line == "bare" or line.startswith("prunable") for line in lines[1:]):
+            continue
+        found.append(Path(lines[0].removeprefix("worktree ")))
+    return found
+
+
+def discover(repo_dirs: list[Path], config: LoopConfig = DEFAULTS) -> list[tuple[Path, Path]]:
+    """Every (worktree, state file) pair whose state file is a regular file."""
+    hits: set[tuple[Path, Path]] = set()
+    for repo_dir in repo_dirs:
+        for worktree in worktrees(repo_dir):
+            try:
+                path = ps.state_path(worktree, config)
+            except ps.NotAWorktree:
+                continue
+            if path.is_file():
+                hits.add((worktree, path))
+    return sorted(hits)
 
 
 def _age_seconds(updated_at: object, now: datetime) -> float | None:
@@ -72,12 +110,14 @@ def _age_seconds(updated_at: object, now: datetime) -> float | None:
 
 
 def build_record(
-    state_file: Path, now: datetime, stale_after: int, config: LoopConfig = DEFAULTS
+    worktree_path: Path,
+    state_file: Path,
+    now: datetime,
+    stale_after: int,
+    config: LoopConfig = DEFAULTS,
 ) -> dict:
     """One report object for one worktree, whatever the file's condition."""
-    # The state file sits one level below the harness directory, which the config
-    # may spell with more than one segment, so the root is that many levels up.
-    worktree = str(state_file.parents[config.state_depth - 1])
+    worktree = str(worktree_path)
     condition, state = ps.read_state(state_file, config)
     if state is None:
         return {"worktree": worktree, "condition": condition}
@@ -103,14 +143,16 @@ def _needs_attention(record: dict) -> bool:
 
 
 def scan(
-    pattern: str,
+    repo_dirs: list[Path],
     repo: str | None,
     now: datetime,
     stale_after: int,
     config: LoopConfig = DEFAULTS,
 ) -> list[dict]:
     """Discover, repo-filter, and report every run."""
-    records = [build_record(p, now, stale_after, config) for p in discover(pattern)]
+    records = [
+        build_record(wt, path, now, stale_after, config) for wt, path in discover(repo_dirs, config)
+    ]
     if repo is not None:
         records = [r for r in records if _repo_ok(r, repo)]
     return records
@@ -131,12 +173,14 @@ def _now_from(arg: str | None) -> datetime:
     return parsed
 
 
-def _parse_args(argv: list[str], config: LoopConfig) -> argparse.Namespace:
+def _parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Report every delivery-loop run.")
     parser.add_argument(
-        "--worktrees-glob",
-        default=config.worktree_glob,
-        help="state-file glob; the default matches one common worktree layout",
+        "--repo-dir",
+        action="append",
+        type=Path,
+        default=None,
+        help="a directory inside a repository to scan; repeat it for more; default: .",
     )
     parser.add_argument("--repo", default=None, help="owner/name to bind discovery to")
     parser.add_argument("--now", default=None, help="ISO-8601 override for tests")
@@ -146,20 +190,20 @@ def _parse_args(argv: list[str], config: LoopConfig) -> argparse.Namespace:
 
 
 def main(argv: list[str] | None = None, config: LoopConfig = DEFAULTS) -> int:
-    args = _parse_args(sys.argv[1:] if argv is None else argv, config)
+    args = _parse_args(sys.argv[1:] if argv is None else argv)
     # The config is loaded once here and passed down; nothing below reads a file.
     config = load_config(args.config) if args.config else config
-    records = scan(
-        args.worktrees_glob,
-        args.repo,
-        _now_from(args.now),
-        args.stale_after_seconds,
-        config,
-    )
+    repo_dirs = args.repo_dir or [Path.cwd()]
+    try:
+        records = scan(repo_dirs, args.repo, _now_from(args.now), args.stale_after_seconds, config)
+    except ScanError as exc:
+        print(f"SUPERVISOR_DISCOVERY_FAILED: {exc}", file=sys.stderr)
+        return 2
     print(json.dumps(records, indent=2, sort_keys=True))
     if not records:
+        names = ", ".join(str(d) for d in repo_dirs)
         print(
-            f"SUPERVISOR_DISCOVERY_EMPTY: no worktree held a state file for {args.worktrees_glob}",
+            f"SUPERVISOR_DISCOVERY_EMPTY: no worktree held a state file for {names}",
             file=sys.stderr,
         )
         return 2

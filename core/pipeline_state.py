@@ -7,6 +7,10 @@ timestamps, ``history``, guard maps), so this module validates every field it
 exposes. Anything it needs but cannot trust makes the run ``unreadable`` or
 ``unsupported``, never an auto-answer input.
 
+The state file lives in the worktree's git directory, not in the worktree, so
+git never tracks it. ``state_path`` is the one definition of where it is, for
+the hook that writes it and for this reader.
+
 The reader never writes. It returns a ``(condition, state)`` pair where
 ``condition`` is one of ``CONDITIONS`` and ``state`` is the parsed dict when the
 condition is ``ok``, else ``None``.
@@ -21,6 +25,7 @@ from __future__ import annotations
 
 import json
 import re
+import subprocess
 from datetime import datetime
 from pathlib import Path
 
@@ -35,9 +40,30 @@ SUPPORTED_VERSION = 1
 UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.I)
 
 
+class NotAWorktree(ValueError):
+    """A path git does not recognise as inside a worktree."""
+
+
+def git_dir(worktree: Path) -> Path:
+    """The absolute git directory of one worktree.
+
+    That is ``.git`` for the main worktree and ``.git/worktrees/<name>`` for a
+    linked one.
+    """
+    result = subprocess.run(
+        ["git", "-C", str(worktree), "rev-parse", "--absolute-git-dir"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise NotAWorktree(f"{worktree} is not inside a git worktree: {result.stderr.strip()}")
+    return Path(result.stdout.strip())
+
+
 def state_path(worktree: Path, config: LoopConfig = DEFAULTS) -> Path:
     """Where the hook keeps the state file for one worktree."""
-    return worktree / config.state_dir / config.state_file
+    return git_dir(worktree) / config.run_dir / config.state_file
 
 
 def stage_names(config: LoopConfig = DEFAULTS) -> tuple[str, ...]:
