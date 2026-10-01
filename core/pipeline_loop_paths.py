@@ -9,8 +9,8 @@ copy.
 Three things live here:
 
   * The carve-out: the enforcement files a declaration can NEVER authorize (the
-    two hooks, their shims, this module itself, the two settings files, the state
-    file and its siblings, and the archive directory). It is checked AFTER the
+    two hooks, their shims, this module itself and the two settings files). The
+    run state is not in the repository, so it is not listed. It is checked AFTER the
     allow-list and always wins, so a task that must edit the guard itself keeps
     the pauses, while a task that edits a stage prompt or a doc runs hands-off.
   * `parse_loop_edits_block` / `parse_loop_edits_rejected`: extract the declared
@@ -56,9 +56,7 @@ def is_carveout(rel: str, config: LoopConfig = DEFAULTS) -> bool:
     cf = rel.casefold()
     if cf in config.carve_outs_cf:
         return True
-    if cf.startswith(config.carve_out_prefixes_cf):
-        return True
-    return bool(config.state_file_re.match(rel))
+    return cf.startswith(config.carve_out_prefixes_cf)
 
 
 def _in_loop_set(rel: str, config: LoopConfig) -> bool:

@@ -13,25 +13,29 @@
 #
 # Placeholders. A path key may write `{state_dir}`, `{state_file}` or
 # `{state_stem}` and the loader substitutes them once when the config is built,
-# so moving the harness directory moves the carve-outs, the loop prefixes, the
-# worktree glob and the ledger with it. The tracker pattern takes
+# so moving the harness directory moves the carve-outs, the loop prefixes and
+# the ledger with it. `{state_file}` and `{state_stem}` give the state file's
+# name only: the file lives under `state_root`, not under `state_dir`. The
+# tracker pattern takes
 # `{tracker_prefix}` the same way, the ledger name takes `{slug}`, and a stage
 # prompt takes `{name}`.
 #
-# What the loader refuses: an absolute or parent-escaping path, an empty value,
+# What the loader refuses: an absolute or parent-escaping path (state_root
+# excepted, which must be absolute or start with ~), an empty value,
 # a tracker pattern that does not compile, a value of the wrong type, and the
 # stage rules listed under [[stages]] below.
 
 
 [harness]
-# The directory the harness keeps its own files in, inside a worktree, and the
-# run state file the turn-end hook writes there.
+# The directory the harness keeps its own files in, inside a worktree.
 state_dir = ".claude"
-state_file = "pipeline.local.json"
 
-# How the supervisor finds every run: a glob over worktree state files. The
-# default matches worktrees nested one level below a per-repository container.
-worktree_glob = "~/emdash/worktrees/*/*/{state_dir}/{state_file}"
+# Where every run's state lives, outside any repository, so the host
+# repository needs no ignore rule. Each worktree gets its own directory,
+# runs/<owner>-<repo>/<worktree>-<hash>/, and loop-scan reads them all. The
+# DELIVERY_LOOP_HOME environment variable overrides this at run time.
+state_root = "~/.delivery-loop"
+state_file = "state.json"
 
 # How a decision card names the session the run is in.
 session_label = "Emdash session"
@@ -59,7 +63,7 @@ carve_outs = [
 ]
 
 # Carve-out by prefix, for a whole directory. Each entry ends in a slash.
-carve_out_prefixes = ["{state_dir}/pipeline-runs.local.d/"]
+carve_out_prefixes = []
 
 # The region a declaration may name at all, by prefix and exactly. A path
 # outside it is rejected before the carve-out is even consulted.

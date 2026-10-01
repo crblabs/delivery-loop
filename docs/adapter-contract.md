@@ -173,6 +173,14 @@ class Adapter(Protocol):
 
 Core reads and writes the state file. An adapter never does.
 
+The state file lives outside the repository, under the state root
+(`~/.delivery-loop` unless `DELIVERY_LOOP_HOME` or `state_root` moves it), at
+the path `core.pipeline_state.state_path(worktree, repo)` returns. Before the
+first write, core calls `prepare_run_dir`, which records the worktree the run
+belongs to. The edit guard classifies repository paths only, so it does not
+see the state file. A guard that accepts absolute paths must also refuse every
+path under the state root.
+
 ## Unsettled
 
 - Whether `reinject` may be `None` while `block` is True.
