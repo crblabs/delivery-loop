@@ -161,8 +161,16 @@ def _check_edit(call: PreToolCall, run: rs.Run, state: dict) -> PreToolVerdict:
     if not call.path:
         return ALLOW
     absolute = _absolute(call.path, call.cwd, run.worktree)
+    worktree = Path(os.path.realpath(run.worktree))
     for path in absolute:
+        inside = _under(path, worktree)
         for root in protected_roots(run):
+            # A protected directory that holds the whole worktree, such as a
+            # repository kept under the harness home, does not lock the
+            # worktree's own files: the carve-outs below judge those. A root
+            # equal to the worktree (the plugin's own checkout) stays protected.
+            if inside and _under(worktree, root) and str(worktree) != str(root):
+                continue
             if _under(path, root):
                 return _deny(
                     f"{call.tool_name} of {call.path}",

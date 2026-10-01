@@ -240,3 +240,36 @@ def test_a_push_from_another_checked_out_branch_is_denied(start_run, git) -> Non
     assert not _bash(run, "git push").allow
     git(run.worktree, "checkout", "-q", "main")
     assert _bash(run, "git push origin HEAD").allow
+
+
+# Regression: ISSUE-001 - a run whose worktree sits inside a protected directory had every
+# edit denied
+# Found by /qa on 2026-10-01
+# Report: .gstack/qa-reports/run-20261001T130243Z/qa-report-delivery-loop-cli-2026-10-01.md
+def test_a_worktree_inside_a_protected_directory_can_still_edit_its_own_files(
+    make_repo, tmp_path: Path
+) -> None:
+    # Value: protects=a repository kept under ~/.claude runs the loop like any other;
+    # fails_when=a protected root that contains the worktree denies its ordinary files;
+    # why_new=test_guard only places worktrees outside every protected root; seam=none
+    from core.config import DEFAULTS
+
+    worktree = make_repo(Path.home() / ".claude" / "dotfiles")
+    run, _ = rs.start(worktree, "CRB-1", DEFAULTS, "s1")
+    assert _edit(run, "notes.md").allow
+    assert _edit(run, str(worktree / "src" / "app.py")).allow
+    # Its own enforcement files stay guarded, and so does the rest of the directory.
+    assert not _edit(run, "loop.toml").allow
+    assert not _edit(run, ".claude/settings.json").allow
+    assert not _edit(run, str(Path.home() / ".claude" / "settings.json")).allow
+
+
+def test_a_worktree_that_is_the_plugin_itself_cannot_edit_the_running_plugin(
+    start_run, monkeypatch
+) -> None:
+    # Value: protects=a run on the plugin's own checkout (loaded with --plugin-dir) cannot
+    # rewrite the hooks that guard it; fails_when=the plugin root is skipped when it holds
+    # the worktree; why_new=pairs with the ISSUE-001 fix; seam=none
+    run, worktree = start_run()
+    monkeypatch.setattr(rs, "PLUGIN_ROOT", worktree)
+    assert not _edit(run, "hooks/pipeline_guard.py").allow
