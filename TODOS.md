@@ -3,10 +3,36 @@
 Work considered while packaging the loop as a Claude Code plugin and left for
 later, with why.
 
+## Review findings left open at the /ship fix-cycle cap (P1, fix before or right after merge)
+
+Found by the verification review of the third fix cycle (commit a9f4d44); /ship
+stops fixing after three cycles, so they are listed here.
+
+- **Bitbucket reads are judged as publishing (regression).** `kind_of` treats a
+  tool as a read only when its first or last word is a read verb, so
+  `mcp__bitbucket__bb_get_repo`, `bb_get_file`, `bb_ls_branches`,
+  `bb_diff_branches` and `bb_get_commit_history` are denied outside the PR
+  stage. Fix: drop a leading server prefix word (`bb`, `gl`) before the check,
+  or accept a read verb anywhere before the first repository object; add `ls`
+  to `_READ_VERBS`. File: `adapters/claude_code/bootstrap.py`.
+- **Bitbucket's `bb_add_pr` is not seen as a write.** `pr`, `prs`, `mr`, `mrs`
+  are not repository objects. Add them once the read fix above is in, so
+  `bb_get_pr` stays a read.
+- **Self-resume forms the early refusal misses.** `delivery-loop --sess abc
+  resume` (argparse accepts the abbreviation), `eval "delivery-loop resume"`,
+  `bash <<<"delivery-loop resume"`, `printf ... | sh`. The same abbreviation
+  hides a start from the intent. Fix: `allow_abbrev=False` in
+  `adapters/claude_code/cli.py`'s parser, and scan quoted words of `eval`,
+  `sh`, `bash` segments. The CLI's terminal check still refuses both.
+- **A heredoc commit message that mentions `delivery-loop resume` is refused.**
+  `git commit -m "$(cat <<'EOF' ... EOF)"`: `_nested` scans the heredoc body as
+  commands. Fix: drop heredoc bodies before scanning `$(...)` text.
+  File: `core/run_index.py`.
+
 ## Guard what a shell command can reach outside the worktree
 
-- **What:** hash the run's own state chain (a revision log), the plugin cache and
-  the plugin keys of `~/.claude/settings.json` at every turn end.
+- **What:** hash the run's own state chain (a revision log) and the plugin cache
+  at every turn end. (The user settings' switch keys are hashed already.)
 - **Why:** the edit guard denies edit tools there, but a shell command is not
   checked before it runs, so it can rewrite the state file or the cached hooks.
 - **Context:** `core/guard_evidence.py` builds the guard map from worktree paths
