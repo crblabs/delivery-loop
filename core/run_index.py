@@ -480,7 +480,8 @@ def _reads_stdin(words: list[str]) -> bool:
         return False
     rest = words[at + 1 :]
     if any(_short_c(word) for word in rest):
-        return True
+        # A ``-c`` script is fixed text; only ``xargs`` puts stdin into it.
+        return any(os.path.basename(word) == "xargs" for word in words[:at])
     return all(word.startswith("-") or word in _STDIN_OPERANDS for word in rest)
 
 

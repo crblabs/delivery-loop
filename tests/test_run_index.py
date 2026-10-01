@@ -235,6 +235,10 @@ def test_a_path_that_only_names_the_project_is_not_lexed(monkeypatch) -> None:
         'git commit -m "delivery-loop resume fix" && bash scripts/x.sh',
         'bash scripts/x.sh "run delivery-loop resume to continue"',
         'echo "run delivery-loop resume to continue" | bash scripts/notify.sh',
+        # Regression: ISSUE-001 - a fixed `sh -c` script was taken to run its stdin
+        # Found by /qa on 2026-10-01
+        # Report: .gstack/qa-reports/qa-report-delivery-loop-guard-2026-10-01.md
+        "grep -rn 'delivery-loop resume' README.md | sh -c 'wc -l'",
         "printf 'delivery-loop resume' || sh",
     ],
 )
