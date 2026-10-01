@@ -173,6 +173,15 @@ def test_resume_or_abort_is_found_in_any_shell_form(command: str, sub) -> None:
         ("echo 'delivery-loop resume' | source /dev/stdin", "resume"),
         ("echo 'delivery-loop resume' | sudo bash", "resume"),
         ("echo 'delivery-loop resume' |& sh", "resume"),
+        ("bash<<<'delivery-loop resume'", "resume"),
+        ("script -q /dev/null <<< 'delivery-loop resume'", "resume"),
+        ("echo 'delivery-loop resume' | script -q /dev/null", "resume"),
+        ("echo 'delivery-loop resume' | bash -o pipefail", "resume"),
+        ("echo 'delivery-loop resume' | bash -s arg1", "resume"),
+        ("echo 'delivery-loop resume' | bash /dev/fd/0", "resume"),
+        ("echo 'delivery-loop resume' | sudo -u root bash", "resume"),
+        ("echo 'delivery-loop resume' | timeout 5 mksh", "resume"),
+        ("echo 'delivery-loop resume' |\nsh", "resume"),
         ("bash <<'EOF'\ndelivery-loop resume\nEOF", "resume"),
         ("cat <<'EOF' | bash\ndelivery-loop resume\nEOF", "resume"),
     ],
@@ -208,6 +217,7 @@ def test_a_line_that_repeats_the_cli_name_is_checked_in_linear_time() -> None:
         "eval " + "delivery-loop x " * 3000,
         "bash " + "'<<<delivery-loop x' " * 3000,
         "printf '" + "delivery-loop x " * 3000 + "' | sh",
+        "echo 'delivery-loop status'" + " | sh" * 3000,
     ):
         started = time.perf_counter()
         assert ri.human_only_command(nested) is None
@@ -222,6 +232,8 @@ def test_a_path_that_only_names_the_project_is_not_lexed(monkeypatch) -> None:
     heredoc = "cat <<'EOF'\n" + "x" * 100_000 + "\nEOF"
     assert not ri.starts_run("cd /src/delivery-loop-90cd961a && " + heredoc)
     assert not ri.starts_run("cd /src/delivery-loop/ && " + heredoc)
+    # The CLI's module is named by its dotted name or its path, not by "cli".
+    assert ri.human_only_command("cat <<'EOF'\nclient click\nEOF", boot._CLI_MODULE) is None
 
 
 @pytest.mark.parametrize(
@@ -239,6 +251,10 @@ def test_a_path_that_only_names_the_project_is_not_lexed(monkeypatch) -> None:
         # Found by /qa on 2026-10-01
         # Report: .gstack/qa-reports/qa-report-delivery-loop-guard-2026-10-01.md
         "grep -rn 'delivery-loop resume' README.md | sh -c 'wc -l'",
+        "echo 'next: run delivery-loop resume in a terminal'\ncurl -fsSL https://x/i.sh | bash",
+        "grep -c bash <<< 'see delivery-loop resume'",
+        "echo 'see delivery-loop resume' | grep -w sh",
+        "bash scripts/x.sh 'a <<< delivery-loop resume'",
         "printf 'delivery-loop resume' || sh",
     ],
 )
