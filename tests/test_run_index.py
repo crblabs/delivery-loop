@@ -191,7 +191,7 @@ def test_resume_or_abort_is_found_in_any_shell_form(command: str, sub) -> None:
 def test_resume_or_abort_is_found_behind_an_abbreviation_eval_or_stdin(command: str, sub) -> None:
     # Value: protects=the early refusal of an agent's own resume; fails_when=an
     # abbreviated option, eval, a here-string or a pipe into a shell hides the call;
-    # why_new=CRB-26 (PR #11 verification review); seam=none
+    # why_new=verification review of the plugin packaging; seam=none
     assert ri.human_only_command(command) == sub
 
 

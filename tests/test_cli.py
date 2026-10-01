@@ -24,7 +24,7 @@ def test_no_subcommand_prints_help(capsys: pytest.CaptureFixture[str]) -> None:
 )
 def test_an_abbreviated_option_is_refused(argv: list, capsys) -> None:
     # Value: protects=the guard reads options as typed; fails_when=argparse expands
-    # --sess or --args and hides a resume or a session from it; why_new=CRB-26; seam=none
+    # --sess or --args and hides a resume or a session from it; why_new=review security finding; seam=none
     with pytest.raises(SystemExit) as exc:
         cli.main(argv)
     assert exc.value.code == 2
