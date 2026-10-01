@@ -182,6 +182,8 @@ def test_resume_or_abort_is_found_in_any_shell_form(command: str, sub) -> None:
         ("echo 'delivery-loop resume' | sudo -u root bash", "resume"),
         ("echo 'delivery-loop resume' | timeout 5 mksh", "resume"),
         ("echo 'delivery-loop resume' |\nsh", "resume"),
+        ("cd /tmp\nbash <<<'delivery-loop resume'", "resume"),
+        ("cd /tmp\neval 'delivery-loop resume'", "resume"),
         ("bash <<'EOF'\ndelivery-loop resume\nEOF", "resume"),
         ("cat <<'EOF' | bash\ndelivery-loop resume\nEOF", "resume"),
     ],

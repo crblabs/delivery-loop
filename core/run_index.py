@@ -540,7 +540,8 @@ def _nested(command: str) -> list[str]:
     here-string, the commands of a pipeline that feed a shell's stdin, and each
     ``$(...)`` or backtick body."""
     found = []
-    for words in _segments(command):
+    pieces = _pieces(command)
+    for words, _ in pieces:
         for i, word in enumerate(words[:-1]):
             if _short_c(word):
                 found.append(words[i + 1])
@@ -561,7 +562,6 @@ def _nested(command: str) -> list[str]:
     # A pipeline ends at a separator other than a pipe, including a line break.
     # Each command that feeds a shell's stdin is added once, however many shells
     # the pipeline runs.
-    pieces = _pieces(command)
     start = fed = 0
     for n, (words, separator) in enumerate(pieces):
         if n > start and _reads_stdin(words):
