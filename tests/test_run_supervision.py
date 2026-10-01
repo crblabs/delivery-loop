@@ -71,3 +71,15 @@ def test_a_plugin_run_is_scanned_under_the_config_it_started_with(start_run) -> 
     (record,) = _scan()
     assert record["condition"] == "ok"
     assert record["stage_count"] == 2
+
+
+def test_a_plugin_run_with_an_unreadable_snapshot_needs_a_person(start_run) -> None:
+    # Value: protects=a tampered config snapshot reaches a person instead of being read
+    # under loop.toml; fails_when=_snapshot treats an unreadable file as no snapshot;
+    # why_new=the snapshot tests cover a valid snapshot only; seam=none
+    run, _ = start_run()
+    (run.run_dir / ri.SNAPSHOT_FILE).write_text("{", encoding="utf-8")
+    (record,) = _scan()
+    assert record["condition"] == "config_invalid"
+    assert ss._needs_attention(record)
+    assert sd.decide(record)["action"] != "noop"

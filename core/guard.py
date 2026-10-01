@@ -168,8 +168,9 @@ def _check_edit(call: PreToolCall, run: rs.Run, state: dict) -> PreToolVerdict:
             # A protected directory that holds the whole worktree, such as a
             # repository kept under the harness home, does not lock the
             # worktree's own files: the carve-outs below judge those. A root
-            # equal to the worktree (the plugin's own checkout) stays protected.
-            if inside and _under(worktree, root) and str(worktree) != str(root):
+            # equal to the worktree in any spelling (the plugin's own checkout)
+            # stays protected.
+            if inside and _under(worktree, root) and not _under(root, worktree):
                 continue
             if _under(path, root):
                 return _deny(
@@ -320,9 +321,13 @@ def _current_branch(run: rs.Run) -> str | None:
     return rs.detect_branch(run.worktree)
 
 
-def handle_pre_tool(call: PreToolCall, run: rs.Run) -> PreToolVerdict:
-    """Allow or deny one tool call in an active run's worktree."""
-    _, state = rs.read(run)
+def handle_pre_tool(call: PreToolCall, run: rs.Run, state: dict | None = None) -> PreToolVerdict:
+    """Allow or deny one tool call in an active run's worktree.
+
+    ``state`` is the run's state when the caller has just read it.
+    """
+    if state is None:
+        _, state = rs.read(run)
     if state is None or state.get("status") not in rs.ACTIVE:
         return ALLOW
     if call.kind == "edit":

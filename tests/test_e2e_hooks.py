@@ -51,7 +51,9 @@ def test_a_run_from_start_to_a_guarded_edit(make_repo, tmp_path: Path) -> None:
     assert started.returncode == 0, started.stderr
     assert started.stdout.startswith("Stage 1/5: autoplan")
     assert not (worktree / ".claude").exists(), "start must add no file to the repository"
-    stop = _run([str(ROOT / "hooks/pipeline_stop.py")], _stop(worktree, "thinking"), worktree)
+    stop = _run(
+        [str(ROOT / "hooks/pipeline_hook.py"), "stop"], _stop(worktree, "thinking"), worktree
+    )
     assert stop.returncode == 0, stop.stderr
     assert json.loads(stop.stdout)["decision"] == "block"
     edit = {
@@ -61,7 +63,7 @@ def test_a_run_from_start_to_a_guarded_edit(make_repo, tmp_path: Path) -> None:
         "tool_name": "Write",
         "tool_input": {"file_path": str(worktree / "loop.toml")},
     }
-    guard = _run([str(ROOT / "hooks/pipeline_guard.py")], edit, tmp_path)
+    guard = _run([str(ROOT / "hooks/pipeline_hook.py"), "guard"], edit, tmp_path)
     assert guard.returncode == 0, guard.stderr
     assert json.loads(guard.stdout)["hookSpecificOutput"]["permissionDecision"] == "deny"
     status = _run([str(ROOT / "bin/delivery-loop"), "status"], None, worktree)
@@ -73,22 +75,24 @@ def test_the_no_run_path_loads_nothing_heavy(tmp_path: Path) -> None:
     # checks; fails_when=the no-run path imports the config loader, git or the adapter;
     # why_new=user-scope plugin; seam=subprocess
     payloads = {
-        "pipeline_guard.py": {
+        "guard": {
             "session_id": "s1",
             "cwd": str(tmp_path),
             "hook_event_name": "PreToolUse",
             "tool_name": "Bash",
             "tool_input": {"command": "cat <<'EOF'\n" + "x" * 200_000 + "\nEOF"},
         },
-        "pipeline_stop.py": {"session_id": "s1", "cwd": str(tmp_path), "hook_event_name": "Stop"},
-        "pipeline_prompt.py": {"session_id": "s1", "cwd": str(tmp_path), "prompt": "hello"},
+        "stop": {"session_id": "s1", "cwd": str(tmp_path), "hook_event_name": "Stop"},
+        "prompt": {"session_id": "s1", "cwd": str(tmp_path), "prompt": "hello"},
     }
-    for shim, payload in payloads.items():
-        done = _run(["-X", "importtime", str(ROOT / "hooks" / shim)], payload, tmp_path)
+    for kind, payload in payloads.items():
+        done = _run(
+            ["-X", "importtime", str(ROOT / "hooks/pipeline_hook.py"), kind], payload, tmp_path
+        )
         assert done.returncode == 0 and done.stdout == ""
         loaded = {line.rsplit("|", 1)[-1].strip() for line in done.stderr.splitlines()}
         for heavy in ("core.config", "subprocess", "tomllib", "adapters.claude_code.hooks"):
-            assert heavy not in loaded, (shim, heavy)
+            assert heavy not in loaded, (kind, heavy)
 
 
 def test_a_typed_resume_through_the_prompt_shim(make_repo, tmp_path: Path) -> None:
@@ -98,12 +102,12 @@ def test_a_typed_resume_through_the_prompt_shim(make_repo, tmp_path: Path) -> No
     )
     assert started.returncode == 0, started.stderr
     stop = _run(
-        [str(ROOT / "hooks/pipeline_stop.py")],
+        [str(ROOT / "hooks/pipeline_hook.py"), "stop"],
         _stop(worktree, "ASK x\n<promise>NEEDS HUMAN</promise>"),
         worktree,
     )
     assert "paused this run" in json.loads(stop.stdout)["systemMessage"]
     payload = {"session_id": "s1", "cwd": str(worktree), "prompt": "/delivery-loop:pipeline resume"}
-    done = _run([str(ROOT / "hooks/pipeline_prompt.py")], payload, worktree)
+    done = _run([str(ROOT / "hooks/pipeline_hook.py"), "prompt"], payload, worktree)
     context = json.loads(done.stdout)["hookSpecificOutput"]["additionalContext"]
     assert context.startswith("delivery-loop resume: Stage 1/5")

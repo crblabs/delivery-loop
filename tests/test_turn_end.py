@@ -102,6 +102,32 @@ def test_a_clean_tree_stage_needs_its_work_committed(make_repo, tmp_path: Path, 
     assert verdict.block and verdict.reinject.startswith("Stage 2/2: ship")
 
 
+def test_a_clean_tree_stage_is_not_done_when_git_status_fails(make_repo, tmp_path) -> None:
+    # Value: protects=a clean_tree stage fails closed when the tree cannot be checked;
+    # fails_when=a failed git status reads as clean; why_new=only a clean and a dirty tree
+    # are tested; seam=none
+    worktree = make_repo(tmp_path / "host")
+    run, _ = rs.start(worktree, "CRB-1", _two_stages(), "s1")
+    (worktree / ".git" / "index").write_bytes(b"not an index")
+    verdict = _end(run, DONE)
+    assert verdict.block and "uncommitted changes" in verdict.reinject
+    assert _state(run)["current_stage"] == "implement"
+
+
+def test_a_clean_tree_check_ignores_an_inherited_git_dir(make_repo, tmp_path, monkeypatch) -> None:
+    # Value: protects=clean_tree judges the run's own worktree; fails_when=git status
+    # follows a GIT_DIR the session inherited to another, clean repository;
+    # why_new=maintainability review; seam=none
+    other = make_repo(tmp_path / "other")
+    worktree = make_repo(tmp_path / "host")
+    run, _ = rs.start(worktree, "CRB-1", _two_stages(), "s1")
+    (worktree / "new.py").write_text("x = 1\n", encoding="utf-8")
+    monkeypatch.setenv("GIT_DIR", str(other / ".git"))
+    monkeypatch.setenv("GIT_WORK_TREE", str(other))
+    verdict = _end(run, DONE)
+    assert verdict.block and "uncommitted changes" in verdict.reinject
+
+
 def test_the_last_stage_finishes_the_run_and_drops_the_index(make_repo, tmp_path) -> None:
     worktree = make_repo(tmp_path / "host")
     run, _ = rs.start(worktree, "CRB-1", _two_stages(), "s1")
@@ -150,6 +176,21 @@ def test_a_shell_edit_of_a_carve_out_pauses_the_run(start_run) -> None:
     assert sd.changed_guard_paths(record) == ["loop.toml"]
     assert sd.decide(record)["reason"] == "guard_changed"
     assert "loop.toml" in state["pending_question"]
+
+
+def test_a_guarded_edit_outranks_a_done_token(start_run, tmp_path) -> None:
+    # Value: protects=an agent cannot shell-edit a carve-out and advance in the same turn;
+    # fails_when=the token is read before the guard map is compared; why_new=every guard
+    # test ends its turn without a token; seam=none
+    run, worktree = start_run()
+    plan = tmp_path / "plan.md"
+    plan.write_text("plan", encoding="utf-8")
+    (worktree / "loop.toml").write_text("[harness]\n", encoding="utf-8")
+    verdict = _end(run, f"PLAN: {plan}\n{DONE}")
+    assert verdict.pause_reason == "guard_changed"
+    state = _state(run)
+    assert state["current_stage"] == "autoplan"
+    assert state["plan_path"] is None
 
 
 def test_settings_that_switch_the_hooks_off_pause_the_run(start_run) -> None:

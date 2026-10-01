@@ -18,8 +18,8 @@ from core import run_index as ri
 ROOT = Path(__file__).resolve().parent.parent
 OLD = (
     "core/run_index.py",
-    "hooks/pipeline_stop.py",
-    "hooks/pipeline_guard.py",
+    "adapters/claude_code/bootstrap.py",
+    "hooks/pipeline_hook.py",
     "bin/delivery-loop",
 )
 
@@ -160,6 +160,29 @@ def test_a_long_shell_line_without_the_cli_is_not_lexed(monkeypatch) -> None:
     assert ri.cli_calls("cat <<'EOF'\n" + "x" * 1_000_000 + "\nEOF") == []
     assert ri.git_calls("echo " + "y" * 1_000_000) == []
     assert ri.human_only_command("z" * 1_000_000) is None
+
+
+def test_a_line_that_repeats_the_cli_name_is_checked_in_linear_time() -> None:
+    # Value: protects=the guard answers every shell call well inside the hook timeout;
+    # fails_when=the resume/abort check rescans the line from each mention of the name;
+    # why_new=performance review measured 2.9 s at 48 KB; seam=none
+    import time
+
+    line = "echo " + "delivery-loop x " * 3000
+    started = time.perf_counter()
+    assert ri.human_only_command(line) is None
+    assert ri.human_only_command(line + "; delivery-loop resume") == "resume"
+    assert time.perf_counter() - started < 0.5
+
+
+def test_a_path_that_only_names_the_project_is_not_lexed(monkeypatch) -> None:
+    # Value: protects=shell calls inside a checkout named delivery-loop stay cheap;
+    # fails_when=any mention of the name lexes the whole line; why_new=performance review;
+    # seam=none
+    monkeypatch.setattr(ri, "_segments", lambda command: pytest.fail("lexed"))
+    heredoc = "cat <<'EOF'\n" + "x" * 100_000 + "\nEOF"
+    assert not ri.starts_run("cd /src/delivery-loop-90cd961a && " + heredoc)
+    assert not ri.starts_run("cd /src/delivery-loop/ && " + heredoc)
 
 
 def test_an_unbalanced_quote_does_not_raise() -> None:

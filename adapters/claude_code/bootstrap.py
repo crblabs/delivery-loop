@@ -38,11 +38,7 @@ SESSION_ENV = "CLAUDE_SESSION_ID"
 _MCP_WRITE_RE = re.compile(r"^mcp__.*(write|edit|create|move|rename|delete|patch|replace)", re.I)
 _PATH_FIELDS = ("file_path", "notebook_path", "path", "destination", "target", "new_path")
 # The CLI module run directly, as ``python3 -m`` or by its file.
-_CLI_MODULE_RE = re.compile(
-    r"adapters[./]claude_code[./]cli\b[^\n;&|]*?\b(%s)\b" % "|".join(ri.HUMAN_ONLY)
-)
-_GLOBAL_WITH_VALUE = ("--session",)
-_GLOBAL_FLAGS = ("--args-stdin",)
+_CLI_MODULE_RE = re.compile(r"adapters[./]claude_code[./]cli\b")
 
 
 def payload_of(raw: str) -> dict | None:
@@ -95,29 +91,6 @@ def target_of(payload: dict) -> object:
     return None
 
 
-def split_global(argv: list) -> tuple:
-    """(global options as a dict, the rest) from the CLI's arguments."""
-    options = {}
-    rest = list(argv)
-    while rest and rest[0].startswith("--"):
-        name, _, value = rest[0].partition("=")
-        if name in _GLOBAL_WITH_VALUE:
-            if value:
-                options[name] = value
-                rest = rest[1:]
-            elif len(rest) > 1:
-                options[name] = rest[1]
-                rest = rest[2:]
-            else:
-                rest = rest[1:]
-        elif name in _GLOBAL_FLAGS:
-            options[name] = True
-            rest = rest[1:]
-        else:
-            break
-    return options, rest
-
-
 def human_only_call(tool_name: object, tool_input: object) -> str | None:
     """The subcommand when a tool call would resume or abort a run, else ``None``."""
     if not isinstance(tool_input, dict):
@@ -126,8 +99,7 @@ def human_only_call(tool_name: object, tool_input: object) -> str | None:
         command = tool_input.get("command")
         sub = ri.human_only_command(command)
         if sub is None and isinstance(command, str):
-            match = _CLI_MODULE_RE.search(command)
-            sub = match.group(1) if match else None
+            sub = ri.human_only_after(_CLI_MODULE_RE, command)
         return sub
     if tool_name == "Skill" and isinstance(tool_input.get("skill"), str):
         skill = tool_input["skill"].lstrip("/")
@@ -201,7 +173,10 @@ def old_python_hook(kind: str, payload: dict) -> dict | None:
         if found is None:
             return {"context": "No active delivery-loop run in this worktree."}
         if sub == "abort":
-            return {"context": ri.abort_run(found[0], found[1], "person")}
+            try:
+                return {"context": ri.abort_run(found[0], found[1], "person")}
+            except (ri.LockTimeout, OSError) as exc:
+                return {"context": "delivery-loop could not abort the run: %s" % exc}
         return {"context": ri.old_python_message()}
     found = ri.find_entry(payload.get("cwd"), target_of(payload), payload.get("session_id"))
     if found is None:
@@ -221,15 +196,20 @@ def old_python_hook(kind: str, payload: dict) -> dict | None:
 
 def old_python_cli(argv: list) -> int:
     """``delivery-loop`` on an interpreter older than the floor: abort and status only."""
-    options, rest = split_global(argv)
-    if options.get("--args-stdin"):
+    import argparse
+
+    parser = argparse.ArgumentParser(prog=ri.CLI_NAME, add_help=False, allow_abbrev=False)
+    parser.add_argument("--session")
+    parser.add_argument("--args-stdin", action="store_true")
+    options, rest = parser.parse_known_args(argv)
+    if options.args_stdin:
         # The slash command passes what a person typed on stdin.
         rest = sys.stdin.read().split() + rest
     sub = rest[0] if rest else ""
     if sub not in ("abort", "status"):
         sys.stderr.write(ri.old_python_message() + "\n")
         return 2
-    session = options.get("--session") or os.environ.get(SESSION_ENV)
+    session = options.session or os.environ.get(SESSION_ENV)
     found = ri.find_entry(os.getcwd(), None, session)
     if found is None:
         print("No active delivery-loop run in this worktree.")
@@ -242,7 +222,11 @@ def old_python_cli(argv: list) -> int:
                 "terminal.\n" % COMMAND_NAME
             )
             return 2
-        print(ri.abort_run(key, entry, "terminal"))
+        try:
+            print(ri.abort_run(key, entry, "terminal"))
+        except (ri.LockTimeout, OSError) as exc:
+            sys.stderr.write("delivery-loop could not abort the run: %s\n" % exc)
+            return 2
         return 0
     state = ri.read_json_file(ri.state_file(entry["run_dir"]), ri.STATE_MAX_BYTES)
     if not isinstance(state, dict):

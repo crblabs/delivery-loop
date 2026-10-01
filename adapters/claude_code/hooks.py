@@ -1,8 +1,8 @@
 """Claude Code's hooks, mapped onto ``core.turn_end``, ``core.guard`` and ``core.run_state``.
 
-The plugin's ``hooks/hooks.json`` runs three shims: ``pipeline_stop.py`` on
-``Stop``, ``pipeline_guard.py`` on ``PreToolUse`` and ``pipeline_prompt.py`` on
-``UserPromptSubmit``. Each checks the interpreter, then calls ``run_stop``,
+The plugin's ``hooks/hooks.json`` runs one shim, ``pipeline_hook.py``, as
+``stop`` on ``Stop``, ``guard`` on ``PreToolUse`` and ``prompt`` on
+``UserPromptSubmit``. It checks the interpreter, then calls ``run_stop``,
 ``run_guard`` or ``run_prompt`` here with the raw payload and prints the result
 with ``emit``. This module and ``bootstrap`` together are the only place that
 knows the payload fields and the output shapes:
@@ -153,28 +153,36 @@ def _closed(payload: dict, reason: str) -> HookResult:
 
 
 def _open(payload: dict, key: str, entry: dict):
-    """(run, None), or (None, the result when it cannot be judged)."""
+    """(run, state, None), or (None, None, the result when it cannot be judged)."""
     from core import run_state as rs
 
     state_path = Path(ri.state_file(entry["run_dir"]))
     if not state_path.exists():
         ri.remove_entry(key, entry.get("session_id"))
-        return None, HookResult(
-            stderr=f"delivery-loop: removed a stale index entry for {entry.get('worktree')} "
-            "(its run directory has no state file)."
+        return (
+            None,
+            None,
+            HookResult(
+                stderr=f"delivery-loop: removed a stale index entry for {entry.get('worktree')} "
+                "(its run directory has no state file)."
+            ),
         )
     run = rs.open_run(key, entry)
     condition, state = rs.read(run)
     if condition == "unsupported":
-        return None, _closed(
-            payload,
+        reason = (
             "This run was started by another delivery-loop version. Fix: finish it with that "
-            f"version, or a person types {run.config.abort_command}.",
+            f"version, or a person types {run.config.abort_command}."
         )
-    if state is None:
-        reason = f"delivery-loop: the run's state is {condition}. "
-        return None, _closed(payload, reason + _abort_hint(run.config.abort_command))
-    return run, None
+    elif state is None:
+        reason = f"delivery-loop: the run's state is {condition}. " + _abort_hint(
+            run.config.abort_command
+        )
+    else:
+        return run, state, None
+    hook = "guard" if payload.get("hook_event_name") == "PreToolUse" else "stop"
+    ri.append_event(entry["run_dir"], {"hook": hook, "decision": "error", "reason": condition})
+    return None, None, _closed(payload, reason)
 
 
 def _pause_note(run, reason: str) -> str:
@@ -205,7 +213,7 @@ def run_stop(raw: str) -> HookResult:
     try:
         from core import turn_end as te
 
-        run, early = _open(payload, *found)
+        run, _, early = _open(payload, *found)
         if run is None:
             return early or PASS
         prompt_id = payload.get("prompt_id")
@@ -280,7 +288,7 @@ def _guard(payload: dict) -> HookResult:
         try:
             from core import guard
 
-            run, early = _open(payload, key, entry)
+            run, state, early = _open(payload, key, entry)
             if run is None:
                 if early is not None and early.stdout:
                     return early
@@ -294,7 +302,7 @@ def _guard(payload: dict) -> HookResult:
                 command=command if isinstance(command, str) else None,
                 path=target if isinstance(target, str) else None,
             )
-            verdict = guard.handle_pre_tool(call, run)
+            verdict = guard.handle_pre_tool(call, run, state)
         except Exception as exc:  # noqa: BLE001 - any failure on a run fails closed
             ri.append_event(
                 entry["run_dir"], {"hook": "guard", "decision": "error", "reason": repr(exc)}
@@ -326,5 +334,5 @@ def run_prompt(raw: str) -> HookResult:
 
             text = rs.resume(rs.open_run(*found), "person", _session(payload))
     except Exception as exc:  # noqa: BLE001 - report any failure to the person, change nothing
-        text = f"delivery-loop could not {sub} the run: {exc}"
+        text = f"could not {sub} the run: {exc}"
     return HookResult(stdout=boot.context_json(f"delivery-loop {sub}: " + text))

@@ -46,7 +46,7 @@ from pathlib import Path
 
 from core import run_index as ri
 from core import run_state as rs
-from core.config import LoopConfig
+from core.config import LoopConfig, git_env
 from core.guard_evidence import declared, guard_map
 from core.pipeline_loop_paths import parse_loop_edits_block
 
@@ -94,15 +94,20 @@ def _emitted(message: str, emits: str) -> str | None:
     return None
 
 
+# ``git status`` walks the whole tree, so it gets longer than a one-line query.
+STATUS_TIMEOUT_S = 10
+
+
 def _dirty(worktree: Path) -> bool | None:
     try:
         done = subprocess.run(
             ["git", "status", "--porcelain"],
             cwd=worktree,
+            env=git_env(),
             capture_output=True,
             text=True,
             check=False,
-            timeout=10,
+            timeout=STATUS_TIMEOUT_S,
         )
     except (OSError, subprocess.SubprocessError):
         return None

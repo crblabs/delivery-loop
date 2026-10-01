@@ -106,6 +106,9 @@ def test_an_unreadable_state_fails_closed_once(start_run) -> None:
     assert not again.stdout and again.stderr
     deny = _decision(ch.run_guard(_pre(worktree, "Edit", {"file_path": "a.py"})))
     assert deny["hookSpecificOutput"]["permissionDecision"] == "deny"
+    # Both refusals are in the log the fix points the person to.
+    events = ri.read_events(str(run.run_dir), 10)
+    assert [e["hook"] for e in events if e.get("decision") == "error"] == ["stop", "stop", "guard"]
 
 
 def test_an_unsupported_state_version_names_the_fix(start_run) -> None:
@@ -260,6 +263,17 @@ def test_a_typed_abort_ends_the_run(start_run) -> None:
     text = _context(ch.run_prompt(_prompt(worktree, "/delivery-loop:pipeline abort")))
     assert "Aborted" in text
     assert rs.read(run)[1]["status"] == "failed"
+
+
+def test_a_typed_resume_that_cannot_apply_is_reported_and_changes_nothing(start_run) -> None:
+    # Value: protects=a person typing resume on a running run is told why, and the run is
+    # untouched; fails_when=the RunError escapes the prompt hook or a write happens;
+    # why_new=only the successful prompt paths are tested; seam=none
+    run, worktree = start_run()
+    before = rs.read(run)[1]["revision"]
+    text = _context(ch.run_prompt(_prompt(worktree, "/delivery-loop:pipeline resume")))
+    assert "could not resume the run: nothing to resume" in text
+    assert rs.read(run)[1]["revision"] == before
 
 
 def test_other_prompts_pass_untouched(start_run) -> None:

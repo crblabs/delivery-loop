@@ -31,6 +31,6 @@ The adapter for one harness: Claude Code.
 | `supervisor_transcript.py` | Reads a session's pending question from its transcript (capability 4). |
 
 The plugin's entry points sit at the repository root, where Claude Code looks
-for them: `hooks/hooks.json` with its three shims, `commands/pipeline.md`,
+for them: `hooks/hooks.json` with its one shim, `commands/pipeline.md`,
 `skills/pipeline/` and `bin/delivery-loop`. Which hook serves which capability
 is recorded in `docs/adapter-contract.md`.

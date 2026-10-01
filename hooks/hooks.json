@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/pipeline_stop.py\"",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/pipeline_hook.py\" stop",
             "timeout": 60
           }
         ]
@@ -18,7 +18,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/pipeline_guard.py\"",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/pipeline_hook.py\" guard",
             "timeout": 30
           }
         ]
@@ -29,7 +29,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/pipeline_prompt.py\"",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/pipeline_hook.py\" prompt",
             "timeout": 30
           }
         ]

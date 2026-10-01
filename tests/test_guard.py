@@ -72,6 +72,18 @@ def test_a_symlink_cannot_lead_an_edit_to_a_carve_out(start_run) -> None:
     assert not _edit(run, "innocent.toml").allow
 
 
+def test_a_symlink_cannot_lead_an_edit_into_the_state_home(start_run) -> None:
+    # Value: protects=a link inside the worktree cannot reach the run's own state;
+    # fails_when=the protected roots are checked against the path as written only;
+    # why_new=the symlink test above reaches a carve-out through the relative check, never a
+    # protected root; seam=none
+    run, worktree = start_run()
+    (worktree / "notes").symlink_to(ri.state_home(), target_is_directory=True)
+    verdict = _edit(run, f"notes/index/{run.key}")
+    assert not verdict.allow
+    assert "holds the loop's own rules or state" in verdict.reason
+
+
 def test_the_loops_own_state_and_the_harness_directory_are_denied(start_run) -> None:
     run, _ = start_run()
     for target in (
@@ -272,4 +284,15 @@ def test_a_worktree_that_is_the_plugin_itself_cannot_edit_the_running_plugin(
     # the worktree; why_new=pairs with the ISSUE-001 fix; seam=none
     run, worktree = start_run()
     monkeypatch.setattr(rs, "PLUGIN_ROOT", worktree)
-    assert not _edit(run, "hooks/pipeline_guard.py").allow
+    assert not _edit(run, "hooks/pipeline_hook.py").allow
+
+
+def test_the_plugin_checkout_spelled_in_another_case_stays_protected(
+    start_run, monkeypatch
+) -> None:
+    # Value: protects=on a case-insensitive disk, cd into ~/Code/x while the plugin loads
+    # from ~/code/x keeps the hooks locked; fails_when=the ISSUE-001 skip compares the
+    # spellings case-sensitively; why_new=security review; seam=none
+    run, worktree = start_run()
+    monkeypatch.setattr(rs, "PLUGIN_ROOT", Path(str(worktree).upper()))
+    assert not _edit(run, "hooks/pipeline_hook.py").allow

@@ -191,10 +191,10 @@ whose entry points sit at the repository root.
 
 | # | Capability | How Claude Code provides it |
 |---|---|---|
-| 1 | Blocking turn end | The `Stop` hook (`hooks/pipeline_stop.py`). A block prints `{"decision": "block", "reason": <reinject>}`; `stop_hook_active` in the payload marks a turn end that follows a block. |
-| 2 | Pre-tool denial | The `PreToolUse` hook on `Edit`, `Write`, `MultiEdit`, `NotebookEdit`, `Bash`, `Skill` and MCP tools (`hooks/pipeline_guard.py`). A denial prints a `hookSpecificOutput` with `permissionDecision: "deny"`. |
+| 1 | Blocking turn end | The `Stop` hook (`hooks/pipeline_hook.py stop`). A block prints `{"decision": "block", "reason": <reinject>}`; `stop_hook_active` in the payload marks a turn end that follows a block. |
+| 2 | Pre-tool denial | The `PreToolUse` hook on `Edit`, `Write`, `MultiEdit`, `NotebookEdit`, `Bash`, `Skill` and MCP tools (`hooks/pipeline_hook.py guard`). A denial prints a `hookSpecificOutput` with `permissionDecision: "deny"`. |
 | 3 | Session identity | `session_id` in every payload; the slash command passes `${CLAUDE_SESSION_ID}` to `delivery-loop start`. |
-| - | A person's own action | The `UserPromptSubmit` hook (`hooks/pipeline_prompt.py`) fires only for what a person types, so a typed resume or abort is applied there, with the session the harness names. |
+| - | A person's own action | The `UserPromptSubmit` hook (`hooks/pipeline_hook.py prompt`) fires only for what a person types, so a typed resume or abort is applied there, with the session the harness names. |
 | 4 | Pending question | `supervisor_transcript.py` reads the session transcript. Supported. |
 
 In the code, core's call types are `core.turn_end.TurnEnd` and

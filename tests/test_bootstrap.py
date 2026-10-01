@@ -89,19 +89,6 @@ def test_a_typed_resume_or_abort_is_recognised(prompt, sub) -> None:
     assert boot.prompt_command(prompt) == sub
 
 
-@pytest.mark.parametrize(
-    ("argv", "options", "rest"),
-    [
-        (["--session", "s1", "abort"], {"--session": "s1"}, ["abort"]),
-        (["--session=s1", "status"], {"--session": "s1"}, ["status"]),
-        (["--args-stdin", "--session", "s", "x"], {"--args-stdin": True, "--session": "s"}, ["x"]),
-        (["abort"], {}, ["abort"]),
-    ],
-)
-def test_the_global_options_are_split_off(argv, options, rest) -> None:
-    assert boot.split_global(argv) == (options, rest)
-
-
 def test_old_python_aborts_from_a_typed_prompt(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -121,6 +108,29 @@ def test_old_python_aborts_from_a_typed_prompt(
     assert "Aborted" in abort["context"]
     assert json.loads((run_dir / "state.json").read_text())["status"] == "failed"
     assert boot.old_python_hook("prompt", {**payload, "prompt": "hello"}) is None
+
+
+def test_old_python_reports_an_abort_that_cannot_take_the_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    # Value: protects=a person on an old python3 is told why an abort did not happen;
+    # fails_when=a held lock surfaces as a traceback; why_new=maintainability review;
+    # seam=none
+    (tmp_path / ".git").mkdir()
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "state.json").write_text('{"status": "running"}', encoding="utf-8")
+    ri.write_entry(ri.worktree_key(str(tmp_path)), str(run_dir), str(tmp_path), "s1")
+    monkeypatch.setattr(sys, "version_info", (3, 9, 0, "final", 0))
+    monkeypatch.setattr(
+        ri, "abort_run", lambda *a, **k: (_ for _ in ()).throw(ri.LockTimeout("held"))
+    )
+    payload = {"cwd": str(tmp_path), "session_id": "s1", "prompt": "/delivery-loop:pipeline abort"}
+    assert "could not abort the run: held" in boot.old_python_hook("prompt", payload)["context"]
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(ri, "in_terminal", lambda: True)
+    assert boot.old_python_cli(["--session=s1", "abort"]) == 2
+    assert "could not abort the run: held" in capsys.readouterr().err
 
 
 def test_old_python_status_through_the_slash_form(tmp_path, monkeypatch, capsys) -> None:

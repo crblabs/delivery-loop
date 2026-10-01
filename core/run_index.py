@@ -76,10 +76,9 @@ _SEPARATORS = (";", "&&", "||", "|", "&", "\n")
 # The name counts as the CLI when a space follows it, or as the plugin's own
 # slash command (``<name>:pipeline``), so a path or a commit message that only
 # mentions the project does not match.
-_HUMAN_ONLY_RE = re.compile(
-    r"(?<![\w.-])%s(?:(?=\s)|:pipeline\b)[^\n;&|]*?\b(%s)\b"
-    % (re.escape(CLI_NAME), "|".join(HUMAN_ONLY))
-)
+_HUMAN_ONLY_PREFIX_RE = re.compile(r"(?<![\w.-])%s(?:(?=\s)|:pipeline\b)" % re.escape(CLI_NAME))
+_HUMAN_ONLY_WORD_RE = re.compile(r"\b(%s)\b" % "|".join(HUMAN_ONLY))
+_SEGMENT_END_RE = re.compile(r"[\n;&|]")
 _WRAPPERS = ("command", "exec", "env", "nohup", "time")
 _KEY_LEN = 12
 
@@ -343,13 +342,24 @@ def _strip_prefix(words: list[str]) -> list[str]:
     return rest
 
 
+_PROGRAM_WORDS = {}
+
+
+def _program_word(program: str) -> "re.Pattern":
+    """The program's name as a word on its own: not part of a longer name or a
+    directory in a path, which names it without running it."""
+    if program not in _PROGRAM_WORDS:
+        _PROGRAM_WORDS[program] = re.compile(r"(?<![\w.-])%s(?![\w./-])" % re.escape(program))
+    return _PROGRAM_WORDS[program]
+
+
 def _calls(command: str, program: str) -> list[list[str]]:
     """Every invocation of ``program`` in a shell line, as its arguments.
 
     The line is only lexed when it names the program: every shell call in every
     session passes through here, and a long heredoc is slow to lex.
     """
-    if program not in command:
+    if program not in command or not _program_word(program).search(command):
         return []
     calls = []
     for segment in _segments(command):
@@ -378,8 +388,25 @@ def human_only_command(command: object) -> str | None:
     """
     if not isinstance(command, str) or CLI_NAME not in command:
         return None
-    match = _HUMAN_ONLY_RE.search(command)
-    return match.group(1) if match else None
+    return human_only_after(_HUMAN_ONLY_PREFIX_RE, command)
+
+
+def human_only_after(prefix: "re.Pattern", command: str) -> str | None:
+    """The first resume or abort after a ``prefix`` match, in the same simple command.
+
+    Each simple command is searched once, from its first match, so a line that
+    repeats the prefix many times stays linear.
+    """
+    searched_to = -1
+    for match in prefix.finditer(command):
+        if match.end() <= searched_to:
+            continue
+        stop = _SEGMENT_END_RE.search(command, match.end())
+        searched_to = stop.start() if stop else len(command)
+        word = _HUMAN_ONLY_WORD_RE.search(command, match.end(), searched_to)
+        if word:
+            return word.group(1)
+    return None
 
 
 def starts_run(command: object) -> bool:

@@ -181,6 +181,10 @@ entry disappeared (`index_missing`). The rest is in `TODOS.md`.
   the next section.
 - **`python3` is too old.** Put 3.11 or later first on `PATH`, or end the run
   with `delivery-loop abort`, which works on any `python3`.
+- **The loop is in the way and you need it gone now.** Type
+  `/delivery-loop:pipeline abort` to end the run, then `/plugin disable
+  delivery-loop` to turn the hooks off in every session. `/plugin enable
+  delivery-loop` brings them back.
 
 ## Moving from the in-repo install
 
@@ -261,7 +265,7 @@ fails if a name does not resolve to a callable `main`.
 | `core/` | The stage machine and everything harness-neutral. |
 | `adapters/claude_code/` | The adapter for one harness: its hooks, CLI and transcript reader. |
 | `.claude-plugin/` | The plugin manifest and the `crblabs` marketplace that lists it. |
-| `hooks/` | The plugin's hook declarations and the two hook entry points. |
+| `hooks/` | The plugin's hook declarations and their one entry point, `pipeline_hook.py`. |
 | `commands/` | The `/delivery-loop:pipeline` slash command. |
 | `skills/pipeline/` | The stage skill and the default stage prompts. |
 | `bin/` | `delivery-loop`, which the plugin puts on the agent's `PATH`. |
