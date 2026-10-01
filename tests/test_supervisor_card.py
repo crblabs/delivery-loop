@@ -116,7 +116,7 @@ def test_a_stale_paused_reason_does_not_outrank_a_live_run() -> None:
 def test_failed_run_card_never_says_resume_is_automatic() -> None:
     card = sc.render(_base(status="failed", paused_reason="cap_total"))
     assert "ASK   Run failed (cap_total). Recover?" in card
-    assert "1. Fix the cause, then /pipeline resume" in card
+    assert "1. Fix the cause, then /delivery-loop:pipeline resume" in card
     assert card.endswith("REPLY resume | abort")
 
 

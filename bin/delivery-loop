@@ -1,0 +1,23 @@
+#!/usr/bin/env python3
+"""The delivery loop's control CLI: start, status, resume, abort, doctor.
+
+The plugin puts this directory on the agent's PATH, so the agent and the
+plugin's slash command call it by name. `abort` and `status` still work on a
+python3 older than the 3.11 floor, so a run can always be ended. Python 3.8 must
+still parse this file.
+"""
+
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
+
+from adapters.claude_code import bootstrap as boot  # noqa: E402
+from core import run_index as ri  # noqa: E402
+
+if __name__ == "__main__":
+    if ri.old_python():
+        sys.exit(boot.old_python_cli(sys.argv[1:]))
+    from adapters.claude_code.cli import main
+
+    sys.exit(main())

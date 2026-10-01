@@ -23,6 +23,10 @@ The stage prompts: the text the loop gives a coding agent at each stage.
   to the configuration key; `loop.toml` holds the value.
 - Logic. A prompt is text. Decisions are `core/`.
 
-## Note
+## Where the prompts are
 
-The prompt text has not moved here yet.
+The default prompts ship with the Claude Code plugin, in
+`skills/pipeline/stages/<name>.md` at the repository root, because a plugin can
+only read files inside its own directory. They follow the rules above. A host
+repository overrides one by putting its own file under its `stage_target`
+(`.claude/skills/pipeline/stages/` by default), which the loop reads first.

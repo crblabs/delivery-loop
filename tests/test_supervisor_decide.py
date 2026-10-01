@@ -57,7 +57,7 @@ def test_notify_only_collapses_auto_to_escalate():
 def test_carveout_never_auto_accepts_even_when_allowlisted():
     # A carve-out enforcement file must escalate even if the operator allowlists
     # it, so the supervisor cannot bypass the boundary the hook enforces.
-    carveout = ".claude/hooks/pipeline_stop.py"
+    carveout = ".claude/settings.local.json"
     record = {
         "condition": "ok",
         "status": "awaiting_human",
@@ -113,7 +113,7 @@ def test_irregular_or_missing_guard_value_escalates(value):
 def test_carveout_alias_path_escalates():
     # A non-canonical spelling of a carve-out file must still escalate: both the
     # carve-out and allowlist checks run on one normalized form.
-    alias = ".claude/hooks/./pipeline_stop.py"
+    alias = ".claude/./settings.local.json"
     record = {
         "condition": "ok",
         "status": "awaiting_human",
@@ -122,7 +122,7 @@ def test_carveout_alias_path_escalates():
         "guard_pending": {alias: "b"},
     }
     assert (
-        sd.decide(record, [".claude/hooks/pipeline_stop.py"], notify_only=False)["action"]
+        sd.decide(record, [".claude/settings.local.json"], notify_only=False)["action"]
         == "escalate"
     )
     assert sd.decide(record, [alias], notify_only=False)["action"] == "escalate"

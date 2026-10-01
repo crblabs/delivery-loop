@@ -40,11 +40,10 @@ it, hands core a `TurnEnd`, and returns core's `TurnEndVerdict` to the harness.
 ```python
 class TurnEnd(TypedDict):
     session_id: SessionId
-    # True when this turn end was itself produced by a previous block, so the
-    # adapter can avoid an unbounded block loop.
-    reentrant: bool
-    # Where the harness keeps the turn record, when it exposes one.
-    transcript_path: Path | None
+    # The message the turn ended on. The adapter reads it from the harness,
+    # from the event itself or the turn record, so core never parses a
+    # transcript.
+    message: str | None
 
 class TurnEndVerdict(TypedDict):
     # False lets the turn end. True holds the session open.
@@ -62,6 +61,9 @@ What core exposes:
 ```python
 def handle_turn_end(event: TurnEnd, state_path: Path) -> TurnEndVerdict: ...
 ```
+
+A block cannot loop without end: core bounds the blocks in one stage by the
+stage's attempts, and pauses the run when they run out.
 
 What the adapter must do with the verdict:
 
@@ -182,10 +184,36 @@ belongs to. The edit guard classifies repository paths only, so it does not
 see the state file. A guard that accepts absolute paths must also refuse every
 path under the state root.
 
+## Claude Code
+
+`adapters/claude_code/` is the one adapter. It ships as a Claude Code plugin
+whose entry points sit at the repository root.
+
+| # | Capability | How Claude Code provides it |
+|---|---|---|
+| 1 | Blocking turn end | The `Stop` hook (`hooks/pipeline_stop.py`). A block prints `{"decision": "block", "reason": <reinject>}`; `stop_hook_active` in the payload marks a turn end that follows a block. |
+| 2 | Pre-tool denial | The `PreToolUse` hook on `Edit`, `Write`, `MultiEdit`, `NotebookEdit`, `Bash`, `Skill` and MCP tools (`hooks/pipeline_guard.py`). A denial prints a `hookSpecificOutput` with `permissionDecision: "deny"`. |
+| 3 | Session identity | `session_id` in every payload; the slash command passes `${CLAUDE_SESSION_ID}` to `delivery-loop start`. |
+| - | A person's own action | The `UserPromptSubmit` hook (`hooks/pipeline_prompt.py`) fires only for what a person types, so a typed resume or abort is applied there, with the session the harness names. |
+| 4 | Pending question | `supervisor_transcript.py` reads the session transcript. Supported. |
+
+In the code, core's call types are `core.turn_end.TurnEnd` and
+`core.guard.PreToolCall`, and a run is found through the run index
+(`core.run_index`) rather than passed a state path.
+
+## Settled
+
+- **The error path.** A payload that does not parse fails open: with no
+  readable `cwd` there is no run to protect. A run whose state cannot be read
+  fails closed: the guard denies, and the Stop hook blocks once per turn, never
+  when the turn end follows a block of ours, so it cannot loop. An index entry
+  whose state file is gone is stale: it is removed and the call passes.
+- **`reinject` while blocking.** Every block carries text: the stage to do, or
+  why the stage is not finished.
+- **The guard hash.** Core keeps it. The adapter never sees the guard map.
+
 ## Unsettled
 
-- Whether `reinject` may be `None` while `block` is True.
-- Whether a session identity must survive a harness restart.
-- Whether the guard hash is returned to the adapter at all, or kept entirely
-  inside core.
-- The error path: what an adapter returns when a harness payload will not parse.
+- Whether a session identity must survive a harness restart. A run bound to a
+  session that ends is driven again only after a person resumes it from a new
+  session, which binds that session.

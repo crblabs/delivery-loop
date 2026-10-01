@@ -21,8 +21,16 @@ The adapter for one harness: Claude Code.
 - Prompt text. That is `prompts/`.
 - Per-repo values. Those are `loop.toml`.
 
-## Note
+## What is here
 
-The adapter code has not moved here yet. Which of the four capabilities this
-harness satisfies in full, and by which hooks, is recorded in
-`docs/adapter-contract.md`. Parts of that mapping are unsettled.
+| Module | Does |
+|---|---|
+| `hooks.py` | Maps the `Stop`, `PreToolUse` and `UserPromptSubmit` payloads to `core.turn_end`, `core.guard` and `core.run_state`, and their verdicts back to Claude Code. A typed resume or abort is applied in `run_prompt`. |
+| `bootstrap.py` | What the hook shims and the CLI do before anything needs the 3.11 floor: the no-run fast path, the resume and abort check on Bash and Skill calls, and the old-Python paths. Parses on Python 3.8. |
+| `cli.py` | `delivery-loop`: start, status, resume, abort, doctor. |
+| `supervisor_transcript.py` | Reads a session's pending question from its transcript (capability 4). |
+
+The plugin's entry points sit at the repository root, where Claude Code looks
+for them: `hooks/hooks.json` with its three shims, `commands/pipeline.md`,
+`skills/pipeline/` and `bin/delivery-loop`. Which hook serves which capability
+is recorded in `docs/adapter-contract.md`.

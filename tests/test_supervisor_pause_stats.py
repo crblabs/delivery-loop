@@ -10,7 +10,7 @@ from __future__ import annotations
 from core import supervisor_pause_stats as sps
 
 LOOP = ".claude/skills/pipeline/stages/ship.md"
-CARVEOUT = ".claude/hooks/pipeline_stop.py"
+CARVEOUT = ".claude/settings.local.json"
 
 
 def _guard(pending_value, path=LOOP, baseline_value="aaa"):

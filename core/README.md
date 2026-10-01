@@ -102,7 +102,12 @@ that configured nothing still gets values that fit it.
   `loop.toml` or the user file, read through the configuration seam.
 - Tracker vendor specifics beyond the one write path named above.
 
-## Note
+## What is here
 
-The code has not moved here yet. This directory describes the boundary that the
-lift-out will have to respect.
+The supervisor (`supervisor_*`, `card_shape`), the configuration seam
+(`config`), loop-path classification (`pipeline_loop_paths`), and the run itself:
+`run_index` (how a hook finds a run, and `abort`), `run_state` (the one writer of
+the state file), `turn_end` (capability 1), `guard` (capability 2) and
+`guard_evidence` (the guard map hashed at every turn end).
+`tests/test_harness_neutral.py` holds every module here except `config.py` to
+the rule above.

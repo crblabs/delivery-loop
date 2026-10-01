@@ -1,0 +1,15 @@
+{
+  "name": "crblabs",
+  "owner": {
+    "name": "crblabs",
+    "url": "https://github.com/crblabs"
+  },
+  "description": "crblabs plugins for Claude Code: the delivery loop.",
+  "plugins": [
+    {
+      "name": "delivery-loop",
+      "source": "./",
+      "description": "Drive one coding task through declared stages without a person in the seat."
+    }
+  ]
+}

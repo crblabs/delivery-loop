@@ -24,5 +24,5 @@ follows.
 |---|---|
 | `adapter-contract.md` | Writing or reviewing a harness adapter. |
 
-The operator runbooks have not been written here yet. They exist alongside the
-code that has not moved, and will follow it.
+The operator runbook is in the repository README, under "Runbook" and "What
+the guard covers", next to the install steps a person reads first.

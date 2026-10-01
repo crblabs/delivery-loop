@@ -82,15 +82,13 @@ name = "{slug}-ledger.local.jsonl"
 # The enforcement files no declaration may ever authorize. Keep this list
 # short and exact: every entry is a file the loop refuses to let a run edit
 # while it is running. The entries you write here are added to the built-in
-# list. You cannot remove a built-in entry.
+# list. You cannot remove a built-in entry. The hooks are not here: they ship
+# in the plugin, outside every worktree. The two settings files are written
+# under .claude, not {state_dir}, because Claude Code reads them there and
+# either one can switch the plugin's hooks off.
 carve_outs = [
-    "{state_dir}/settings.json",
-    "{state_dir}/settings.local.json",
-    "{state_dir}/hooks/pipeline_guard.py",
-    "{state_dir}/hooks/pipeline_stop.py",
-    "{state_dir}/hooks/pipeline-guard",
-    "{state_dir}/hooks/pipeline-stop",
-    "{state_dir}/hooks/pipeline_loop_paths.py",
+    ".claude/settings.json",
+    ".claude/settings.local.json",
     "loop.toml",
     ".git",
 ]
@@ -101,8 +99,17 @@ carve_out_prefixes = [".git/"]
 
 # The region a declaration may name at all, by prefix and exactly. A path
 # outside it is rejected before the carve-out is even consulted.
-prefixes = ["{state_dir}/hooks/", "{state_dir}/skills/pipeline/"]
-exact = ["{state_dir}/settings.json"]
+# A host's own stage prompts live under the prefix and override the plugin's.
+prefixes = ["{state_dir}/skills/pipeline/"]
+exact = []
+
+# Files that are not carve-outs but whose change during a run pauses it. The
+# default is an in-repo copy of the old hooks, which would drive the run a
+# second time. Entries add to the built-in list, as for carve_outs.
+guard_watch = [
+    "{state_dir}/hooks/pipeline_stop.py",
+    "{state_dir}/hooks/pipeline_guard.py",
+]
 
 # The shorthand a declaration may use for a stage prompt, and what it expands
 # to. `stages/ship.md` is the same declaration as the full path.
@@ -113,8 +120,8 @@ stage_target = "{state_dir}/skills/pipeline/stages/"
 [commands]
 # The operator commands a decision card quotes, in the host harness's own
 # spelling. A card tells a person what to type, so these must be real.
-resume = "/pipeline resume"
-abort = "/pipeline abort"
+resume = "/delivery-loop:pipeline resume"
+abort = "/delivery-loop:pipeline abort"
 
 # The command a stage invokes is not here. It is the `command` key of that
 # stage under [[stages]] below, so a stage carries its whole contract in one

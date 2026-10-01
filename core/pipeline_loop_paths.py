@@ -3,14 +3,14 @@
 
 This is the ONE definition of which repo-relative paths a run may edit while it
 is active, so the edit guard, the turn-end routine and the qa route never drift
-on the meaning of "authorized". Both hooks import it rather than each holding a
-copy.
+on the meaning of "authorized". The guard and the turn end import it rather
+than each holding a copy.
 
 Three things live here:
 
   * The carve-out: the enforcement files a declaration can NEVER authorize (the
-    two hooks, their shims, this module itself, the two settings files,
-    loop.toml and the worktree's .git pointer). The run state is not in the
+    two project settings files, loop.toml and the worktree's .git pointer). The
+    hooks and this module ship in the plugin, outside every worktree. The run state is not in the
     repository, so it is not listed. A config file can only add to the
     carve-out: the built-in entries stay in force under the default state
     directory whatever a file sets. It is checked AFTER the allow-list and always

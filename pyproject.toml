@@ -2,7 +2,7 @@
 name = "delivery-loop"
 version = "0.1.0"
 description = "A harness-neutral delivery loop and the supervisor that watches it"
-requires-python = ">=3.13"
+requires-python = ">=3.11"
 dependencies = []
 
 [project.scripts]
@@ -32,10 +32,19 @@ testpaths = ["tests"]
 
 [tool.ruff]
 line-length = 100
-target-version = "py313"
+target-version = "py311"
 # Ruff formats fenced Python inside markdown too, and the contract docs are
 # prose with illustrative sketches, not code to be reformatted.
 extend-exclude = ["*.md"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.ruff.lint.per-file-ignores]
+# These run on any python3 a machine ships, down to 3.8, so a person whose
+# interpreter changed under a run can still end it. pyupgrade would rewrite
+# them for the 3.11 floor; tests/test_run_index.py parses them as 3.8.
+"core/run_index.py" = ["UP"]
+"adapters/claude_code/bootstrap.py" = ["UP"]
+"hooks/*.py" = ["UP"]
+"bin/*" = ["UP"]
