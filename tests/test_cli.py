@@ -60,8 +60,9 @@ def test_an_unbound_start_outside_a_terminal_is_refused(
     assert cli.main(["start", "CRB-1"]) == 2
     assert "could not tell which Claude Code session" in capsys.readouterr().err
     assert rs.find(str(worktree)) is None
-    monkeypatch.setattr(ri, "in_terminal", lambda: True)
-    assert cli.main(["start", "CRB-1"]) == 0
+    # The slash command still starts when the harness leaves its session empty.
+    monkeypatch.setattr("sys.stdin", io.StringIO("start CRB-1\n"))
+    assert cli.main(["--session", "", "--args-stdin"]) == 0
 
 
 def test_start_refuses_a_bad_config(make_repo, tmp_path: Path, monkeypatch, capsys) -> None:

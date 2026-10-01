@@ -96,7 +96,10 @@ def cmd_start(args: argparse.Namespace) -> int:
     # session given as an argument, which any caller can type.
     intent = ri.take_intent(ri.worktree_key(root)) if root is not None else None
     session = intent or _session(args)
-    if session is None and not ri.in_terminal():
+    # The slash command names its session through ${CLAUDE_SESSION_ID}; if a
+    # harness leaves that empty, the run still starts and binds at the first turn
+    # end, as before.
+    if session is None and not ri.in_terminal() and not args.args_stdin:
         # Unbound, the run would go to whichever session in this worktree ends a
         # turn first, not necessarily the one that started it.
         return _fail(

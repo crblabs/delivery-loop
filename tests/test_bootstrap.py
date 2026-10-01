@@ -60,6 +60,13 @@ def test_every_route_to_resume_or_abort_is_recognised(tool, tool_input, sub) -> 
         ("mcp__plugin_github_github__merge_pull_request", "publish"),
         ("mcp__git__git_commit", "other"),
         ("mcp__github__get_file_contents", "other"),
+        ("mcp__github__list_branches", "other"),
+        ("mcp__github__get_pull_request", "other"),
+        ("mcp__github__list_commits", "other"),
+        ("mcp__github__get_latest_release", "other"),
+        ("mcp__plugin_github_github__pull_request_read", "other"),
+        ("mcp__plugin_github_github__pull_request_write", "publish"),
+        ("mcp__github__create_pull_request", "publish"),
         ("Read", "other"),
     ],
 )

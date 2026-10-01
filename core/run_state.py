@@ -48,7 +48,6 @@ from core.config import (
     to_dict,
 )
 from core.guard_evidence import config_hash, guard_map
-from core.pipeline_loop_paths import parse_loop_edits_block
 
 PLUGIN_ROOT = Path(__file__).resolve().parent.parent
 STAGES_DIR = PLUGIN_ROOT / PLUGIN_STAGES_DIR
@@ -410,12 +409,14 @@ def read_plan(path: Path) -> str | None:
     return data.decode("utf-8", errors="replace")
 
 
-def _approve_plan(run: Run, state: dict) -> None:
-    """At a gate, unlock the loop files the plan declares as it reads now."""
-    plan = state.get("plan_path")
-    text = read_plan(Path(plan)) if plan else None
-    state["declared_loop_edits"] = parse_loop_edits_block(text, run.config) if text else []
-    state.pop("pending_loop_edits", None)
+def _approve_plan(state: dict) -> None:
+    """At the plan's gate, unlock the loop files the gate card listed.
+
+    The snapshot taken when the plan was read, not the file as it reads now:
+    the plan lives outside the worktree, where the agent can still edit it, and
+    the person approves what the card showed.
+    """
+    state["declared_loop_edits"] = state.pop("pending_loop_edits")
 
 
 def resume(run: Run, by: str, session_id: str | None = None) -> str:
@@ -448,8 +449,8 @@ def resume(run: Run, by: str, session_id: str | None = None) -> str:
         ):
             state["guard_baseline"] = state["guard_pending"]
             state["guard_files_seen"].append(state["guard_pending"])
-        if state.get("paused_reason") == "gate":
-            _approve_plan(run, state)
+        if state.get("paused_reason") == "gate" and "pending_loop_edits" in state:
+            _approve_plan(state)
         state["guard_pending"] = None
         state["status"] = "running"
         state["attempts"][state["current_stage"]] = 0

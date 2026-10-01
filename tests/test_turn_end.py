@@ -86,20 +86,40 @@ def test_a_gated_stage_pauses_after_it_is_done(start_run, tmp_path: Path) -> Non
 
 def test_a_plan_unlocks_nothing_until_the_gate_is_approved(start_run, tmp_path) -> None:
     # Value: protects=a person approves the loop files a plan unlocks before the agent
-    # can edit them, and approves the plan as it reads at resume; fails_when=the unlock
-    # list is applied at the gate pause or kept from an earlier plan text;
+    # can edit them, and exactly the ones the card listed; fails_when=the unlock list is
+    # applied at the gate pause, or read again from a plan the agent edited since;
     # why_new=red-team review; seam=none
     run, worktree = start_run()
     plan = tmp_path / "plan.md"
     plan.write_text("```loop-edits\nstages/qa.md\n```\n", encoding="utf-8")
     _end(run, f"PLAN: {plan}\n{DONE}")
-    target = str(worktree / ".claude/skills/pipeline/stages/qa.md")
-    call = guard.PreToolCall("s1", "edit", "Write", str(worktree), None, target)
-    assert not guard.handle_pre_tool(call, run).allow
-    plan.write_text("Revised: no loop files.\n", encoding="utf-8")
+    qa = str(worktree / ".claude/skills/pipeline/stages/qa.md")
+    review = str(worktree / ".claude/skills/pipeline/stages/review.md")
+
+    def write(path: str) -> bool:
+        call = guard.PreToolCall("s1", "edit", "Write", str(worktree), None, path)
+        return guard.handle_pre_tool(call, run).allow
+
+    assert not write(qa)
+    plan.write_text("```loop-edits\nstages/qa.md\nstages/review.md\n```\n", encoding="utf-8")
+    rs.resume(run, "person")
+    assert write(qa) and not write(review)
+
+
+def test_a_later_gate_does_not_read_the_plan_again(start_run, tmp_path) -> None:
+    # Value: protects=approving the review gate unlocks nothing new; fails_when=every gate
+    # resume re-reads a plan file the agent can edit; why_new=cycle-2 review; seam=none
+    run, worktree = start_run()
+    plan = tmp_path / "plan.md"
+    plan.write_text("No loop files.\n", encoding="utf-8")
+    _end(run, f"PLAN: {plan}\n{DONE}")
+    rs.resume(run, "person")
+    plan.write_text("```loop-edits\nstages/qa.md\n```\n", encoding="utf-8")
+    while _state(run)["status"] == "running":
+        _end(run, DONE)
+    assert _state(run)["paused_reason"] == "gate"
     rs.resume(run, "person")
     assert _state(run)["declared_loop_edits"] == []
-    assert not guard.handle_pre_tool(call, run).allow
 
 
 def test_a_pause_keeps_the_card_as_the_pending_question(start_run) -> None:
@@ -186,6 +206,21 @@ def test_another_session_is_told_once_how_to_adopt_the_run(start_run) -> None:
     note = _end(run, "hello", session="after-clear").note
     assert note and "/delivery-loop:pipeline resume" in note
     assert _end(run, "hello", session="after-clear").note is None
+
+
+def test_a_busy_lock_never_blocks_a_session_that_does_not_drive_the_run(
+    start_run, monkeypatch
+) -> None:
+    # Value: protects=another session's turn is never blocked by the adoption note;
+    # fails_when=a held lock on the note's write fails the bystander closed;
+    # why_new=cycle-2 review; seam=none
+    run, _ = start_run()
+
+    def busy(*args, **kwargs):
+        raise ri.LockTimeout("held")
+
+    monkeypatch.setattr(rs, "update", busy)
+    assert _end(run, "hello", session="other") == te.PASS
 
 
 def test_an_unbound_run_binds_the_first_session_that_ends_a_turn(start_run) -> None:

@@ -77,7 +77,8 @@ class PreToolCall:
     """One tool call, in the loop's terms. ``kind`` is ``edit`` for a tool that
     writes ``path``, ``shell`` for one that runs ``command``, ``publish`` for one
     that writes to the remote repository itself, ``other`` otherwise;
-    ``tool_name`` is the harness's own name, for messages only."""
+    ``tool_name`` is the harness's own name, for messages only. ``branch`` is the
+    branch a ``publish`` call names, if it names one."""
 
     session_id: str | None
     kind: str
@@ -85,6 +86,7 @@ class PreToolCall:
     cwd: str | None
     command: str | None
     path: str | None
+    branch: str | None = None
 
 
 @dataclass(frozen=True)
@@ -254,6 +256,8 @@ def _forbidden_flags(flags: list[str]) -> list[str]:
 
 
 _MERGE_RE = re.compile(r"merge", re.I)
+# A code host's write of repository content, which lands on a branch.
+_CONTENT_WRITE_RE = re.compile(r"file|commit|push", re.I)
 # The REST endpoints that merge: a pull request's /merge, a repository's /merges.
 _MERGE_PATH_RE = re.compile(r"/merges?(?:$|[/?])")
 
@@ -263,21 +267,35 @@ def _publishing(run: rs.Run, state: dict) -> bool:
     return stage.emits.split(":", 1)[0].strip().upper() == "PR"
 
 
-def _check_publish(tool_name: str, run: rs.Run, state: dict) -> PreToolVerdict:
-    """A tool that writes to the remote directly: only the publishing stage, and
-    never a merge, which is a person's call."""
-    if _MERGE_RE.search(tool_name):
+def _check_publish(call: PreToolCall, run: rs.Run, state: dict) -> PreToolVerdict:
+    """A tool that writes to the remote directly: only the publishing stage, only
+    the run's own branch, and never a merge, which is a person's call."""
+    tool = call.tool_name
+    branch = state.get("branch")
+    if _MERGE_RE.search(tool):
         return _deny(
-            tool_name,
+            tool,
             "a merge lands the work on a shared branch, and that is a person's call",
             "open the pull request and leave the merge to a person",
         )
     if not _publishing(run, state):
         return _deny(
-            tool_name,
+            tool,
             f"stage {state['current_stage']} does not publish; only the stage that opens the "
             "pull request writes to the remote",
             "commit locally and leave publishing to that stage",
+        )
+    if call.branch is not None and call.branch != branch:
+        return _deny(
+            f"{tool} on {call.branch}",
+            f"it is not the run's branch ({branch})",
+            f"name {branch} as the branch",
+        )
+    if call.branch is None and _CONTENT_WRITE_RE.search(tool):
+        return _deny(
+            tool,
+            "a write that names no branch goes to the default branch",
+            f"name {branch} as the branch",
         )
     return ALLOW
 
@@ -373,7 +391,7 @@ def handle_pre_tool(call: PreToolCall, run: rs.Run, state: dict | None = None) -
     if call.kind == "edit":
         return _check_edit(call, run, state)
     if call.kind == "publish":
-        return _check_publish(call.tool_name, run, state)
+        return _check_publish(call, run, state)
     if call.kind == "shell" and call.command:
         return _check_gh(call.command) or _check_push(call.command, run, state)
     return ALLOW

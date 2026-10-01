@@ -309,6 +309,11 @@ def handle_turn_end(event: TurnEnd, run: rs.Run, timeout: float = ri.HOOK_LOCK_S
         # Once per session: a /clear starts a new session id, and the run would
         # otherwise stop being driven without a word.
         if event.session_id and event.session_id not in (state.get("told_sessions") or []):
-            return rs.update(run, tell, timeout)
+            try:
+                return rs.update(run, tell, timeout)
+            except ri.LockTimeout:
+                # The note is a courtesy; a session that does not drive the run
+                # is never blocked over it.
+                return PASS
         return PASS
     return rs.update(run, apply, timeout)

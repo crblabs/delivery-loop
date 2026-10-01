@@ -125,20 +125,23 @@ def _at_ship(run: rs.Run) -> None:
     rs.update(run, move)
 
 
-def _publish(run: rs.Run, tool: str):
-    call = guard.PreToolCall("s1", "publish", tool, str(run.worktree), None, None)
+def _publish(run: rs.Run, tool: str, branch: str | None = None):
+    call = guard.PreToolCall("s1", "publish", tool, str(run.worktree), None, None, branch)
     return guard.handle_pre_tool(call, run)
 
 
 def test_a_code_host_tool_publishes_only_in_the_publishing_stage(start_run) -> None:
-    # Value: protects=the publish policy holds for MCP tools that write to the remote, and
-    # no run merges; fails_when=create_or_update_file is judged as a local file, or a merge
-    # tool passes; why_new=red-team review; seam=none
+    # Value: protects=the publish policy holds for MCP tools that write to the remote: its
+    # stage, its branch, and no merge; fails_when=create_or_update_file is judged as a
+    # local file, writes to main, or a merge tool passes; why_new=red-team review; seam=none
     run = _ship_run(start_run)
-    assert not _publish(run, "mcp__github__create_or_update_file").allow
-    assert not _publish(run, "mcp__github__push_files").allow
+    own = rs.read(run)[1]["branch"]
+    assert not _publish(run, "mcp__github__create_or_update_file", own).allow
     _at_ship(run)
-    assert _publish(run, "mcp__github__create_pull_request").allow
+    assert _publish(run, "mcp__github__create_or_update_file", own).allow
+    assert _publish(run, "mcp__github__create_pull_request", own).allow
+    assert not _publish(run, "mcp__github__push_files", "release").allow
+    assert not _publish(run, "mcp__github__push_files").allow
     assert not _publish(run, "mcp__github__merge_pull_request").allow
 
 

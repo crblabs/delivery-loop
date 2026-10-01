@@ -35,14 +35,17 @@ COMMAND_NAME = "delivery-loop:pipeline"
 EDIT_TOOLS = ("Edit", "Write", "MultiEdit", "NotebookEdit")
 SESSION_ENV = "CLAUDE_SESSION_ID"
 # An MCP tool whose name says it writes, and the input fields that name a path.
-# An MCP tool of a code host whose name says it writes to the remote repository:
-# judged by the publish policy, not as a local file. A local git server's commit
-# is not one.
-_MCP_PUBLISH_RE = re.compile(
-    r"^mcp__.*(github|gitlab|bitbucket|gitea).*__.*"
-    r"(push|merge|commit|create_or_update_file|branch|pull_request|fork|release)",
-    re.I,
+# A code host's MCP tool that writes to the remote repository: a write verb and
+# a repository object in the tool's own name, or a ``*_write`` tool. It is judged
+# by the publish policy, not as a local file. Reads (get, list, search, *_read)
+# and a local git server's commit are not.
+_MCP_HOST_RE = re.compile(r"^mcp__.*(github|gitlab|bitbucket|gitea).*__", re.I)
+_MCP_PUBLISH_VERB_RE = re.compile(r"(^|_)(create|update|delete|push|merge|fork)(_|$)", re.I)
+_MCP_PUBLISH_OBJECT_RE = re.compile(
+    r"file|branch|pull_request|merge_request|commit|release|repositor|tag|ref", re.I
 )
+# The input fields that name the branch a code host's write goes to.
+_BRANCH_FIELDS = ("branch", "head")
 _MCP_WRITE_RE = re.compile(r"^mcp__.*(write|edit|create|move|rename|delete|patch|replace)", re.I)
 _PATH_FIELDS = ("file_path", "notebook_path", "path", "destination", "target", "new_path")
 # The CLI module run directly, as ``python3 -m`` or by its file.
@@ -83,8 +86,11 @@ def kind_of(tool_name: object) -> str:
         return "edit"
     if tool_name == "Bash":
         return "shell"
-    if isinstance(tool_name, str) and _MCP_PUBLISH_RE.match(tool_name):
-        return "publish"
+    if isinstance(tool_name, str) and _MCP_HOST_RE.match(tool_name):
+        tool = tool_name.rsplit("__", 1)[-1]
+        verb = _MCP_PUBLISH_VERB_RE.search(tool) and _MCP_PUBLISH_OBJECT_RE.search(tool)
+        if verb or tool.lower().endswith("_write"):
+            return "publish"
     if isinstance(tool_name, str) and _MCP_WRITE_RE.match(tool_name):
         return "edit"
     return "other"
@@ -95,6 +101,18 @@ def target_of(payload: dict) -> object:
     if not isinstance(tool_input, dict) or kind_of(payload.get("tool_name")) != "edit":
         return None
     for field in _PATH_FIELDS:
+        value = tool_input.get(field)
+        if isinstance(value, str) and value:
+            return value
+    return None
+
+
+def branch_of(payload: dict) -> object:
+    """The branch a code host's write names, for the publish policy."""
+    tool_input = payload.get("tool_input")
+    if not isinstance(tool_input, dict) or kind_of(payload.get("tool_name")) != "publish":
+        return None
+    for field in _BRANCH_FIELDS:
         value = tool_input.get(field)
         if isinstance(value, str) and value:
             return value

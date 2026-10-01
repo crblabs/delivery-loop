@@ -141,8 +141,9 @@ During a run, before an edit tool writes a file:
 The same rules apply to an MCP tool whose name says it writes (`write`, `edit`,
 `create`, `move`, `delete` and the like) when it names a path. A code host's MCP
 tool that writes to the remote (a GitHub, GitLab, Bitbucket or Gitea server's
-`push`, `commit`, `create_or_update_file`, `branch` or `pull_request` tools) is
-allowed only in the stage that opens the pull request, and a `merge` tool never.
+tools that create, update, delete or push files, branches, commits or pull
+requests) is allowed only in the stage that opens the pull request, only for
+the run's own branch, and a `merge` tool never. Its reads are not checked.
 An MCP tool that writes under another name is not checked.
 
 A shell command is not checked before it runs, with three exceptions, and all

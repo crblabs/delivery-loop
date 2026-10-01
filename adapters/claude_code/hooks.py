@@ -284,6 +284,7 @@ def _guard(payload: dict) -> HookResult:
             with contextlib.suppress(OSError):
                 ri.write_intent(ri.worktree_key(root), session)
     target = boot.target_of(payload)
+    branch = boot.branch_of(payload)
     found = ri.find_entries(payload.get("cwd"), target, payload.get("session_id"))
     if not found:
         return PASS
@@ -305,6 +306,7 @@ def _guard(payload: dict) -> HookResult:
                 cwd=payload.get("cwd") if isinstance(payload.get("cwd"), str) else None,
                 command=command if isinstance(command, str) else None,
                 path=target if isinstance(target, str) else None,
+                branch=branch if isinstance(branch, str) else None,
             )
             verdict = guard.handle_pre_tool(call, run, state)
         except Exception as exc:  # noqa: BLE001 - any failure on a run fails closed
