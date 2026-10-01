@@ -33,14 +33,198 @@ particular harness. An adapter translates one harness to the core.
 
 ## Status
 
-The code has not moved here yet. The loop exists today inside another
-repository and will be lifted out later. What is in this repository now is the
-shape and the contracts: directory boundaries, the adapter contract, and the
-per-repo configuration seam. Nothing here should be read as a description of
-shipped code.
+The loop runs as a Claude Code plugin from this repository. The hooks, the
+`/delivery-loop:pipeline` command, the stage skill and the stage prompts live
+here, on top of the contracts in `core/`. A host repository needs no file of
+its own.
 
 Where a detail is not yet settled, this repository says "unsettled" rather than
 guessing.
+
+## Install
+
+Once per machine, in Claude Code:
+
+```
+/plugin marketplace add crblabs/delivery-loop
+/plugin install delivery-loop@crblabs
+```
+
+The same from a shell: `claude plugin marketplace add crblabs/delivery-loop`,
+then `claude plugin install delivery-loop@crblabs --scope user`.
+
+A user-scope install writes only to `~/.claude/settings.json` (the
+`enabledPlugins` and `extraKnownMarketplaces` keys) and copies the plugin into
+Claude Code's plugin cache. It adds nothing to any repository.
+
+## Update
+
+Auto-update is off for this marketplace, so an update is a step you take:
+
+```
+claude plugin update delivery-loop@crblabs
+```
+
+The plugin has no version number: every commit on `main` is a new version.
+Update between runs, not during one. A run records the config it started under,
+but a hook that changes under a running run may not read its state the same way.
+
+## Prerequisites
+
+- `python3` 3.11 or later first on `PATH`. The hooks and the CLI use the
+  standard library only, and no package is installed. On an older `python3` the
+  hooks do nothing where no run is active, and refuse to drive one that is:
+  `delivery-loop abort` still works, so a run can always be ended.
+- git, and a git repository to run in. A repository with no `origin` remote
+  works: its runs are filed under `local/<directory name>`.
+- The commands the default stages call: `/autoplan`, `/qa`, `/review` and
+  `/ship`, from [gstack](https://github.com/garrytan/gstack). Or a `loop.toml`
+  that declares other stages (see `templates/loop.toml`).
+- macOS or Linux. Windows is not supported.
+
+`delivery-loop doctor` checks each of these and says what to fix.
+
+## Using it
+
+Each verb has a slash form, which you type in Claude Code, and a shell form,
+which the agent and a terminal use. The slash form runs the shell form with the
+session's id, so the run is bound to the session that started it.
+
+| Slash form | Shell form | Does |
+|---|---|---|
+| `/delivery-loop:pipeline start <task>` | `delivery-loop start <task>` | Starts a run in this worktree and hands the agent stage 1. The task is an issue id or a short title. |
+| `/delivery-loop:pipeline status` | `delivery-loop status` | The run's stage, status, pause reason and last five events. |
+| `/delivery-loop:pipeline resume` | `delivery-loop resume` | Continues a paused run. A person only: see below. |
+| `/delivery-loop:pipeline abort` | `delivery-loop abort` | Ends the run. A person only: see below. |
+| `/delivery-loop:pipeline doctor` | `delivery-loop doctor` | Checks python, git, the state home and the stage commands. |
+
+The plugin puts `delivery-loop` on the agent's `PATH`. In a terminal of your
+own, `delivery-loop doctor` (run once through the slash form) prints the full
+path and an alias line.
+
+`resume` and `abort` clear or end a pause, so only a person runs them. Typed in
+Claude Code in full (`/delivery-loop:pipeline resume`; a short `/pipeline
+resume` is not applied), the plugin's prompt hook applies them: Claude Code
+runs that hook for what a person types and never for the agent's own tool
+calls. The event log records such a resume as `by: person`. In a terminal, the
+shell form works when both ends of the command are a terminal, and is recorded
+as `by: terminal`. Anywhere else, `delivery-loop resume` and `abort` refuse.
+
+When a run pauses, Claude Code shows you why, with the commands to continue or
+end it. A gate's card, and `delivery-loop status`, show the plan file the run
+read and the loop files it unlocks, so you approve what the run will act on.
+`git push -u` writes the branch's upstream into the git config; that is not a
+change the guard pauses for, but a change to a remote, a URL rewrite or a hook
+path is.
+
+A stage ends when the agent's last line is `<promise>STAGE DONE</promise>`, or
+`<promise>NEEDS HUMAN</promise>` under a decision card when it needs you. A turn
+that ends without either is sent back with the stage's instructions, and three
+in a row pause the run. The `pipeline` skill in `skills/pipeline/SKILL.md` is the
+agent's half of that contract.
+
+## What the guard covers
+
+During a run, before an edit tool writes a file:
+
+- `loop.toml`, `.git`, `.claude/settings.json` and `.claude/settings.local.json`
+  are carve-outs: an edit is always denied. Either settings file can switch the
+  plugin's hooks off, so neither is ever editable from inside a run.
+- A loop file, such as a stage prompt override under
+  `.claude/skills/pipeline/stages/`, is editable only when the approved plan
+  lists it in a ```` ```loop-edits ```` block.
+- The plugin, `~/.claude` (or `$CLAUDE_CONFIG_DIR`), the loop's state home,
+  your loop config in `~/.config/delivery-loop/`, your git config
+  (`~/.gitconfig`, `~/.config/git/config`), and a `.claude/settings.json` or
+  `settings.local.json` in any directory are denied, whatever the letter case.
+- Every other file is ordinary work and is allowed.
+
+The same rules apply to an MCP tool whose name says it writes (`write`, `edit`,
+`create`, `move`, `delete` and the like) to every path it names, a move's
+source as well as its destination. A code host's MCP
+tool that writes to the remote (a GitHub, GitLab, Bitbucket or Gitea server's
+tools that name files, branches, commits, releases or pull requests, other
+than its `get`, `list`, `search` and `read` tools) is allowed only in the stage
+that opens the pull request, only for the run's own branch, and a `merge` tool
+never.
+An MCP tool that writes under another name is not checked.
+
+A shell command is not checked before it runs, with three exceptions, and all
+read the command text, so all are advisory. `git push` is allowed in the stage
+that opens the pull request, for the run's own branch, to `origin`: never
+forced, deleting or redirected with `-c`. `gh pr merge` and a merge through
+`gh api` are refused: a merge is a person's call. Other `gh` commands that
+write to the remote are not checked. And a shell line that runs
+`delivery-loop resume` or `abort`, directly, behind a wrapper or in a nested
+shell, is refused early with an explanation; a line that only mentions them,
+such as a commit message, is not. The CLI also refuses both outside a terminal,
+and only the full `/delivery-loop:pipeline resume|abort`, typed by a person,
+applies them from Claude Code. Neither is proof: an agent can give
+a command a pseudo-terminal (`script`, `unbuffer`), spell the command so no
+text check sees it, or start a nested `claude -p` session. Each of those is a
+deliberate escape that leaves its trace in the session transcript, the same
+class as rewriting the state file. The guard does not claim more.
+
+A shell write to a guarded file is caught at the next turn end: every turn end
+hashes the guarded files (the settings files by the keys that can switch hooks
+off or repoint them: `disableAllHooks`, `enabledPlugins`, `hooks`, `env`), your
+user settings by the same keys (only delivery-loop's own `enabledPlugins`
+entry), the worktree's `.git` pointer, the git config a push reads (the
+repository's, the worktree's `config.worktree`, yours, and the files their
+`include.path` names) and the run's config snapshot. A change the plan did not
+declare pauses the run with `guard_changed`; a carve-out is never accepted,
+even under a directory the plan declared. What this
+cannot catch: a shell write that switches the hooks off before that turn end, a
+shell edit of the run's own state or of the plugin cache, and a shell command
+that writes a resume into the state file itself. A determined agent with a
+shell can get past every text-based check here; the guard makes that
+deliberate and visible, not impossible. `loop-scan` flags a run whose index
+entry disappeared (`index_missing`).
+
+The hooks answer before Claude Code's own timeout: a guard check that runs
+past 25 seconds denies the call, and a turn end past 55 seconds keeps the turn
+going once. A hook that cannot start at all, such as when `python3` is missing
+from `PATH`, is a non-blocking error in Claude Code and lets the call through;
+`/delivery-loop:pipeline doctor` checks the `python3` the hooks run with. The
+rest is in `TODOS.md`.
+
+## Runbook
+
+- **A run paused with `guard_changed`.** `delivery-loop status` lists the
+  changed files. Check them. `/delivery-loop:pipeline resume` accepts them as
+  the new baseline; `abort` ends the run.
+- **A run paused with `no_message`.** The agent ended three turns without a
+  token. Read the session, then resume or abort.
+- **A run paused with `gate`.** A stage that asks for a person is done, the
+  plan stage by default. Read its output, then resume to go on.
+- **The hooks seem silent.** Run `/delivery-loop:pipeline doctor`, and check
+  that `/plugin` lists delivery-loop as enabled. A run's events are in
+  `events.jsonl` in its run directory (`delivery-loop status` prints the path).
+- **The in-repo install is still there.** `start` refuses until it is gone. See
+  the next section.
+- **`python3` is too old.** Put 3.11 or later first on `PATH`, or end the run
+  with `delivery-loop abort`, which works on any `python3`.
+- **The run stopped being driven after `/clear` or in a new session.** The run
+  stays bound to the session that started it; the new session is told once.
+  Type `/delivery-loop:pipeline resume` there to drive it from that session.
+- **The loop is in the way and you need it gone now.** Type
+  `/delivery-loop:pipeline abort` to end the run, then `/plugin disable
+  delivery-loop` to turn the hooks off in every session. `/plugin enable
+  delivery-loop` brings them back.
+
+## Moving from the in-repo install
+
+A repository that ran the loop from its own `.claude/` directory:
+
+1. Finish or abort the runs the old hooks drive. The plugin's hooks leave those
+   runs alone: they only see runs the plugin started.
+2. Delete `.claude/hooks/pipeline_*`, `.claude/skills/pipeline/` (keep a stage
+   prompt you changed: under `.claude/skills/pipeline/stages/` it still
+   overrides the plugin's), and the loop's hook entries in
+   `.claude/settings.json`.
+3. In `loop.toml`, change `/pipeline resume` and `/pipeline abort` to
+   `/delivery-loop:pipeline resume` and `abort`, or delete the two keys.
+4. Install the plugin and start a run.
 
 ## What a harness adapter must provide
 
@@ -73,8 +257,9 @@ than the engine. Capability 4 is the only one that degrades.
 
 ## Commands
 
-The tools ship as console entry points, so a runbook calls them by name and not
-by file path. A path can move; a name is stable. `uv sync` installs them into
+The supervisor's tools ship as console entry points, so a runbook calls them by
+name and not by file path. They are operator tools: install them from a checkout
+of this repository. The plugin does not ship them. A path can move; a name is stable. `uv sync` installs them into
 the project environment, and `uv run <name>` runs one. The names share the
 `loop-` prefix so they group together in a shell.
 
@@ -85,11 +270,12 @@ the project environment, and `uv run <name>` runs one. The names share the
 | `loop-card` | Renders one run's pause as the decision card a person reads. |
 | `loop-card-check` | Checks that a pause question carries the required card shape. |
 | `loop-pause-stats` | Counts the pauses in a scan by category. |
-| `loop-prune` | Lists the runs whose worktree is gone, and deletes them with `--yes`. |
+| `loop-prune` | Lists the runs whose worktree is gone, and deletes them and their index entries with `--yes`. |
 | `loop-transcript` | Reads the pending question out of one harness session. |
 
 Every run's state lives outside the repository, under `~/.delivery-loop`, in
-`runs/<owner>-<repo>/<worktree>-<hash>/`. A host repository needs no ignore
+`runs/<owner>-<repo>/<worktree>-<hash>/`, and the run index the hooks find a run
+by lives beside it, in `index/`. A host repository needs no ignore
 rule. Set `DELIVERY_LOOP_HOME`, or `state_root` in a `loop.toml` that you name
 with `--config`, to move it. A `loop.toml` that a command finds by itself may not
 move it, so the hook and every command agree. See `templates/README.md`.
@@ -103,10 +289,33 @@ fails if a name does not resolve to a callable `main`.
 | Directory | Holds |
 |---|---|
 | `core/` | The stage machine and everything harness-neutral. |
-| `adapters/claude_code/` | The adapter for one harness. |
-| `prompts/` | The stage prompts, as harness-neutral text. |
+| `adapters/claude_code/` | The adapter for one harness: its hooks, CLI and transcript reader. |
+| `.claude-plugin/` | The plugin manifest and the `crblabs` marketplace that lists it. |
+| `hooks/` | The plugin's hook declarations and their one entry point, `pipeline_hook.py`. |
+| `commands/` | The `/delivery-loop:pipeline` slash command. |
+| `skills/pipeline/` | The stage skill and the default stage prompts. |
+| `bin/` | `delivery-loop`, which the plugin puts on the agent's `PATH`. |
 | `templates/` | `loop.toml`, the per-repo configuration a host repo fills in. |
 | `docs/` | The contract and the operator runbooks. |
 
-Each directory carries a `README.md` saying what belongs in it and what does
-not.
+Each directory carries a `README.md` or a docstring saying what belongs in it
+and what does not.
+
+## Developing this repository
+
+`uv sync` installs the dev tools; `uv run pytest -q`, `uv run ruff check .` and
+`uv run ruff format --check .` are the checks CI runs, on Python 3.11, 3.12 and
+3.13.
+
+To try the plugin from a checkout without installing it, start Claude Code with
+`claude --plugin-dir .`. A local marketplace works too:
+`claude plugin marketplace add ./`.
+
+The repository root is the plugin root, and Claude Code loads a `.mcp.json`
+from a plugin root for every user, so this repository has none. To use the
+Linear server while working on it, add it to your local scope:
+
+```
+claude mcp add --scope local --transport http linear-crblabs https://mcp.linear.app/mcp \
+  --header "Authorization: Bearer ${LINEAR_API_KEY}"
+```

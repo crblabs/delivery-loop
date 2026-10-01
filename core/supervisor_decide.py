@@ -201,6 +201,10 @@ def decide(
         return _escalate("orphaned", "the worktree is gone; loop-prune removes this run")
     if record.get("condition") != "ok":
         return _escalate("unobservable", f"cannot read this run ({record.get('condition')})")
+    if record.get("index_missing"):
+        # The hooks find a run through its index entry. Without one nothing
+        # enforces the run's guard, so whatever its status says, a person looks.
+        return _escalate("index_missing", "the run's hooks cannot find it; its index entry is gone")
     if record.get("pending_promotion"):
         # The floor, checked before status: a promotion is never auto-answered,
         # whatever state the run reports.

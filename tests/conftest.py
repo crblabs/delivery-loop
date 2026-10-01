@@ -39,6 +39,7 @@ def home(tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPat
     monkeypatch.setenv("HOME", str(tmp_path_factory.mktemp("home")))
     monkeypatch.chdir(tmp_path_factory.mktemp("cwd"))
     monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
     for name in _GIT_REPOSITORY_VARS:
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path_factory.getbasetemp().parent))
@@ -82,3 +83,20 @@ def add_worktree() -> Callable[[Path, Path], Path]:
         return path.resolve()
 
     return add
+
+
+@pytest.fixture
+def start_run(make_repo: Callable[[Path], Path], tmp_path: Path):
+    """Start a run on the default stages in a new repository; return (run, worktree).
+
+    ``session`` binds the run to a session id, as the slash command does.
+    """
+    from core import run_state as rs
+    from core.config import DEFAULTS
+
+    def start(name: str = "host", session: str | None = "s1", config=DEFAULTS, task="CRB-1"):
+        worktree = make_repo(tmp_path / name)
+        run, _ = rs.start(worktree, task, config, session)
+        return run, worktree
+
+    return start

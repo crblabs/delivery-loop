@@ -83,28 +83,27 @@ def test_the_defaults_are_pinned() -> None:
     assert d.carve_outs == (
         ".claude/settings.json",
         ".claude/settings.local.json",
-        ".claude/hooks/pipeline_guard.py",
-        ".claude/hooks/pipeline_stop.py",
-        ".claude/hooks/pipeline-guard",
-        ".claude/hooks/pipeline-stop",
-        ".claude/hooks/pipeline_loop_paths.py",
         "loop.toml",
         ".git",
     )
     assert d.carve_out_prefixes == (".git/",)
-    assert d.loop_prefixes == (".claude/hooks/", ".claude/skills/pipeline/")
-    assert d.loop_exact == (".claude/settings.json",)
+    assert d.loop_prefixes == (".claude/skills/pipeline/",)
+    assert d.loop_exact == ()
+    assert d.guard_watch == (".claude/hooks/pipeline_stop.py", ".claude/hooks/pipeline_guard.py")
     assert d.stage_shorthand == "stages/"
     assert d.stage_target == ".claude/skills/pipeline/stages/"
     assert d.session_label == "Session"
-    assert d.resume_command == "/pipeline resume"
-    assert d.abort_command == "/pipeline abort"
+    assert d.resume_command == "/delivery-loop:pipeline resume"
+    assert d.abort_command == "/delivery-loop:pipeline abort"
     assert d.tracker_prefix == "[A-Za-z]+"
     assert d.tracker_pattern == r"([A-Za-z]+-\d+)"
 
 
 def test_defaults_still_classify_the_paths_they_used_to() -> None:
-    assert lp.is_carveout(".claude/hooks/pipeline_stop.py") is True
+    assert lp.is_carveout(".claude/settings.json") is True
+    assert lp.is_carveout(".claude/settings.local.json") is True
+    # The hooks ship in the plugin now, so a worktree copy of them protects nothing.
+    assert lp.is_carveout(".claude/hooks/pipeline_stop.py") is False
     # The run state is not in the repository, so no repository path is it.
     assert lp.is_carveout(".claude/pipeline.local.json") is False
     assert lp.is_carveout(".claude/skills/pipeline/stages/ship.md") is False
@@ -136,8 +135,10 @@ def test_a_directory_argument_finds_the_file(tmp_path: Path) -> None:
 
 def test_moving_only_the_state_dir_moves_every_path_that_names_it(tmp_path: Path) -> None:
     config = cfg.load_config(write(tmp_path, '[harness]\nstate_dir = ".harness"\n'))
-    assert config.carve_outs[0] == ".harness/settings.json"
-    assert config.loop_prefixes == (".harness/hooks/", ".harness/skills/pipeline/")
+    # The settings files stay where Claude Code reads them.
+    assert config.carve_outs[0] == ".claude/settings.json"
+    assert config.loop_prefixes == (".harness/skills/pipeline/",)
+    assert config.guard_watch[0] == ".harness/hooks/pipeline_stop.py"
     assert config.ledger_dir == ".harness/supervisor"
 
 
@@ -162,7 +163,7 @@ def test_moved_state_dir_reaches_the_loop_paths(moved: cfg.LoopConfig) -> None:
     assert lp.is_carveout(".harness/hooks/stop.py", moved) is True
     assert lp.is_carveout(".harness/archive/run.json", moved) is True
     # A file that moves the directory cannot move the built-in carve-outs away.
-    assert lp.is_carveout(".claude/hooks/pipeline_stop.py", moved) is True
+    assert lp.is_carveout(".claude/settings.json", moved) is True
     assert lp.is_carveout("loop.toml", moved) is True
     declared = "```loop-edits\nstages/ship.md\n```"
     assert lp.parse_loop_edits_block(declared, moved) == [".harness/stages/ship.md"]
@@ -349,7 +350,7 @@ def test_a_repo_file_cannot_move_a_user_carve_out_away(tmp_path: Path) -> None:
     repo = git_repo(tmp_path / "mine")
     write(repo, '[harness]\nstate_dir = "elsewhere"\n')
     config = cfg.load_config(repo, home=home)
-    for path in (".agent/private.json", ".agent/hooks/pipeline_guard.py", "elsewhere/private.json"):
+    for path in (".agent/private.json", ".claude/settings.json", "elsewhere/private.json"):
         assert lp.is_carveout(path, config) is True, path
 
 
@@ -783,10 +784,10 @@ def test_a_file_can_add_a_carve_out_but_never_remove_one(tmp_path: Path) -> None
         "condition": "ok",
         "status": "awaiting_human",
         "paused_reason": "guard_changed",
-        "guard_files_seen": [{".claude/hooks/pipeline_stop.py": "aaa"}],
-        "guard_pending": {".claude/hooks/pipeline_stop.py": "bbb"},
+        "guard_files_seen": [{".claude/settings.json": "aaa"}],
+        "guard_pending": {".claude/settings.json": "bbb"},
     }
-    decision = sd.decide(record, [".claude/hooks/pipeline_stop.py"], None, False, empty)
+    decision = sd.decide(record, [".claude/settings.json"], None, False, empty)
     assert decision["action"] == "escalate"
 
 
@@ -817,7 +818,7 @@ def test_moving_the_state_dir_keeps_the_guard_files_carved_out(tmp_path: Path) -
     # fails_when=the built-in carve-outs are only expanded against the configured state_dir;
     # why_new=a repository file is read without a flag and could set state_dir; seam=none
     config = cfg.load_config(write(tmp_path, '[harness]\nstate_dir = "zz"\n'))
-    for path in (".claude/settings.json", ".claude/hooks/pipeline_guard.py", "loop.toml"):
+    for path in (".claude/settings.json", ".claude/settings.local.json", "loop.toml"):
         assert lp.is_carveout(path, config) is True
 
 
@@ -903,8 +904,12 @@ def test_a_state_dir_spelling_still_carves_out_its_files(tmp_path: Path, spellin
     # why_new=the moved-state tests spell the directory one way only; seam=none
     config = cfg.load_config(write(tmp_path, f'[harness]\nstate_dir = "{spelling}"\n'))
     assert config.state_dir == ".harness"
-    for path in (".harness/settings.json", ".harness/hooks/pipeline_guard.py"):
-        assert lp.is_carveout(path, config) is True
+    # guard_watch adds up like the carve-outs, so the defaults under .claude stay too.
+    assert config.guard_watch[:2] == (
+        ".harness/hooks/pipeline_stop.py",
+        ".harness/hooks/pipeline_guard.py",
+    )
+    assert config.loop_prefixes == (".harness/skills/pipeline/",)
 
 
 def test_a_state_dir_of_dot_is_refused(tmp_path: Path) -> None:
@@ -920,7 +925,11 @@ def test_the_other_commands_judge_a_run_under_its_own_worktree(
     # why_new=only loop-scan had per-worktree tests; seam=none
     wt = tmp_path / "run"
     wt.mkdir()
-    write(wt, '[harness]\nstate_dir = ".agent"\nsession_label = "Desk"\n')
+    write(
+        wt,
+        '[harness]\nstate_dir = ".agent"\nsession_label = "Desk"\n'
+        '[loop_paths]\ncarve_outs = ["{state_dir}/settings.json"]\n',
+    )
     record = {
         "worktree": str(wt),
         "condition": "ok",

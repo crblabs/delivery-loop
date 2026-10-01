@@ -11,9 +11,9 @@ The state file does not live in the worktree, so git never sees it and a host
 repository needs no ignore rule. Each run has a directory under the state root,
 ``~/.delivery-loop`` unless ``$DELIVERY_LOOP_HOME`` or the config moves it:
 ``runs/<owner>-<repo>/<worktree>-<hash>/``. ``state_path`` is the one definition
-of where the state file is, for the hook that writes it and for this reader.
-``prepare_run_dir`` is the hook's one helper here and the only function that
-writes.
+of where the state file is, for the writer and for this reader.
+``prepare_run_dir`` is the writer's one helper here and the only function in
+this module that writes; ``core.run_state`` writes the state file itself.
 
 The reader never writes. It returns a ``(condition, state)`` pair where
 ``condition`` is one of ``CONDITIONS`` and ``state`` is the parsed dict when the
@@ -35,6 +35,7 @@ import stat
 from datetime import datetime
 from pathlib import Path
 
+from core import run_index as ri
 from core.config import DEFAULTS, LoopConfig
 
 # The stage names of the default config, for a caller that reads this module
@@ -46,8 +47,9 @@ SUPPORTED_VERSION = 1
 UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.I)
 
 
-# The variable that moves the state root, as GSTACK_HOME moves gstack's.
-HOME_ENV = "DELIVERY_LOOP_HOME"
+# The variable that moves the state root, as GSTACK_HOME moves gstack's. One
+# definition, shared with the run index the hooks read.
+HOME_ENV = ri.HOME_ENV
 RUNS_DIR = "runs"
 # The file in a run directory that names the worktree the run belongs to.
 WORKTREE_FILE = "worktree"

@@ -53,3 +53,6 @@ coverage.xml
 .env
 .env.*
 .envrc
+
+# gstack working files: plans, QA reports, local scratch
+.gstack/

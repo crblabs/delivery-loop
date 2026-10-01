@@ -4,11 +4,16 @@
 Every harness name, command name and tracker name the loop needs is a field on
 ``LoopConfig`` and lives nowhere else, so the rest of ``core/`` holds no harness
 literal at all. The defaults reproduce the values the loop ran on before the
-seam existed, with two kinds of exception. The values that named one operator's
+seam existed, with three kinds of exception. The values that named one operator's
 setup, the session label and the tracker prefix, are neutral, so a repository
-with no ``loop.toml`` at all runs on defaults that fit it. And ``loop.toml`` and
-the worktree's ``.git`` pointer are carve-outs, and the built-in carve-outs stay
-in force under ``.claude`` whatever state directory a file sets.
+with no ``loop.toml`` at all runs on defaults that fit it. ``loop.toml`` and the
+worktree's ``.git`` pointer are carve-outs, and the built-in carve-outs stay in
+force whatever state directory a file sets. And the hooks, their helpers and the
+stage prompts are no longer in the worktree: they ship in the plugin, so the
+carve-outs name only what a worktree still holds. The two project settings files
+stay carve-outs, written as ``.claude/...`` and not under ``{state_dir}``,
+because Claude Code reads them there and either can switch the plugin's hooks
+off.
 
 ``load_config`` looks in three places, in order: ``loop.toml`` in the
 repository, then ``~/.config/delivery-loop/<repo-slug>.toml`` for the operator,
@@ -59,7 +64,7 @@ import re
 import subprocess
 import sys
 import tomllib
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, fields
 from functools import cached_property
 from pathlib import Path, PurePosixPath
 
@@ -70,13 +75,41 @@ USER_CONFIG_DIR = ".config/delivery-loop"
 _SLUG_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 # A working ``git rev-parse`` answers in milliseconds; a stuck one must not stall
 # a supervisor call for long, so it times out and the loader reports ConfigError.
-_GIT_TIMEOUT_S = 3
+GIT_TIMEOUT_S = 3
 
 # Substituted into the path fields when the object is built, so one setting
 # moves every path that lives under the harness state directory.
 _STATE_TOKENS = ("state_dir", "state_file", "state_stem")
 _EXPANDED_STRINGS = ("ledger_dir", "stage_target")
-_EXPANDED_TUPLES = ("carve_outs", "carve_out_prefixes", "loop_prefixes", "loop_exact")
+_EXPANDED_TUPLES = (
+    "carve_outs",
+    "carve_out_prefixes",
+    "loop_prefixes",
+    "loop_exact",
+    "guard_watch",
+)
+# The project settings files Claude Code reads, whatever state_dir a file sets.
+# Either can set disableAllHooks or switch the plugin off, so both are carve-outs.
+SETTINGS_FILES = (".claude/settings.json", ".claude/settings.local.json")
+# The settings keys that can switch the plugin's hooks off. A settings file is
+# guarded by these keys only, because the harness rewrites the rest of it, the
+# permission rules, whenever a person answers a permission prompt.
+SETTINGS_SWITCH_KEYS = ("disableAllHooks", "enabledPlugins", "hooks", "env")
+# The harness's user directory: the user settings and the installed plugins.
+# An edit tool may not write there during a run, nor in the directory the
+# harness reads instead when HARNESS_HOME_ENV names one.
+HARNESS_HOME = "~/.claude"
+HARNESS_HOME_ENV = "CLAUDE_CONFIG_DIR"
+# The user settings file in the harness's user directory. A shell write there can
+# switch every hook off, so the turn end hashes its switch keys too, with
+# ``enabledPlugins`` narrowed to this plugin's own entries.
+HARNESS_SETTINGS = "settings.json"
+PLUGIN_ID_PREFIX = "delivery-loop@"
+# The user-level git config files git reads before the repository's own.
+USER_GIT_CONFIGS = ("~/.gitconfig", "{xdg}/git/config")
+XDG_CONFIG_ENV = "XDG_CONFIG_HOME"
+# Where the plugin keeps its default stage prompts, from the plugin root.
+PLUGIN_STAGES_DIR = "skills/pipeline/stages"
 
 
 class ConfigError(ValueError):
@@ -220,8 +253,10 @@ class LoopConfig:
     ``ledger_name`` place the supervisor's own ledger under the operator's home
     directory. ``carve_outs``, ``carve_out_prefixes``, ``loop_prefixes``,
     ``loop_exact``, ``stage_shorthand`` and ``stage_target`` are the loop-path
-    vocabulary. ``stages`` is the stage list itself, one ``StageSpec`` per stage,
-    in order. ``session_label`` names the session in a card header,
+    vocabulary. ``guard_watch`` names files that are not carve-outs but whose
+    change mid-run pauses the run, such as an in-repo copy of the old hooks.
+    ``stages`` is the stage list itself, one ``StageSpec`` per stage, in order.
+    ``session_label`` names the session in a card header,
     ``resume_command`` and ``abort_command`` are the operator commands a card
     quotes, and ``tracker_prefix`` with ``tracker_pattern`` recognise an issue
     identifier in a worktree name. ``tracker_prefix`` is a regular expression
@@ -234,13 +269,7 @@ class LoopConfig:
     ledger_dir: str = "{state_dir}/supervisor"
     ledger_name: str = "{slug}-ledger.local.jsonl"
     carve_outs: tuple[str, ...] = (
-        "{state_dir}/settings.json",
-        "{state_dir}/settings.local.json",
-        "{state_dir}/hooks/pipeline_guard.py",
-        "{state_dir}/hooks/pipeline_stop.py",
-        "{state_dir}/hooks/pipeline-guard",
-        "{state_dir}/hooks/pipeline-stop",
-        "{state_dir}/hooks/pipeline_loop_paths.py",
+        *SETTINGS_FILES,
         # The loop reads loop.toml without being asked, so a run may not edit it.
         CONFIG_FILENAME,
         # The worktree's .git pointer names the repository, and so the user file.
@@ -248,14 +277,20 @@ class LoopConfig:
     )
     # The main checkout's git directory names the repository too (commondir).
     carve_out_prefixes: tuple[str, ...] = (".git/",)
-    loop_prefixes: tuple[str, ...] = ("{state_dir}/hooks/", "{state_dir}/skills/pipeline/")
-    loop_exact: tuple[str, ...] = ("{state_dir}/settings.json",)
+    # A host's own stage prompts override the plugin's; they are loop files.
+    loop_prefixes: tuple[str, ...] = ("{state_dir}/skills/pipeline/",)
+    loop_exact: tuple[str, ...] = ()
+    # An in-repo copy of the old hooks would drive the run a second time.
+    guard_watch: tuple[str, ...] = (
+        "{state_dir}/hooks/pipeline_stop.py",
+        "{state_dir}/hooks/pipeline_guard.py",
+    )
     stage_shorthand: str = "stages/"
     stage_target: str = "{state_dir}/skills/pipeline/stages/"
     stages: tuple[StageSpec, ...] = DEFAULT_STAGES
     session_label: str = "Session"
-    resume_command: str = "/pipeline resume"
-    abort_command: str = "/pipeline abort"
+    resume_command: str = "/delivery-loop:pipeline resume"
+    abort_command: str = "/delivery-loop:pipeline abort"
     tracker_prefix: str = "[A-Za-z]+"
     tracker_pattern: str = r"({tracker_prefix}-\d+)"
 
@@ -372,6 +407,36 @@ class LoopConfig:
 DEFAULTS = LoopConfig()
 
 
+def to_dict(config: LoopConfig) -> dict:
+    """The config as plain JSON values, every placeholder already expanded."""
+    data = {f.name: getattr(config, f.name) for f in fields(LoopConfig)}
+    data["stages"] = [asdict(stage) for stage in config.stages]
+    return {k: list(v) if isinstance(v, tuple) else v for k, v in data.items()}
+
+
+def from_dict(data: object) -> LoopConfig:
+    """The config ``to_dict`` wrote, validated again as it is rebuilt.
+
+    A run records the config it started under, so the hooks judge it by that one
+    and not by whatever the repository or the user file says later.
+    """
+    if not isinstance(data, dict):
+        raise ConfigError(f"a config snapshot must be an object, got {data!r}")
+    known = {f.name for f in fields(LoopConfig)}
+    unknown = set(data) - known
+    if unknown:
+        raise ConfigError(f"a config snapshot has unknown keys: {sorted(unknown)}")
+    values = dict(data)
+    stages = values.get("stages", [])
+    if not isinstance(stages, list) or any(not isinstance(s, dict) for s in stages):
+        raise ConfigError("a config snapshot's stages must be a list of objects")
+    try:
+        values["stages"] = tuple(StageSpec(**s) for s in stages)
+        return LoopConfig(**{k: tuple(v) if isinstance(v, list) else v for k, v in values.items()})
+    except TypeError as exc:
+        raise ConfigError(f"a config snapshot does not fit LoopConfig: {exc}") from exc
+
+
 # Where each field is written in a loop.toml: the field, its table, its key.
 _STRING_KEYS = (
     ("state_dir", "harness", "state_dir"),
@@ -387,12 +452,13 @@ _STRING_KEYS = (
     ("tracker_prefix", "tracker", "prefix"),
     ("tracker_pattern", "tracker", "pattern"),
 )
-_ADDITIVE = ("carve_outs", "carve_out_prefixes")
+_ADDITIVE = ("carve_outs", "carve_out_prefixes", "guard_watch")
 _LIST_KEYS = (
     ("carve_outs", "loop_paths", "carve_outs"),
     ("carve_out_prefixes", "loop_paths", "carve_out_prefixes"),
     ("loop_prefixes", "loop_paths", "prefixes"),
     ("loop_exact", "loop_paths", "exact"),
+    ("guard_watch", "loop_paths", "guard_watch"),
 )
 
 
@@ -514,6 +580,28 @@ _GIT_REPOSITORY_VARS = (
 )
 
 
+def harness_home() -> Path:
+    """The harness's user directory, as the harness itself resolves it."""
+    return Path(os.environ.get(HARNESS_HOME_ENV) or HARNESS_HOME).expanduser()
+
+
+def user_git_configs() -> list[Path]:
+    """The user-level git config files, in the order git reads them."""
+    xdg = os.environ.get(XDG_CONFIG_ENV) or str(Path("~/.config").expanduser())
+    return [Path(p.format(xdg=xdg)).expanduser() for p in USER_GIT_CONFIGS]
+
+
+def user_config_dir(home: Path | None = None) -> Path:
+    return (home or Path.home()) / USER_CONFIG_DIR
+
+
+def git_env() -> dict[str, str]:
+    """The environment git runs in: no variable that points it at another
+    repository, and English messages, so cwd alone picks the repository."""
+    env = {k: v for k, v in os.environ.items() if k not in _GIT_REPOSITORY_VARS}
+    return env | {"LC_ALL": "C", "LANGUAGE": "C"}
+
+
 def _git(cwd: Path, *args: str) -> str | None:
     """One line of git output, or None when cwd is in no repository.
 
@@ -521,19 +609,17 @@ def _git(cwd: Path, *args: str) -> str | None:
     repository git refuses to read. Treating those as "no repository" would drop
     the user file, and with it the carve-outs the operator added there.
     """
-    env = {k: v for k, v in os.environ.items() if k not in _GIT_REPOSITORY_VARS}
     # git translates its messages, and the "not a git repository" check below
     # reads one, so the messages are kept in English.
-    env |= {"LC_ALL": "C", "LANGUAGE": "C"}
     try:
         done = subprocess.run(
             ["git", *args],
             cwd=cwd,
-            env=env,
+            env=git_env(),
             capture_output=True,
             text=True,
             check=False,
-            timeout=_GIT_TIMEOUT_S,
+            timeout=GIT_TIMEOUT_S,
         )
     except (OSError, subprocess.SubprocessError) as exc:
         raise ConfigError(f"cannot run git in {cwd} to find the repository: {exc}") from exc

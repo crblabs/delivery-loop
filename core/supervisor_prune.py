@@ -3,7 +3,9 @@
 
 A run's state lives under the state root, outside the worktree, so removing a
 worktree leaves its run behind. ``loop-scan`` marks such a run ``orphaned``.
-This tool lists every orphaned run and, with ``--yes``, deletes its directory.
+This tool lists every orphaned run and, with ``--yes``, deletes its directory
+and every run index entry that names it, so a new worktree at the same path can
+start a run.
 
 Only a run that records its worktree, and whose worktree is gone, is ever
 deleted. A run that records no worktree is left for a person to inspect.
@@ -22,6 +24,7 @@ import sys
 from pathlib import Path
 
 from core import pipeline_state as ps
+from core import run_index as ri
 from core import supervisor_scan as ss
 from core.config import DEFAULTS, LoopConfig, load_cli_config
 
@@ -64,6 +67,7 @@ def main(argv: list[str] | None = None) -> int:
             try:
                 shutil.rmtree(directory)
                 entry["deleted"] = True
+                entry["index_entries_removed"] = ri.remove_entries_for(str(directory))
             except OSError as exc:
                 print(f"PRUNE_FAILED: {directory}: {exc}", file=sys.stderr)
                 failed = True

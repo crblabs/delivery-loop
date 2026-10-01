@@ -33,10 +33,10 @@
       "name": "guard_changed_carveout_on_allowlist_escalate",
       "record": {
         "condition": "ok", "status": "awaiting_human", "paused_reason": "guard_changed",
-        "guard_files_seen": [{".claude/hooks/pipeline_stop.py": "aaa"}],
-        "guard_pending": {".claude/hooks/pipeline_stop.py": "bbb"}
+        "guard_files_seen": [{".claude/settings.local.json": "aaa"}],
+        "guard_pending": {".claude/settings.local.json": "bbb"}
       },
-      "allowlist": [".claude/hooks/pipeline_stop.py"], "question": null, "notify_only": false,
+      "allowlist": [".claude/settings.local.json"], "question": null, "notify_only": false,
       "action": "escalate", "reply": null
     },
     {
@@ -64,8 +64,8 @@
       "name": "guard_changed_off_allowlist_escalate",
       "record": {
         "condition": "ok", "status": "awaiting_human", "paused_reason": "guard_changed",
-        "guard_files_seen": [{".claude/hooks/pipeline_stop.py": "aaa"}],
-        "guard_pending": {".claude/hooks/pipeline_stop.py": "bbb"}
+        "guard_files_seen": [{".claude/settings.local.json": "aaa"}],
+        "guard_pending": {".claude/settings.local.json": "bbb"}
       },
       "allowlist": [".claude/settings.json"], "question": null, "notify_only": false,
       "action": "escalate", "reply": null

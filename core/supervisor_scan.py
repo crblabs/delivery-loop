@@ -9,7 +9,10 @@ used only to find each run's config and the operator's user file.
 
 Each run directory records the worktree it belongs to. A run whose record is
 missing reads as ``unreadable``. A run whose worktree no longer exists is marked
-``orphaned`` and needs attention until ``loop-prune`` removes it.
+``orphaned`` and needs attention until ``loop-prune`` removes it. A run the
+plugin drives (``driver: plugin``) that is still active but has no run index
+entry is marked ``index_missing``: its hooks can no longer find it, so nothing
+enforces its guard.
 
 Without ``--config``, the command reads its own config from the repository it
 runs in, over the operator's user file, and each run is then read under the
@@ -39,7 +42,15 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from core import pipeline_state as ps
-from core.config import DEFAULTS, ConfigError, LoopConfig, config_for_run, load_cli_config
+from core import run_index as ri
+from core.config import (
+    DEFAULTS,
+    ConfigError,
+    LoopConfig,
+    config_for_run,
+    from_dict,
+    load_cli_config,
+)
 
 DEFAULT_STALE_S = 600
 _RECORD_KEYS = (
@@ -68,6 +79,7 @@ _RECORD_KEYS = (
     "hook_seen",
     "plan_path",
     "pr_url",
+    "driver",
 )
 
 
@@ -117,7 +129,9 @@ def build_record(
         return {**base, "condition": "unreadable"} | _raw_repo(state_file)
     if per_worktree and worktree.exists():
         try:
-            config = config_for_run(str(worktree), config, explicit=False)
+            # A run the plugin started records the config it runs under; judge it
+            # by that, as its hooks do, not by whatever loop.toml says now.
+            config = _snapshot(directory) or config_for_run(str(worktree), config, explicit=False)
         except ConfigError as exc:
             # The repository is kept when the state file names one, so --repo can
             # still drop a broken run that belongs to another repository.
@@ -139,7 +153,27 @@ def build_record(
     age = _age_seconds(state.get("updated_at"), now)
     record["age_seconds"] = age
     record["is_stale"] = age is not None and age >= stale_after
+    record["index_missing"] = _index_missing(directory, worktree, state)
     return record
+
+
+def _index_missing(directory: Path, worktree: Path, state: dict) -> bool:
+    """Whether an active plugin run has lost the index entry its hooks find it by."""
+    if state.get("driver") != "plugin" or state.get("status") not in ri.ACTIVE:
+        return False
+    entry = ri.read_entry(ri.index_path(ri.worktree_key(str(worktree))))
+    return entry is None or Path(entry["run_dir"]) != directory
+
+
+def _snapshot(directory: Path) -> LoopConfig | None:
+    """The config a plugin run started under, or ``None`` for a run with none."""
+    path = directory / ri.SNAPSHOT_FILE
+    if not path.exists():
+        return None
+    data = ri.read_json_file(str(path), ri.SNAPSHOT_MAX_BYTES)
+    if data is None:
+        raise ConfigError(f"{path} cannot be read")
+    return from_dict(data)
 
 
 def _needs_attention(record: dict) -> bool:
@@ -148,6 +182,7 @@ def _needs_attention(record: dict) -> bool:
         or record.get("status") != "running"
         or bool(record.get("is_stale"))
         or bool(record.get("orphaned"))
+        or bool(record.get("index_missing"))
     )
 
 

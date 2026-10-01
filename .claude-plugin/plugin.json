@@ -1,0 +1,12 @@
+{
+  "name": "delivery-loop",
+  "description": "Drive one coding task through declared stages (plan, implement, qa, review, ship) without a person in the seat, with guarded enforcement files and pauses a person answers.",
+  "author": {
+    "name": "crblabs",
+    "url": "https://github.com/crblabs"
+  },
+  "homepage": "https://github.com/crblabs/delivery-loop",
+  "repository": "https://github.com/crblabs/delivery-loop",
+  "license": "MIT",
+  "keywords": ["delivery-loop", "pipeline", "hooks", "automation"]
+}

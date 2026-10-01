@@ -39,10 +39,15 @@ directory, and applies it to every run.
 
 The loop merges the files key by key. A key in the repository file wins over
 the same key in the user file. A key that no file sets keeps its default. A
-`[[stages]]` array replaces the whole stage list. The carve-out lists add up
-across the files and the built-in lists. The built-in carve-outs also stay in
-force under `.claude` when a file moves `state_dir`. So no file can remove a
+`[[stages]]` array replaces the whole stage list. The carve-out lists, and
+`guard_watch`, add up across the files and the built-in lists. The built-in
+carve-outs name `.claude/settings.json` and `.claude/settings.local.json`
+literally, so moving `state_dir` cannot move them. So no file can remove a
 carve-out. `loop.toml` is itself a built-in carve-out, so a run cannot edit it.
+
+A run records the config it started under, in `config.json` in its run
+directory, and the hooks judge the run by that copy. An edit to `loop.toml` or
+the user file takes effect at the next `start`, not in a run already going.
 
 A key that you write in the repository file overrides the user file, even when
 it holds the default value. The template therefore ships `session_label` and
