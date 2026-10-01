@@ -10,6 +10,7 @@ import pytest
 
 from core import pipeline_state as ps
 from core import supervisor_scan as ss
+from core.config import USER_CONFIG_DIR
 
 NOW = datetime(2026, 9, 16, 10, 0, 0, tzinfo=UTC)
 REPO = "crblabs/delivery-loop"
@@ -83,7 +84,10 @@ def test_a_run_whose_worktree_is_gone_is_orphaned(worktree, capsys):
     assert record["orphaned"] is True
     assert record["condition"] == "ok"
     assert ss.main(["--now", NOW.isoformat()]) == 1
-    capsys.readouterr()
+    # Read under per-run config too, the run stays ok and orphaned, not config_invalid.
+    [via_main] = json.loads(capsys.readouterr().out)
+    assert (via_main["condition"], via_main["orphaned"]) == ("ok", True)
+    assert "error" not in via_main
 
 
 def test_a_run_that_records_no_worktree_is_unreadable(worktree, home):
@@ -95,6 +99,8 @@ def test_a_run_that_records_no_worktree_is_unreadable(worktree, home):
         "worktree": None,
         "orphaned": False,
         "condition": "unreadable",
+        # The repository the state file names, so --repo can filter the run.
+        "repo": REPO,
     }
 
 
@@ -169,3 +175,178 @@ def test_a_run_leaves_git_status_clean(tmp_path, make_repo, add_worktree, git):
     assert git(main, "status", "--porcelain", "--ignored") == ""
     assert git(linked, "status", "--porcelain", "--ignored") == ""
     assert {Path(r["worktree"]) for r in ss.scan(None, NOW, 600)} == {main, linked}
+
+
+# --- per-run config --------------------------------------------------------------
+
+TWO_STAGES = '[[stages]]\nname = "fix"\n[[stages]]\nname = "ship"\n'
+
+
+def two_stage_state() -> dict:
+    stages = ["fix", "ship"]
+    return make_state(
+        stages=stages, current=0, current_stage="fix", attempts=dict.fromkeys(stages, 0)
+    )
+
+
+def test_each_run_is_checked_against_its_own_worktree(worktree):
+    # Value: protects=a run on a branch with its own [[stages]] reads ok when scanned from
+    # another checkout; fails_when=the scan checks every run against one config again;
+    # why_new=the other scan tests use one config for all runs; seam=none
+    wt = worktree("own", two_stage_state())
+    (wt / "loop.toml").write_text(TWO_STAGES, encoding="utf-8")
+    [shared] = ss.scan(None, NOW, 600)
+    assert shared["condition"] == "corrupt"
+    [own] = ss.scan(None, NOW, 600, per_worktree=True)
+    assert own["condition"] == "ok"
+    assert own["stage_count"] == 2
+
+
+def test_an_explicit_config_applies_to_every_run(worktree, tmp_path, capsys):
+    # Value: protects=with --config the named file judges every run, not each worktree's own;
+    # fails_when=main turns per-worktree loading on whatever the flags say;
+    # why_new=the per-worktree test calls scan() directly; seam=none
+    wt = worktree("own", two_stage_state())
+    (wt / "loop.toml").write_text(TWO_STAGES, encoding="utf-8")
+    named = tmp_path / "named.toml"
+    named.write_text("", encoding="utf-8")
+    argv = ["--now", NOW.isoformat()]
+    assert ss.main([*argv, "--config", str(named)]) == 1
+    assert json.loads(capsys.readouterr().out)[0]["condition"] == "corrupt"
+    assert ss.main(argv) == 0
+    assert json.loads(capsys.readouterr().out)[0]["condition"] == "ok"
+
+
+def test_a_bad_worktree_config_is_reported_not_raised(worktree, capsys):
+    # Value: protects=one worktree with a broken loop.toml does not stop the scan of the others;
+    # fails_when=a ConfigError from one worktree escapes the scan;
+    # why_new=the per-worktree lookup is new; seam=none
+    worktree("good", make_state())
+    bad = worktree("bad", make_state())
+    (bad / "loop.toml").write_text("[harness\n", encoding="utf-8")
+    assert ss.main(["--now", NOW.isoformat()]) == 1
+    records = {Path(r["worktree"]).name: r for r in json.loads(capsys.readouterr().out)}
+    assert records["good"]["condition"] == "ok"
+    assert records["bad"]["condition"] == "config_invalid"
+    assert "not valid TOML" in records["bad"]["error"]
+
+
+def test_a_broken_run_of_another_repo_is_filtered_out(worktree):
+    # Value: protects=--repo drops a config_invalid run that names another repository;
+    # fails_when=a config_invalid record loses the repo its state file names;
+    # why_new=the repo filter tests cover readable runs only; seam=none
+    for name, repo in (("mine", REPO), ("theirs", "someone/else")):
+        wt = worktree(name, make_state(repo=repo), repo=repo)
+        (wt / "loop.toml").write_text("[harness\n", encoding="utf-8")
+    records = ss.scan(REPO, NOW, 600, per_worktree=True)
+    assert [(r["condition"], r["repo"]) for r in records] == [("config_invalid", REPO)]
+
+
+def test_a_worktree_file_cannot_move_the_state(worktree):
+    # Value: protects=a branch's loop.toml cannot move the state its hook writes away from
+    # where the supervisor reads; fails_when=a worktree file may set state_file again;
+    # why_new=the red team reproduced a run vanishing this way; seam=none
+    wt = worktree("own", make_state())
+    (wt / "loop.toml").write_text('[harness]\nstate_file = "run.json"\n', encoding="utf-8")
+    [record] = ss.scan(None, NOW, 600, per_worktree=True)
+    assert record["condition"] == "config_invalid"
+    assert "state_file is read only from DELIVERY_LOOP_HOME" in record["error"]
+
+
+def test_a_deep_state_file_does_not_stop_the_scan(worktree):
+    # Value: protects=one run with a broken config and a deeply nested state file is reported,
+    # not a crash of the whole scan; fails_when=_raw_repo lets RecursionError escape;
+    # why_new=two reviewers reproduced the crash; seam=none
+    worktree("good", make_state())
+    bad = worktree("bad", raw="[" * 100000 + "]" * 100000)
+    (bad / "loop.toml").write_text("[harness\n", encoding="utf-8")
+    records = ss.scan(None, NOW, 600, per_worktree=True)
+    assert sorted(r["condition"] for r in records) == ["config_invalid", "ok"]
+
+
+@pytest.mark.parametrize("raw", ["[1]", '{"repo": 5}'])
+def test_a_broken_run_naming_no_repo_is_kept_under_repo(worktree, raw):
+    # Value: protects=a broken run whose state names no repository is still reported under
+    # --repo; fails_when=_raw_repo keeps a non-string repo or stops catching a non-object;
+    # why_new=only the RecursionError branch of _raw_repo was tested; seam=none
+    bad = worktree("bad", raw=raw)
+    (bad / "loop.toml").write_text("[harness\n", encoding="utf-8")
+    [record] = ss.scan(REPO, NOW, 600, per_worktree=True)
+    assert record["condition"] == "config_invalid"
+    assert "repo" not in record
+
+
+def test_a_run_with_no_worktree_record_of_another_repo_is_filtered_out(home):
+    # Value: protects=--repo drops another repository's run that records no worktree;
+    # fails_when=the no-worktree branch returns before _raw_repo; why_new=the red team
+    # reproduced it after the first --repo fix; seam=none
+    run = home / ps.RUNS_DIR / "other-repo" / "wt-1"
+    run.mkdir(parents=True)
+    (run / "state.json").write_text(json.dumps({"repo": "other/repo"}), encoding="utf-8")
+    assert ss.scan(REPO, NOW, 600) == []
+    [record] = ss.scan("other/repo", NOW, 600)
+    assert record["condition"] == "unreadable"
+
+
+def test_an_orphaned_run_of_another_repo_is_filtered_out(worktree):
+    # Value: protects=--repo drops another repository's orphaned run that reads as corrupt;
+    # fails_when=an unreadable record loses the repo its state file names; why_new=the red
+    # team reproduced cross-repository orphaned alerts; seam=none
+    stages = ["fix", "ship"]
+    state = make_state(
+        repo="someone/else",
+        stages=stages,
+        current=0,
+        current_stage="fix",
+        attempts=dict.fromkeys(stages, 0),
+    )
+    worktree("theirs", state, repo="someone/else").rmdir()
+    assert ss.scan(REPO, NOW, 600, per_worktree=True) == []
+    [record] = ss.scan("someone/else", NOW, 600, per_worktree=True)
+    assert (record["condition"], record["orphaned"]) == ("corrupt", True)
+
+
+def test_a_run_takes_its_stages_from_the_user_file(worktree, git):
+    # Value: protects=a per-worktree run is judged by the stage list in its repository's user
+    # file; fails_when=the per-worktree load skips the user file; why_new=the other
+    # per-worktree tests use directories that are not git checkouts; seam=none
+    wt = worktree("mine", two_stage_state())
+    git(wt, "init", "-q")
+    user = Path.home() / USER_CONFIG_DIR / "mine.toml"
+    user.parent.mkdir(parents=True)
+    user.write_text(TWO_STAGES, encoding="utf-8")
+    [record] = ss.scan(None, NOW, 600, per_worktree=True)
+    assert record["condition"] == "ok"
+    assert record["stage_count"] == 2
+
+
+@pytest.mark.parametrize("key", ["state_root", "state_file"])
+def test_a_user_file_cannot_move_the_state(tmp_path, monkeypatch, git, capsys, key):
+    # Value: protects=the hook and every command read the run state from one place;
+    # fails_when=a user file (read without a flag) sets state_root or state_file;
+    # why_new=the red team reproduced runs vanishing when one config moved the state; seam=none
+    repo = tmp_path / "mine"
+    repo.mkdir()
+    git(repo, "init", "-q")
+    user = Path.home() / USER_CONFIG_DIR / "mine.toml"
+    user.parent.mkdir(parents=True)
+    user.write_text(f"[harness]\n{key} = '/elsewhere'\n", encoding="utf-8")
+    monkeypatch.chdir(repo)
+    assert ss.main(["--now", NOW.isoformat()]) == 2
+    assert f"[harness] {key} is read only from DELIVERY_LOOP_HOME" in capsys.readouterr().err
+
+
+def test_a_named_config_may_still_move_the_state(worktree, tmp_path, monkeypatch, capsys):
+    # Value: protects=an operator can still move the state with --config, as CRB-20 allows;
+    # fails_when=the machine-wide keys are refused in a file named with --config;
+    # why_new=the refusal above covers implicit files only; seam=none
+    monkeypatch.delenv(ps.HOME_ENV)
+    moved = tmp_path / "moved-home"
+    named = tmp_path / "named.toml"
+    named.write_text(f"[harness]\nstate_root = '{moved}'\n", encoding="utf-8")
+    monkeypatch.setenv(ps.HOME_ENV, str(moved))
+    worktree("far", make_state())
+    monkeypatch.delenv(ps.HOME_ENV)
+    assert ss.main(["--now", NOW.isoformat(), "--config", str(named)]) == 0
+    [record] = json.loads(capsys.readouterr().out)
+    assert Path(record["worktree"]).name == "far"

@@ -1,11 +1,37 @@
 # loop.toml
 #
-# The per-repo configuration seam for the delivery loop. Copy this file into a
-# host repository and change what differs there.
+# The per-repo configuration seam for the delivery loop. Copy this file and
+# change what differs for your repository.
+#
+# Where the loop looks. The loop reads the configuration from three places, in
+# this order:
+#
+#   1. `loop.toml` at the root of the repository.
+#   2. `~/.config/delivery-loop/<repo-slug>.toml` in your home directory.
+#   3. The built-in defaults.
+#
+# The repo slug is the name of the directory of the main checkout. Every
+# worktree of one repository uses the same slug, so one user file configures
+# all of them. The loop merges the files key by key: a key in the repository
+# file wins over the same key in the user file, and a key that no file sets
+# keeps its default. A `[[stages]]` array replaces the whole stage list. Both
+# files are optional. A team can commit a `loop.toml` to share it. You can keep
+# a user file for values that belong to you, for example the session label.
+# Two repositories whose main checkouts have the same directory
+# name share one slug, and so share one user file.
+#
+# The carve-out lists are the exception to the merge. The entries in each file
+# are added to the built-in carve-outs. The built-in carve-outs also stay in
+# force under `.claude`, even if a file moves state_dir. So no file can remove a
+# carve-out. `loop.toml` itself is a built-in carve-out, so a run cannot edit it.
 #
 # Two kinds of key live here. The keys `core/config.py` reads are shown below
-# with the value the loop uses when the key is absent, so deleting a key is the
-# same as writing its default. The keys marked "not read yet" are the shape the
+# with the value the loop uses when the key is absent. If you delete a key from
+# the repository file, the user file or the default supplies it. If you write a
+# key, it overrides the user file, even when it holds the default value. So the
+# keys that usually belong to one person, session_label and [tracker], are
+# shipped commented out. Uncomment one only to share it with the whole team.
+# The keys marked "not read yet" are the shape the
 # loop is heading for; nothing reads them today, and an unread key is ignored
 # rather than refused.
 #
@@ -33,17 +59,21 @@ state_dir = ".claude"
 # Where every run's state lives, outside any repository, so the host
 # repository needs no ignore rule. Each worktree gets its own directory,
 # runs/<owner>-<repo>/<worktree>-<hash>/, and loop-scan reads them all. The
-# DELIVERY_LOOP_HOME environment variable overrides this at run time.
-state_root = "~/.delivery-loop"
-state_file = "state.json"
+# hook and every command must agree on this place, so these two keys are read
+# only from a file named with --config. A loop.toml the loop finds by itself,
+# and the user file, may not set them. To move the state for everything, set
+# the DELIVERY_LOOP_HOME environment variable.
+# state_root = "~/.delivery-loop"
+# state_file = "state.json"
 
 # How a decision card names the session the run is in.
-session_label = "Emdash session"
+# session_label = "Session"
 
 
 [ledger]
 # The supervisor's own ledger: one file per repository slug, in this directory
-# under the operator's home. The lock sits beside it.
+# under the operator's home. The lock sits beside it. The name must end in
+# .jsonl, so the ledger can never be an existing file such as a dotfile.
 dir = "{state_dir}/supervisor"
 name = "{slug}-ledger.local.jsonl"
 
@@ -51,7 +81,8 @@ name = "{slug}-ledger.local.jsonl"
 [loop_paths]
 # The enforcement files no declaration may ever authorize. Keep this list
 # short and exact: every entry is a file the loop refuses to let a run edit
-# while it is running.
+# while it is running. The entries you write here are added to the built-in
+# list. You cannot remove a built-in entry.
 carve_outs = [
     "{state_dir}/settings.json",
     "{state_dir}/settings.local.json",
@@ -60,10 +91,13 @@ carve_outs = [
     "{state_dir}/hooks/pipeline-guard",
     "{state_dir}/hooks/pipeline-stop",
     "{state_dir}/hooks/pipeline_loop_paths.py",
+    "loop.toml",
+    ".git",
 ]
 
-# Carve-out by prefix, for a whole directory. Each entry ends in a slash.
-carve_out_prefixes = []
+# Carve-out by prefix, for a whole directory. Each entry ends in a slash. The
+# entries are added to the built-in list, as for carve_outs.
+carve_out_prefixes = [".git/"]
 
 # The region a declaration may name at all, by prefix and exactly. A path
 # outside it is rejected before the carve-out is even consulted.
@@ -168,10 +202,14 @@ gate = "none"
 
 [tracker]
 # The issue prefix, and the pattern that recognises one issue identifier
-# inside a longer name such as a worktree directory. The pattern is matched
-# case-sensitively, so spell it the way the worktree names are spelled.
-prefix = "cod"
-pattern = "({tracker_prefix}-\\d+)"
+# inside a longer name such as a worktree directory. The prefix is a regular
+# expression. The default matches any letters, so it finds `ENG-12` and
+# `abc-21`. The first match in the name wins, so `release-2024-abc-21` reads as
+# `release-2024`. If your tracker has one known prefix, set it here. The
+# pattern is matched case-sensitively, so spell it the way the worktree names
+# are spelled.
+# prefix = "[A-Za-z]+"
+# pattern = "({tracker_prefix}-\\d+)"
 
 # Not read yet. The tracker team, project and milestone the loop files and
 # updates work against, named as the tracker itself shows them.

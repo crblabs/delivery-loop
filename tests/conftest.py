@@ -1,9 +1,12 @@
 """Isolation for every test, and real git repositories for the tests that need one.
 
 Every test gets its own empty state root through ``DELIVERY_LOOP_HOME``, so no
-test reads or writes the operator's ``~/.delivery-loop``. Git runs with the
-operator's global and system configuration switched off, so a signing key or a
-hook on the machine cannot change what a test sees.
+test reads or writes the operator's ``~/.delivery-loop``. It also gets its own
+home directory and working directory, because ``load_config`` reads a user file
+under the home directory and the loop.toml of the repository the current
+directory is in. Git runs with the operator's global and system configuration
+switched off, and without the variables a git hook sets, so a signing key, a
+hook or an outer repository on the machine cannot change what a test sees.
 """
 
 from __future__ import annotations
@@ -15,6 +18,7 @@ from pathlib import Path
 
 import pytest
 
+from core.config import _GIT_REPOSITORY_VARS
 from core.pipeline_state import HOME_ENV
 
 _ISOLATED = {
@@ -32,8 +36,12 @@ def home(tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPat
     """This test's own state root, empty at the start."""
     root = tmp_path_factory.mktemp("delivery-loop-home")
     monkeypatch.setenv(HOME_ENV, str(root))
-    for name in ("GIT_DIR", "GIT_WORK_TREE"):
+    monkeypatch.setenv("HOME", str(tmp_path_factory.mktemp("home")))
+    monkeypatch.chdir(tmp_path_factory.mktemp("cwd"))
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+    for name in _GIT_REPOSITORY_VARS:
         monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path_factory.getbasetemp().parent))
     for name, value in _ISOLATED.items():
         monkeypatch.setenv(name, value)
     return root

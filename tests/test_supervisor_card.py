@@ -16,6 +16,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 from core import card_shape as cs
 from core import supervisor_card as sc
 
@@ -41,7 +43,7 @@ def test_prose_pause_renders_as_a_card() -> None:
     card = sc.render(_record("pause-prose.json"))
     lines = card.split("\n")
     assert lines[0].startswith(
-        "TASK-14 | ship | paused 2026-09-22 08:30 | Emdash session 8aff523e (cod-14)"
+        "TASK-14 | ship | paused 2026-09-22 08:30 | Session 8aff523e (cod-14)"
     )
     assert _labels(card) == ["ASK", "REC", "ALT", "REPLY"]
     assert "REC   1. Rework TASK-14 onto TASK-11's landed schema" in card
@@ -178,14 +180,96 @@ def test_every_synthesised_card_fits_the_budget() -> None:
                 + "word " * 80
             )
         ),
+        sc.render(_base(condition="config_invalid")),
+        sc.render(_base(orphaned=True)),
     ]
     for card in cards:
         assert _body_words(card) <= sc.WORD_BUDGET, card
 
 
+@pytest.mark.parametrize("condition", ["corrupt", "unreadable", "config_invalid"])
+def test_a_run_that_cannot_be_read_gets_a_repair_card(condition) -> None:
+    # Value: protects=every unreadable scan condition asks for a repair, not a wait;
+    # fails_when=a non-ok condition falls through to the liveness card;
+    # why_new=only config_invalid was rendered before; seam=none
+    card = sc.render(_base(condition=condition))
+    assert f"Cannot read this run ({condition})" in card
+    assert "| unreadable " in card.split("\n")[0]
+    assert card.split("\n")[-1] == "REPLY fix | abort"
+
+
+@pytest.mark.parametrize(
+    ("over", "expected"),
+    [
+        ({"orphaned": True}, "Worktree is gone. Prune this run?"),
+        ({"orphaned": True, "status": "done"}, "Worktree is gone. Prune this run?"),
+        ({"condition": "config_invalid"}, "Cannot read this run (config_invalid)"),
+        ({"orphaned": True, "condition": "corrupt"}, "Worktree is gone. Prune this run?"),
+    ],
+)
+def test_a_gone_or_unreadable_run_outranks_its_own_card(over, expected) -> None:
+    # Value: protects=a run that is gone or unreadable gets the card for what a person can do
+    # now, not its stored question or done line; fails_when=render() lets extract_card or the
+    # done shortcut win; why_new=two reviewers reproduced the stale card; seam=none
+    fixture = json.loads((FIXTURES / "pause-card.json").read_text(encoding="utf-8"))
+    card = sc.render({**fixture["record"], **over}, None)
+    assert expected in card
+    assert "REPLY 1 | 2 | 3" not in card
+
+
+def test_a_pending_prompt_outranks_the_unreadable_card() -> None:
+    # Value: protects=a session blocked on a permission prompt shows the prompt even when its
+    # run cannot be read; fails_when=the unreadable card is checked before the gates;
+    # why_new=the red team found the prompt hidden, which main shows; seam=none
+    prompt = {"outcome": "permission_prompt", "tool_use_id": "t1", "tool": "Bash"}
+    card = sc.render(_base(condition="config_invalid"), prompt)
+    assert "Cannot read this run" not in card
+    assert "Approve Bash" in card
+    # An orphaned run outranks a prompt: nothing can resume the session it is parked in.
+    assert "Worktree is gone" in sc.render(_base(orphaned=True), prompt)
+
+
+def test_the_orphaned_card_lists_before_it_deletes() -> None:
+    # Value: protects=the orphaned card never recommends a delete-all as one step;
+    # fails_when=the card recommends loop-prune --yes alone, which deletes every
+    # repository's orphaned runs; why_new=the red team flagged the destructive advice; seam=none
+    card = sc.render(_base(orphaned=True))
+    assert "list every orphaned run, then loop-prune --yes" in card
+    assert card.split("\n")[-1] == "REPLY prune | wait"
+
+
+def test_the_prune_advice_names_the_same_config() -> None:
+    # Value: protects=the prune commands on an orphaned card read the state root the card did;
+    # fails_when=a card rendered with --config advises a bare loop-prune; why_new=Codex found
+    # the advice pointing at the default state root; seam=none
+    card = sc.render(_base(orphaned=True), None, prune="loop-prune --config ops.toml")
+    assert "Run loop-prune --config ops.toml to list" in card
+    assert "then loop-prune --config ops.toml --yes" in card
+
+
+def test_an_orphaned_run_gets_a_prune_card() -> None:
+    # Value: protects=a run whose worktree is gone is offered loop-prune, not a resume;
+    # fails_when=an orphaned record falls through to a liveness or repair card;
+    # why_new=CRB-20 added orphaned runs and no card named them; seam=none
+    card = sc.render(_base(orphaned=True))
+    assert "Worktree is gone. Prune this run?" in card
+    assert "loop-prune --yes" in card
+    assert "| orphaned " in card.split("\n")[0]
+
+
 def test_cli_renders_a_fixture_and_its_first_line(tmp_path: Path) -> None:
+    # The fixture's worktree does not exist here, so one named config applies to it.
+    named = tmp_path / "loop.toml"
+    named.write_text("", encoding="utf-8")
     proc = subprocess.run(
-        [sys.executable, str(TOOL), "--record-file", str(FIXTURES / "pause-card.json")],
+        [
+            sys.executable,
+            str(TOOL),
+            "--record-file",
+            str(FIXTURES / "pause-card.json"),
+            "--config",
+            str(named),
+        ],
         capture_output=True,
         text=True,
     )
@@ -198,6 +282,8 @@ def test_cli_renders_a_fixture_and_its_first_line(tmp_path: Path) -> None:
             "--record-file",
             str(FIXTURES / "pause-card.json"),
             "--first-line",
+            "--config",
+            str(named),
         ],
         capture_output=True,
         text=True,

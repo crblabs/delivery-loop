@@ -9,8 +9,11 @@ pause fires only on an undeclared loop edit (the hook auto-continues a declared
 one), so this measurement, not the raw pause count, is the return on the change.
 
 Input is the JSON array ``supervisor_scan`` prints, on stdin or ``--scan-file``.
+Without ``--config``, each record is classified under the config of its own
+worktree, and a record whose config cannot be read counts as ``unobservable``.
 The tool never writes and never touches the network. Exit code is ``0`` on a
-readable input and ``2`` when the input cannot be parsed.
+readable input, and ``2`` when the input cannot be parsed or the command's own
+config is not valid (``CONFIG_INVALID``).
 """
 
 from __future__ import annotations
@@ -21,7 +24,7 @@ import sys
 from collections import Counter
 
 from core import supervisor_decide as sd
-from core.config import DEFAULTS, LoopConfig, load_config
+from core.config import DEFAULTS, ConfigError, LoopConfig, config_for_run, load_cli_config
 
 CATEGORIES = (
     "removable_auto_accept",
@@ -43,7 +46,9 @@ def classify_pause(record: object, allowlist: list[str], config: LoopConfig = DE
     """One category for one scan record. See ``CATEGORIES`` for the vocabulary."""
     if not isinstance(record, dict):
         return "unobservable"
-    if record.get("condition") != "ok":
+    # An orphaned run counts as unobservable whatever its state file reads as,
+    # the same way decide() escalates it first.
+    if record.get("orphaned") or record.get("condition") != "ok":
         return "unobservable"
     if record.get("status") != "awaiting_human":
         return "not_paused"
@@ -71,10 +76,25 @@ def _classify_guard(record: dict, allowlist: list[str], config: LoopConfig) -> s
     return "undeclared_off_allowlist"
 
 
-def summarize(records: list, allowlist: list[str], config: LoopConfig = DEFAULTS) -> dict[str, int]:
-    """Counts by category over every record, every category key present."""
-    counts = Counter(classify_pause(r, allowlist, config) for r in records)
+def summarize(
+    records: list, allowlist: list[str], config: LoopConfig = DEFAULTS, per_run: bool = False
+) -> dict[str, int]:
+    """Counts by category over every record, every category key present.
+
+    With ``per_run``, each record is classified under its own worktree's config,
+    and a record whose config cannot be read counts as unobservable.
+    """
+    counts = Counter(_classify(r, allowlist, config, per_run) for r in records)
     return {category: counts.get(category, 0) for category in CATEGORIES}
+
+
+def _classify(record: object, allowlist: list[str], config: LoopConfig, per_run: bool) -> str:
+    if per_run and isinstance(record, dict):
+        try:
+            config = config_for_run(record.get("worktree"), config, explicit=False)
+        except ConfigError:
+            return "unobservable"
+    return classify_pause(record, allowlist, config)
 
 
 def _load(scan_file: str | None) -> object:
@@ -93,7 +113,11 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
         "--scan-file", default=None, help="supervisor_scan.py output; stdin if unset"
     )
     parser.add_argument("--allow-path", action="append", default=[])
-    parser.add_argument("--config", default=None, help="a loop.toml, or the directory holding one")
+    parser.add_argument(
+        "--config",
+        default=None,
+        help="a loop.toml, or its directory (default: each run's own worktree config)",
+    )
     return parser.parse_args(argv)
 
 
@@ -103,7 +127,10 @@ def main(argv: list[str] | None = None) -> int:
     if not isinstance(records, list):
         print("MALFORMED_INPUT: expected a JSON array of scan records", file=sys.stderr)
         return 2
-    summary = summarize(records, args.allow_path, load_config(args.config))
+    config = load_cli_config(args.config)
+    if config is None:
+        return 2
+    summary = summarize(records, args.allow_path, config, per_run=args.config is None)
     print(json.dumps({"total": len(records), "by_category": summary}, indent=2, sort_keys=True))
     return 0
 

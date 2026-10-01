@@ -69,6 +69,10 @@ def pause_key(record: dict, question: dict | None = None) -> str:
     # corrupt runs must not share one dedup key and suppress each other.
     run = record.get("run_id") or record.get("worktree") or "?"
     status = record.get("status")
+    if record.get("orphaned"):
+        # decide() escalates an orphaned run before anything else, so it gets its
+        # own identity and is not held back under the pause it was sent for.
+        return f"{run}:orphaned"
     if isinstance(question, dict) and question.get("outcome") == "permission_prompt":
         # Checked before the terminal status, so a prompt on a done run gets its
         # own identity and is not suppressed by the run's already-sent ":done".
