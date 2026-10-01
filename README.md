@@ -92,7 +92,7 @@ session's id, so the run is bound to the session that started it.
 
 | Slash form | Shell form | Does |
 |---|---|---|
-| `/delivery-loop:pipeline start CRB-30` | `delivery-loop start CRB-30` | Starts a run in this worktree and hands the agent stage 1. |
+| `/delivery-loop:pipeline start <task>` | `delivery-loop start <task>` | Starts a run in this worktree and hands the agent stage 1. The task is an issue id or a short title. |
 | `/delivery-loop:pipeline status` | `delivery-loop status` | The run's stage, status, pause reason and last five events. |
 | `/delivery-loop:pipeline resume` | `delivery-loop resume` | Continues a paused run. A person only: see below. |
 | `/delivery-loop:pipeline abort` | `delivery-loop abort` | Ends the run. A person only: see below. |
@@ -103,9 +103,9 @@ own, `delivery-loop doctor` (run once through the slash form) prints the full
 path and an alias line.
 
 `resume` and `abort` clear or end a pause, so only a person runs them. Typed in
-Claude Code (`/delivery-loop:pipeline resume`, or `/pipeline resume` when no
-other command has that name), the plugin's prompt hook applies them: Claude
-Code runs that hook for what a person types and never for the agent's own tool
+Claude Code in full (`/delivery-loop:pipeline resume`; a short `/pipeline
+resume` is not applied), the plugin's prompt hook applies them: Claude Code
+runs that hook for what a person types and never for the agent's own tool
 calls. The event log records such a resume as `by: person`. In a terminal, the
 shell form works when both ends of the command are a terminal, and is recorded
 as `by: terminal`. Anywhere else, `delivery-loop resume` and `abort` refuse.
