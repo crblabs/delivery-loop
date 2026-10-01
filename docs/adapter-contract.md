@@ -173,11 +173,13 @@ class Adapter(Protocol):
 
 Core reads and writes the state file. An adapter never does.
 
-The state file lives in the worktree's git directory, at the path
-`core.pipeline_state.state_path` returns. Finding it runs git, so a session
-outside a git worktree has no state path: `state_path` raises `NotAWorktree`.
-An adapter resolves the path once per session, not once per tool call. How an
-adapter treats `NotAWorktree` is unsettled.
+The state file lives outside the repository, under the state root
+(`~/.delivery-loop` unless `DELIVERY_LOOP_HOME` or `state_root` moves it), at
+the path `core.pipeline_state.state_path(worktree, repo)` returns. Before the
+first write, core calls `prepare_run_dir`, which records the worktree the run
+belongs to. The edit guard classifies repository paths only, so it does not
+see the state file. A guard that accepts absolute paths must also refuse every
+path under the state root.
 
 ## Unsettled
 

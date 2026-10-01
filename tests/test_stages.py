@@ -74,8 +74,7 @@ def make_state(names, current: int = 0, **over) -> dict:
 
 
 def write_state(worktree: Path, state: dict, config: cfg.LoopConfig = cfg.DEFAULTS) -> Path:
-    path = ps.state_path(worktree, config)
-    path.parent.mkdir(parents=True, exist_ok=True)
+    path = ps.prepare_run_dir(worktree, "crblabs/delivery-loop", config)
     path.write_text(json.dumps(state), encoding="utf-8")
     return path
 
@@ -156,8 +155,10 @@ def test_three_declared_stages_replace_the_five(three: cfg.LoopConfig) -> None:
 
 
 @pytest.fixture
-def worktree(tmp_path: Path, make_repo) -> Path:
-    return make_repo(tmp_path / "repo")
+def worktree(tmp_path: Path) -> Path:
+    path = tmp_path / "repo"
+    path.mkdir()
+    return path
 
 
 def test_the_state_reader_reads_a_run_of_the_declared_stages(
@@ -173,7 +174,7 @@ def test_the_scanner_reports_a_run_of_the_declared_stages(
     three: cfg.LoopConfig, worktree: Path
 ) -> None:
     write_state(worktree, make_state(three.stage_names, current=2), three)
-    (record,) = ss.scan([worktree], None, NOW, 600, three)
+    (record,) = ss.scan(None, NOW, 600, three)
     assert record["condition"] == "ok"
     # The count a person is shown is read off the list, not written as five.
     assert (record["stage_num"], record["stage_count"]) == (3, 3)

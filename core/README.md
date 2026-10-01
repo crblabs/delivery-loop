@@ -59,8 +59,9 @@ Every value that names the harness or the tracker is a field on `LoopConfig` in
 1. Add the field to `LoopConfig` with today's value as its default. Write a
    path under the harness state directory with the `{state_dir}` placeholder,
    so one setting moves every path that names it. The run state is not under
-   that directory: it lives in the worktree's git directory, so
-   `{state_file}` and `{state_stem}` give its name and never its location. A tracker value takes `{tracker_prefix}` the same way.
+   that directory: it lives under `state_root`, outside the repository, so
+   `{state_file}` and `{state_stem}` give its name and never its location. A
+   tracker value takes `{tracker_prefix}` the same way.
 2. Add its table and key to `_STRING_KEYS` or `_LIST_KEYS`, so a `loop.toml`
    can set it, and validate it in `_validate` if a wrong value could do damage.
 3. Take the config as a parameter where the value is used. A public function

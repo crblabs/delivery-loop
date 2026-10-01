@@ -18,15 +18,15 @@ Path fields are written with placeholders, ``{state_dir}``, ``{state_file}`` and
 ``{state_stem}``, substituted once when the object is built. A host that moves
 the harness state directory therefore moves the carve-outs, the loop prefixes
 and the ledger with it, from one setting. ``{state_file}`` and ``{state_stem}``
-expand to the state file's name only: the file itself lives in the git
-directory, so a worktree path built from them names nothing. The tracker pattern takes
-``{tracker_prefix}`` the same way.
+expand to the state file's name only: the file itself lives under
+``state_root``, so a worktree path built from them names nothing. The tracker
+pattern takes ``{tracker_prefix}`` the same way.
 
-The run state does not live in the worktree. It lives in ``run_dir`` inside the
-worktree's git directory, the one ``git rev-parse --git-dir`` names, so git
-never tracks it and a host repository needs no ignore rule for it. Each worktree
-has its own git directory, so each run has its own state, and removing the
-worktree removes the state with it.
+The run state does not live in the worktree, so git never sees it and a host
+repository needs no ignore rule. It lives under ``state_root``,
+``~/.delivery-loop`` by default, one directory per worktree. The
+``DELIVERY_LOOP_HOME`` environment variable overrides it at run time, the way
+``GSTACK_HOME`` moves gstack's.
 
 The stage list is configuration too. ``stages`` is a tuple of ``StageSpec``, one
 per stage, and each spec declares the contract the loop depends on and not only
@@ -89,12 +89,12 @@ def _refuse_empty(name: str, value: object) -> None:
         raise ConfigError(f"{name} may not be empty")
 
 
-def _refuse_unsafe(name: str, value: str, root: str = "repository") -> None:
-    """Refuse an absolute path and one that climbs out of its root."""
+def _refuse_unsafe(name: str, value: str) -> None:
+    """Refuse an absolute path and one that climbs out of the repository root."""
     if value.startswith("/") or value.startswith("~"):
-        raise ConfigError(f"{name} must be a {root}-relative path: {value!r}")
+        raise ConfigError(f"{name} must be a repository-relative path: {value!r}")
     if ".." in PurePosixPath(value).parts:
-        raise ConfigError(f"{name} may not escape the {root} root: {value!r}")
+        raise ConfigError(f"{name} may not escape the repository root: {value!r}")
 
 
 GATES = ("none", "approval", "review_batch")
@@ -184,9 +184,9 @@ DEFAULT_STAGES = (
 class LoopConfig:
     """Every value the loop takes from its host, with today's values as defaults.
 
-    ``state_dir`` names the harness directory inside a worktree. ``run_dir`` and
-    ``state_file`` name the directory inside the worktree's git directory that
-    holds the run state, and the state file in it. ``ledger_dir`` and
+    ``state_dir`` names the harness directory inside a worktree. ``state_root``
+    is the directory every run's state lives under, outside any repository, and
+    ``state_file`` names the state file in a run's directory. ``ledger_dir`` and
     ``ledger_name`` place the supervisor's own ledger under the operator's home
     directory. ``carve_outs``, ``carve_out_prefixes``, ``loop_prefixes``,
     ``loop_exact``, ``stage_shorthand`` and ``stage_target`` are the loop-path
@@ -198,7 +198,7 @@ class LoopConfig:
     """
 
     state_dir: str = ".claude"
-    run_dir: str = "delivery-loop"
+    state_root: str = "~/.delivery-loop"
     state_file: str = "state.json"
     ledger_dir: str = "{state_dir}/supervisor"
     ledger_name: str = "{slug}-ledger.local.jsonl"
@@ -226,8 +226,11 @@ class LoopConfig:
     def __post_init__(self) -> None:
         _refuse_empty("state_dir", self.state_dir)
         _refuse_unsafe("state_dir", self.state_dir)
-        _refuse_empty("run_dir", self.run_dir)
-        _refuse_unsafe("run_dir", self.run_dir, root="git directory")
+        _refuse_empty("state_root", self.state_root)
+        if not (self.state_root.startswith("/") or self.state_root.startswith("~")):
+            raise ConfigError(
+                f"state_root must be an absolute path or start with ~: {self.state_root!r}"
+            )
         _refuse_empty("state_file", self.state_file)
         if "/" in self.state_file or self.state_file in (".", ".."):
             raise ConfigError(f"state_file names one file, not a path: {self.state_file!r}")
@@ -321,7 +324,7 @@ DEFAULTS = LoopConfig()
 # Where each field is written in a loop.toml: the field, its table, its key.
 _STRING_KEYS = (
     ("state_dir", "harness", "state_dir"),
-    ("run_dir", "harness", "run_dir"),
+    ("state_root", "harness", "state_root"),
     ("state_file", "harness", "state_file"),
     ("session_label", "harness", "session_label"),
     ("ledger_dir", "ledger", "dir"),
@@ -397,8 +400,8 @@ _REMOVED_KEYS = (
     (
         "harness",
         "worktree_glob",
-        "runs are now found through `git worktree list`; "
-        "pass the repository to loop-scan with --repo-dir instead",
+        "every run now lives under [harness] state_root, ~/.delivery-loop by default, "
+        "and loop-scan reads it there",
     ),
 )
 

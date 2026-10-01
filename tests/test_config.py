@@ -29,7 +29,7 @@ NOW = datetime(2026, 9, 16, 10, 0, 0, tzinfo=UTC)
 MOVED = """
 [harness]
 state_dir = ".harness"
-run_dir = "harness-runs"
+state_root = "@ROOT@"
 state_file = "run.json"
 
 [loop_paths]
@@ -60,8 +60,11 @@ def write(tmp_path: Path, text: str, name: str = "loop.toml") -> Path:
 
 
 @pytest.fixture
-def moved(tmp_path: Path) -> cfg.LoopConfig:
-    return cfg.load_config(write(tmp_path, MOVED))
+def moved(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> cfg.LoopConfig:
+    # The environment wins over the config, so the moved root is only seen
+    # with the environment variable unset.
+    monkeypatch.delenv(ps.HOME_ENV)
+    return cfg.load_config(write(tmp_path, MOVED.replace("@ROOT@", str(tmp_path / "moved-home"))))
 
 
 # --- the defaults are today's values -----------------------------------------
@@ -70,7 +73,7 @@ def moved(tmp_path: Path) -> cfg.LoopConfig:
 def test_defaults_are_the_values_the_modules_held_inline() -> None:
     d = cfg.DEFAULTS
     assert d.state_dir == ".claude"
-    assert d.run_dir == "delivery-loop"
+    assert d.state_root == "~/.delivery-loop"
     assert d.state_file == "state.json"
     assert d.ledger_dir == ".claude/supervisor"
     assert d.ledger_file("slug") == "slug-ledger.local.jsonl"
@@ -97,15 +100,8 @@ def test_defaults_are_the_values_the_modules_held_inline() -> None:
 
 def test_defaults_still_classify_the_paths_they_used_to() -> None:
     assert lp.is_carveout(".claude/hooks/pipeline_stop.py") is True
-    # The run state lives in the git directory, which no declaration reaches.
-    assert lp.is_carveout(".git/delivery-loop/state.json") is True
-    assert lp.is_carveout(".GIT/config") is True
-    # Value: protects=a linked worktree's .git pointer file stays a carve-out;
-    #   fails_when=the rule needs a slash after .git;
-    #   why_new=only paths under .git/ were pinned;
-    #   seam=none
-    assert lp.is_carveout(".git") is True
-    assert lp.is_carveout(".gitignore") is False
+    # The run state is not in the repository, so no repository path is it.
+    assert lp.is_carveout(".claude/pipeline.local.json") is False
     assert lp.is_carveout(".claude/skills/pipeline/stages/ship.md") is False
     declared = "```loop-edits\nstages/ship.md\n```"
     assert lp.parse_loop_edits_block(declared) == [".claude/skills/pipeline/stages/ship.md"]
@@ -150,11 +146,11 @@ def test_the_shipped_template_reproduces_the_defaults() -> None:
 # --- one loop.toml, honoured by every module that reads it -------------------
 
 
-def test_moved_run_dir_reaches_the_state_reader(
-    moved: cfg.LoopConfig, tmp_path: Path, make_repo
-) -> None:
-    repo = make_repo(tmp_path / "repo")
-    assert ps.state_path(repo, moved) == repo / ".git" / "harness-runs" / "run.json"
+def test_moved_state_root_reaches_the_state_reader(moved: cfg.LoopConfig, tmp_path: Path) -> None:
+    worktree = tmp_path / "repo"
+    path = ps.state_path(worktree, "crblabs/host", moved)
+    assert path.parent.parent == tmp_path / "moved-home" / "runs" / "crblabs-host"
+    assert path.name == "run.json"
 
 
 def test_moved_state_dir_reaches_the_loop_paths(moved: cfg.LoopConfig) -> None:
@@ -174,11 +170,10 @@ def test_moved_state_dir_reaches_the_ledger(moved: cfg.LoopConfig, tmp_path: Pat
     assert (tmp_path / ".harness" / "watch" / "slug-ledger.local.lock").exists()
 
 
-def test_moved_run_dir_reaches_the_scanner(
-    moved: cfg.LoopConfig, tmp_path: Path, make_repo
-) -> None:
-    worktree = make_repo(tmp_path / "repo")
-    ps.state_path(worktree, moved).parent.mkdir()
+def test_moved_state_root_reaches_the_scanner(moved: cfg.LoopConfig, tmp_path: Path) -> None:
+    worktree = tmp_path / "repo"
+    worktree.mkdir()
+    path = ps.prepare_run_dir(worktree, "crblabs/host", moved)
     state = {
         "version": 1,
         "run_id": "9f1c2e7a-3b4d-4e5f-8a6b-7c8d9e0f1a2b",
@@ -193,8 +188,8 @@ def test_moved_run_dir_reaches_the_scanner(
         "updated_at": "2026-09-16T09:59:30+00:00",
         "history": [],
     }
-    ps.state_path(worktree, moved).write_text(json.dumps(state), encoding="utf-8")
-    records = ss.scan([worktree], None, NOW, 600, moved)
+    path.write_text(json.dumps(state), encoding="utf-8")
+    records = ss.scan(None, NOW, 600, moved)
     assert [r["condition"] for r in records] == ["ok"]
     assert records[0]["worktree"] == str(worktree)
 
@@ -251,8 +246,7 @@ def test_moved_tracker_pattern_is_the_only_one_recognised(moved: cfg.LoopConfig)
         '[loop_paths]\ncarve_outs = ["a/../../outside"]\n',
         '[loop_paths]\nexact = ["/absolute"]\n',
         '[loop_paths]\ncarve_out_prefixes = ["/absolute/"]\n',
-        '[harness]\nrun_dir = "../outside"\n',
-        '[harness]\nrun_dir = "/absolute"\n',
+        '[harness]\nstate_root = "relative/home"\n',
     ],
 )
 def test_an_unsafe_path_is_refused(tmp_path: Path, table: str) -> None:
@@ -268,7 +262,7 @@ def test_an_unsafe_path_is_refused(tmp_path: Path, table: str) -> None:
         '[loop_paths]\ncarve_outs = [""]\n',
         '[harness]\nstate_dir = ""\n',
         '[harness]\nstate_file = ""\n',
-        '[harness]\nrun_dir = ""\n',
+        '[harness]\nstate_root = ""\n',
         '[commands]\nabort = ""\n',
     ],
 )
@@ -304,10 +298,10 @@ def test_the_config_is_frozen() -> None:
         cfg.DEFAULTS.state_dir = ".other"
 
 
-# Value: protects=a loop.toml that still sets worktree_glob fails loudly and names --repo-dir;
+# Value: protects=a loop.toml that still sets worktree_glob fails loudly and names state_root;
 #   fails_when=the removed key is silently ignored again;
 #   why_new=only unknown future keys were tested;
 #   seam=none
 def test_a_removed_worktree_glob_is_refused_with_its_replacement(tmp_path: Path) -> None:
-    with pytest.raises(cfg.ConfigError, match="--repo-dir"):
+    with pytest.raises(cfg.ConfigError, match="state_root"):
         cfg.load_config(write(tmp_path, '[harness]\nworktree_glob = "~/trees/*/*"\n'))

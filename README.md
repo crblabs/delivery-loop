@@ -80,15 +80,17 @@ the project environment, and `uv run <name>` runs one. The names share the
 
 | Command | Does |
 |---|---|
-| `loop-scan` | Finds every run in the worktrees of a repository and prints one JSON record each. |
+| `loop-scan` | Finds every run under the state root and prints one JSON record each. |
 | `loop-decide` | Reads one scan record and prints the decision for that run. |
 | `loop-card` | Renders one run's pause as the decision card a person reads. |
 | `loop-card-check` | Checks that a pause question carries the required card shape. |
 | `loop-pause-stats` | Counts the pauses in a scan by category. |
+| `loop-prune` | Lists the runs whose worktree is gone, and deletes them with `--yes`. |
 | `loop-transcript` | Reads the pending question out of one harness session. |
 
-`loop-scan` finds runs through `git worktree list --porcelain -z`, so it needs
-git 2.36 or later on the machine that runs it.
+Every run's state lives outside the repository, under `~/.delivery-loop`, in
+`runs/<owner>-<repo>/<worktree>-<hash>/`. A host repository needs no ignore
+rule. Set `DELIVERY_LOOP_HOME`, or `state_root` in `loop.toml`, to move it.
 
 Each command takes `--help`. `[project.scripts]` in `pyproject.toml` is the
 table that declares them, and `tests/test_entry_points.py` reads that table and

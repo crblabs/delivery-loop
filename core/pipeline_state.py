@@ -7,9 +7,13 @@ timestamps, ``history``, guard maps), so this module validates every field it
 exposes. Anything it needs but cannot trust makes the run ``unreadable`` or
 ``unsupported``, never an auto-answer input.
 
-The state file lives in the worktree's git directory, not in the worktree, so
-git never tracks it. ``state_path`` is the one definition of where it is, for
-the hook that writes it and for this reader.
+The state file does not live in the worktree, so git never sees it and a host
+repository needs no ignore rule. Each run has a directory under the state root,
+``~/.delivery-loop`` unless ``$DELIVERY_LOOP_HOME`` or the config moves it:
+``runs/<owner>-<repo>/<worktree>-<hash>/``. ``state_path`` is the one definition
+of where the state file is, for the hook that writes it and for this reader.
+``prepare_run_dir`` is the hook's one helper here and the only function that
+writes.
 
 The reader never writes. It returns a ``(condition, state)`` pair where
 ``condition`` is one of ``CONDITIONS`` and ``state`` is the parsed dict when the
@@ -23,11 +27,11 @@ started under one skillset being resumed under another.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
 import stat
-import subprocess
 from datetime import datetime
 from pathlib import Path
 
@@ -42,62 +46,67 @@ SUPPORTED_VERSION = 1
 UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.I)
 
 
-# Variables that make git answer for another repository than the one ``-C``
-# names, or configure it as the calling git did. A caller running inside a git
-# hook exports them, so every git call here runs without them. The operator's
-# own limits on repository search, such as GIT_CEILING_DIRECTORIES, are kept.
-GIT_REPO_VARS = frozenset(
-    {
-        "GIT_DIR",
-        "GIT_WORK_TREE",
-        "GIT_COMMON_DIR",
-        "GIT_INDEX_FILE",
-        "GIT_OBJECT_DIRECTORY",
-        "GIT_NAMESPACE",
-        "GIT_CONFIG_PARAMETERS",
-        "GIT_CONFIG_COUNT",
-    }
-)
-# `git -c` exports numbered pairs, GIT_CONFIG_KEY_0 and GIT_CONFIG_VALUE_0 on.
-_GIT_CONFIG_PAIR_PREFIXES = ("GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_")
-# A `gitdir: <path>` pointer is one short line. Anything larger is not one.
-_MAX_POINTER_BYTES = 4096
+# The variable that moves the state root, as GSTACK_HOME moves gstack's.
+HOME_ENV = "DELIVERY_LOOP_HOME"
+RUNS_DIR = "runs"
+# The file in a run directory that names the worktree the run belongs to.
+WORKTREE_FILE = "worktree"
+# The worktree file holds one path. Anything larger is not one.
+_MAX_WORKTREE_BYTES = 4096
+_UNSAFE_NAME_RE = re.compile(r"[^A-Za-z0-9._-]+")
 
 
-class NotAWorktree(ValueError):
-    """A path git does not recognise as inside a worktree."""
+def state_home(config: LoopConfig = DEFAULTS) -> Path:
+    """The root every run lives under: ``$DELIVERY_LOOP_HOME``, else the config's."""
+    return Path(os.environ.get(HOME_ENV) or config.state_root).expanduser()
 
 
-def git_env() -> dict[str, str]:
-    """The caller's environment without the variables that redirect git."""
-    return {
-        k: v
-        for k, v in os.environ.items()
-        if k not in GIT_REPO_VARS and not k.startswith(_GIT_CONFIG_PAIR_PREFIXES)
-    }
+def _name(text: str) -> str:
+    """One safe path component made from a free-form name."""
+    return _UNSAFE_NAME_RE.sub("-", text).strip(".-") or "run"
 
 
-def run_git(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
-    """Run one git command in ``cwd`` without the redirecting variables.
+def repo_slug(repo: str) -> str:
+    """The directory name of one repository: ``owner/name`` becomes ``owner-name``."""
+    if not isinstance(repo, str) or not repo.strip():
+        raise ValueError(f"a run needs its repository as owner/name, got {repo!r}")
+    return _name(repo.strip().replace("/", "-"))
 
-    Raises ``OSError`` when git cannot be started at all.
+
+def run_dir(worktree: Path, repo: str, config: LoopConfig = DEFAULTS) -> Path:
+    """The directory that holds one worktree's run.
+
+    It is named after the worktree's folder plus a short hash of the worktree's
+    real path, so two worktrees with the same folder name never share one.
     """
-    return subprocess.run(
-        ["git", "-C", str(cwd), *args],
-        env=git_env(),
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    real = worktree.resolve()
+    digest = hashlib.sha256(str(real).encode("utf-8")).hexdigest()[:12]
+    return state_home(config) / RUNS_DIR / repo_slug(repo) / f"{_name(real.name)}-{digest}"
 
 
-def read_pointer(path: Path) -> str | None:
+def state_path(worktree: Path, repo: str, config: LoopConfig = DEFAULTS) -> Path:
+    """Where the hook keeps the state file for one worktree."""
+    return run_dir(worktree, repo, config) / config.state_file
+
+
+def prepare_run_dir(worktree: Path, repo: str, config: LoopConfig = DEFAULTS) -> Path:
+    """Create one worktree's run directory and return its state file path.
+
+    The hook calls this before its first write. It records which worktree the
+    run belongs to, so the supervisor can map the run back to it and notice
+    when the worktree is gone.
+    """
+    directory = run_dir(worktree, repo, config)
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / WORKTREE_FILE).write_text(f"{worktree.resolve()}\n", encoding="utf-8")
+    return directory / config.state_file
+
+
+def _read_small_file(path: Path) -> str | None:
     """The text of a small regular file, or ``None``.
 
-    git keeps each worktree link in a one-line file. The file is opened once,
-    without following a symlink and without blocking on a pipe, and its type
-    and size are checked on that same open file, so it cannot change between
-    the check and the read.
+    The file is opened once, without following a symlink and without blocking
+    on a pipe, and its type and size are checked on that open file.
     """
     try:
         fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
@@ -105,71 +114,26 @@ def read_pointer(path: Path) -> str | None:
         return None
     try:
         mode = os.fstat(fd)
-        if not stat.S_ISREG(mode.st_mode) or mode.st_size > _MAX_POINTER_BYTES:
+        if not stat.S_ISREG(mode.st_mode) or mode.st_size > _MAX_WORKTREE_BYTES:
             return None
-        data = os.read(fd, _MAX_POINTER_BYTES + 1)
+        data = os.read(fd, _MAX_WORKTREE_BYTES + 1)
     except OSError:
         return None
     finally:
         os.close(fd)
-    if len(data) > _MAX_POINTER_BYTES:
-        return None
     try:
-        return data.decode("utf-8")
+        return None if len(data) > _MAX_WORKTREE_BYTES else data.decode("utf-8")
     except UnicodeDecodeError:
         return None
 
 
-def _pointed_git_dir(worktree: Path) -> Path | None:
-    """The git directory a worktree's ``.git`` entry names, read without git.
-
-    ``.git`` is the directory itself in a main worktree and a one-line
-    ``gitdir: <path>`` file in a linked one. Anything else returns ``None`` and
-    the caller asks git instead.
-    """
-    dotgit = worktree / ".git"
-    try:
-        mode = dotgit.lstat()
-    except OSError:
+def read_worktree(directory: Path) -> Path | None:
+    """The worktree one run directory belongs to, or ``None`` when unrecorded."""
+    text = _read_small_file(directory / WORKTREE_FILE)
+    value = "" if text is None else text.strip()
+    if not value or "\n" in value or not os.path.isabs(value):
         return None
-    if stat.S_ISDIR(mode.st_mode):
-        return dotgit.resolve()
-    text = read_pointer(dotgit)
-    if text is None or not text.startswith("gitdir: "):
-        return None
-    target = Path(text.removeprefix("gitdir: ").strip())
-    target = target if target.is_absolute() else worktree / target
-    return target.resolve() if target.is_dir() else None
-
-
-def git_dir(worktree: Path) -> Path:
-    """The absolute git directory of one worktree.
-
-    That is ``.git`` for the main worktree and ``.git/worktrees/<name>`` for a
-    linked one. The worktree's own ``.git`` entry is read first, so a scan over
-    many worktrees starts no process per worktree. A path below the worktree
-    root, or an entry that cannot be read, is resolved by git.
-    """
-    pointed = _pointed_git_dir(worktree)
-    if pointed is not None:
-        return pointed
-    try:
-        result = run_git(worktree, "rev-parse", "--absolute-git-dir")
-    except OSError as exc:
-        raise NotAWorktree(f"cannot run git for {worktree}: {exc}") from exc
-    if result.returncode != 0:
-        raise NotAWorktree(f"{worktree} is not inside a git worktree: {result.stderr.strip()}")
-    return Path(result.stdout.strip()).resolve()
-
-
-def state_path_in(git_directory: Path, config: LoopConfig = DEFAULTS) -> Path:
-    """Where the state file sits inside one worktree's git directory."""
-    return git_directory / config.run_dir / config.state_file
-
-
-def state_path(worktree: Path, config: LoopConfig = DEFAULTS) -> Path:
-    """Where the hook keeps the state file for one worktree."""
-    return state_path_in(git_dir(worktree), config)
+    return Path(value)
 
 
 def stage_names(config: LoopConfig = DEFAULTS) -> tuple[str, ...]:

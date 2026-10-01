@@ -1,11 +1,9 @@
-"""Real git repositories for the tests that find a run through git.
+"""Isolation for every test, and real git repositories for the tests that need one.
 
-The run state lives in a worktree's git directory, so a test that writes or
-finds one needs a repository with a commit, and sometimes a linked worktree.
-Every git call, the fixtures' own and the code's under test, runs with the
-operator's global and system configuration switched off and with no variable
-that points git at another repository. A signing key, a hook on the machine, or
-a test run from inside a git hook cannot change what a test sees.
+Every test gets its own empty state root through ``DELIVERY_LOOP_HOME``, so no
+test reads or writes the operator's ``~/.delivery-loop``. Git runs with the
+operator's global and system configuration switched off, so a signing key or a
+hook on the machine cannot change what a test sees.
 """
 
 from __future__ import annotations
@@ -17,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from core.pipeline_state import git_env
+from core.pipeline_state import HOME_ENV
 
 _ISOLATED = {
     "GIT_CONFIG_GLOBAL": os.devnull,
@@ -30,12 +28,15 @@ _ISOLATED = {
 
 
 @pytest.fixture(autouse=True)
-def _isolated_git(monkeypatch: pytest.MonkeyPatch) -> None:
-    # Scrub exactly what the code under test scrubs.
-    for name in set(os.environ) - set(git_env()):
+def home(tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """This test's own state root, empty at the start."""
+    root = tmp_path_factory.mktemp("delivery-loop-home")
+    monkeypatch.setenv(HOME_ENV, str(root))
+    for name in ("GIT_DIR", "GIT_WORK_TREE"):
         monkeypatch.delenv(name, raising=False)
     for name, value in _ISOLATED.items():
         monkeypatch.setenv(name, value)
+    return root
 
 
 def _git(cwd: Path, *args: str) -> str:

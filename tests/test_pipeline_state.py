@@ -30,13 +30,19 @@ def make_state(**over) -> dict:
     return state
 
 
+REPO = "crblabs/host"
+
+
 @pytest.fixture
-def repo(tmp_path: Path, make_repo) -> Path:
-    return make_repo(tmp_path / "host")
+def repo(tmp_path: Path) -> Path:
+    """A worktree. The state reader needs no git, only a path."""
+    path = tmp_path / "host"
+    path.mkdir()
+    return path
 
 
 def write(repo: Path, state) -> Path:
-    path = ps.state_path(repo)
+    path = ps.state_path(repo, REPO)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(state), encoding="utf-8")
     return path
@@ -50,17 +56,17 @@ def test_ok(repo):
 
 
 def test_missing(repo):
-    assert ps.read_state(ps.state_path(repo)) == ("missing", None)
+    assert ps.read_state(ps.state_path(repo, REPO)) == ("missing", None)
 
 
 def test_unreadable_is_a_directory(repo):
-    path = ps.state_path(repo)
+    path = ps.state_path(repo, REPO)
     path.mkdir(parents=True)
     assert ps.read_state(path)[0] == "unreadable"
 
 
 def test_corrupt_bad_json(repo):
-    path = ps.state_path(repo)
+    path = ps.state_path(repo, REPO)
     path.parent.mkdir(parents=True)
     path.write_text("{not json", encoding="utf-8")
     assert ps.read_state(path)[0] == "corrupt"
@@ -78,7 +84,7 @@ def test_unsupported_version(repo):
 
 def test_huge_int_literal_is_corrupt_not_crash(repo):
     # A 5000-digit int raises ValueError inside json, not JSONDecodeError.
-    path = ps.state_path(repo)
+    path = ps.state_path(repo, REPO)
     path.parent.mkdir(parents=True)
     path.write_text('{"version":' + "9" * 5000 + "}", encoding="utf-8")
     assert ps.read_state(path)[0] == "corrupt"
@@ -98,54 +104,73 @@ def test_parse_iso(value, ok):
     assert (ps.parse_iso(value) is not None) is ok
 
 
-def test_the_main_worktree_keeps_its_state_in_its_git_dir(repo):
-    assert ps.state_path(repo) == repo / ".git" / "delivery-loop" / "state.json"
+def test_the_state_lives_under_the_home_not_the_worktree(repo, home):
+    path = ps.state_path(repo, REPO)
+    assert path.parent.parent == home / "runs" / "crblabs-host"
+    assert path.parent.name.startswith("host-")
+    assert path.name == "state.json"
+    assert repo not in path.parents
 
 
-def test_a_linked_worktree_keeps_its_state_in_its_own_git_dir(repo, tmp_path, add_worktree):
-    linked = add_worktree(repo, tmp_path / "linked")
-    assert ps.git_dir(linked) == repo / ".git" / "worktrees" / "linked"
-    assert ps.state_path(linked) == ps.git_dir(linked) / "delivery-loop" / "state.json"
-    assert ps.state_path(linked) != ps.state_path(repo)
-
-
-def test_a_directory_outside_git_has_no_state_path(tmp_path):
-    with pytest.raises(ps.NotAWorktree):
-        ps.state_path(tmp_path)
-
-
-# Value: protects=git_dir names the worktree's own git dir even inside a git hook;
-#   fails_when=the GIT_* variables leak into the git call again;
-#   why_new=no test ran with GIT_DIR exported;
+# Value: protects=two worktrees with the same folder name never share a run directory;
+#   fails_when=the run directory is named after the folder alone;
+#   why_new=every other test uses one folder name per repository;
 #   seam=none
-def test_git_dir_ignores_an_inherited_git_dir(repo, tmp_path, add_worktree, monkeypatch):
-    linked = add_worktree(repo, tmp_path / "linked")
-    (linked / "sub").mkdir()
-    monkeypatch.setenv("GIT_DIR", str(repo / ".git"))
-    # A subdirectory has no .git entry of its own, so this path asks git.
-    assert ps.git_dir(linked / "sub") == repo / ".git" / "worktrees" / "linked"
-    assert ps.git_dir(linked) == repo / ".git" / "worktrees" / "linked"
+def test_two_worktrees_with_one_folder_name_get_two_run_directories(tmp_path):
+    one = tmp_path / "a" / "task"
+    two = tmp_path / "b" / "task"
+    one.mkdir(parents=True)
+    two.mkdir(parents=True)
+    assert ps.run_dir(one, REPO) != ps.run_dir(two, REPO)
+    assert ps.run_dir(one, REPO) == ps.run_dir(one, REPO)
 
 
-# Value: protects=a linked worktree's git dir is read from its .git pointer file;
-#   fails_when=the pointer is misread, or a relative gitdir is not joined to the worktree;
-#   why_new=no test writes a relative gitdir pointer;
+def test_the_home_moves_with_the_environment_and_the_config(repo, tmp_path, monkeypatch):
+    from core import config as cfg
+
+    elsewhere = tmp_path / "elsewhere"
+    monkeypatch.setenv(ps.HOME_ENV, str(elsewhere))
+    assert ps.state_home() == elsewhere
+    monkeypatch.delenv(ps.HOME_ENV)
+    assert ps.state_home() == Path("~/.delivery-loop").expanduser()
+    assert ps.state_home(cfg.LoopConfig(state_root=str(tmp_path / "cfg"))) == tmp_path / "cfg"
+
+
+# Value: protects=a repository name never escapes or splits the runs directory;
+#   fails_when=a slash or dot-dot in the repository name reaches the path unchanged;
+#   why_new=every other test uses a plain owner/name;
 #   seam=none
-def test_a_relative_gitdir_pointer_is_resolved_from_the_worktree(repo, tmp_path, add_worktree):
-    linked = add_worktree(repo, tmp_path / "linked")
-    target = repo / ".git" / "worktrees" / "linked"
-    (linked / ".git").write_text(f"gitdir: {os.path.relpath(target, linked)}\n", encoding="utf-8")
-    assert ps.git_dir(linked) == target
+@pytest.mark.parametrize("repo_name", ["../../etc", "owner/../../x", "a b/c:d"])
+def test_a_hostile_repository_name_stays_one_directory(repo, home, repo_name):
+    directory = ps.run_dir(repo, repo_name)
+    assert directory.parent.parent == home / "runs"
+    assert directory.parent.name not in (".", "..")
 
 
-# Value: protects=git_dir reports a missing git as NotAWorktree, which adapters handle;
-#   fails_when=OSError escapes git_dir when git cannot be started;
-#   why_new=the missing-git scan test fails earlier, in the scanner;
+def test_a_run_needs_its_repository(repo):
+    with pytest.raises(ValueError):
+        ps.run_dir(repo, "  ")
+
+
+def test_prepare_records_the_worktree_and_returns_the_state_path(repo):
+    path = ps.prepare_run_dir(repo, REPO)
+    assert path == ps.state_path(repo, REPO)
+    assert ps.read_worktree(path.parent) == repo.resolve()
+
+
+@pytest.mark.parametrize("content", ["", "relative/path\n", "/a\n/b\n"])
+def test_an_unusable_worktree_record_reads_as_none(repo, content):
+    directory = ps.prepare_run_dir(repo, REPO).parent
+    (directory / ps.WORKTREE_FILE).write_text(content, encoding="utf-8")
+    assert ps.read_worktree(directory) is None
+
+
+# Value: protects=a worktree record that is a pipe cannot hang the reader;
+#   fails_when=the record is read without the regular-file check;
+#   why_new=every other record is a regular file;
 #   seam=none
-def test_git_dir_without_git_raises_not_a_worktree(repo, tmp_path, monkeypatch):
-    (repo / "sub").mkdir()
-    empty = tmp_path / "no-git"
-    empty.mkdir()
-    monkeypatch.setenv("PATH", str(empty))
-    with pytest.raises(ps.NotAWorktree):
-        ps.git_dir(repo / "sub")
+def test_a_worktree_record_that_is_a_pipe_reads_as_none(repo):
+    directory = ps.prepare_run_dir(repo, REPO).parent
+    (directory / ps.WORKTREE_FILE).unlink()
+    os.mkfifo(directory / ps.WORKTREE_FILE)
+    assert ps.read_worktree(directory) is None

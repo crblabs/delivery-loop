@@ -15,11 +15,13 @@
 # `{state_stem}` and the loader substitutes them once when the config is built,
 # so moving the harness directory moves the carve-outs, the loop prefixes and
 # the ledger with it. `{state_file}` and `{state_stem}` give the state file's
-# name only: the file lives in the git directory, not under `state_dir`. The tracker pattern takes
+# name only: the file lives under `state_root`, not under `state_dir`. The
+# tracker pattern takes
 # `{tracker_prefix}` the same way, the ledger name takes `{slug}`, and a stage
 # prompt takes `{name}`.
 #
-# What the loader refuses: an absolute or parent-escaping path, an empty value,
+# What the loader refuses: an absolute or parent-escaping path (state_root
+# excepted, which must be absolute or start with ~), an empty value,
 # a tracker pattern that does not compile, a value of the wrong type, and the
 # stage rules listed under [[stages]] below.
 
@@ -28,11 +30,11 @@
 # The directory the harness keeps its own files in, inside a worktree.
 state_dir = ".claude"
 
-# The run state. The turn-end hook writes it to this directory inside the
-# worktree's git directory, the one `git rev-parse --git-dir` names. Git never
-# tracks a file there, so the host repository needs no ignore rule. The
-# supervisor finds every run through `git worktree list`, so no glob is set.
-run_dir = "delivery-loop"
+# Where every run's state lives, outside any repository, so the host
+# repository needs no ignore rule. Each worktree gets its own directory,
+# runs/<owner>-<repo>/<worktree>-<hash>/, and loop-scan reads them all. The
+# DELIVERY_LOOP_HOME environment variable overrides this at run time.
+state_root = "~/.delivery-loop"
 state_file = "state.json"
 
 # How a decision card names the session the run is in.
@@ -60,9 +62,7 @@ carve_outs = [
     "{state_dir}/hooks/pipeline_loop_paths.py",
 ]
 
-# Carve-out by prefix, for a whole directory. Each entry ends in a slash. The
-# git directory, which holds the run state, is always a carve-out and is not
-# listed here.
+# Carve-out by prefix, for a whole directory. Each entry ends in a slash.
 carve_out_prefixes = []
 
 # The region a declaration may name at all, by prefix and exactly. A path
