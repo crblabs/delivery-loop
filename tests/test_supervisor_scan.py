@@ -405,7 +405,7 @@ def test_a_git_entry_symlinked_to_another_worktree_is_reported_unreadable(repo, 
 #   fails_when=the gitdir back-pointer is resolved against the working directory;
 #   why_new=every other worktree is added with git's default absolute links;
 #   seam=none
-def test_a_worktree_with_relative_links_is_found(tmp_path, repo, git):
+def test_a_worktree_with_relative_links_is_found(repo, git):
     relative = ("-c", "worktree.useRelativePaths=true")
     git(repo, *relative, "worktree", "add", "-q", "-b", "rel", "../rel")
     rel = (repo.parent / "rel").resolve()
@@ -416,14 +416,38 @@ def test_a_worktree_with_relative_links_is_found(tmp_path, repo, git):
     assert records[str(rel)]["condition"] == "ok"
 
 
-# Value: protects=config a hook inherits from `git -c` does not reach the scan;
-#   fails_when=the GIT_CONFIG_KEY_n and VALUE_n pairs pass through to git;
+# Value: protects=numbered `git -c` config a hook inherits does not reach the scan;
+#   fails_when=GIT_CONFIG_COUNT and the KEY_n and VALUE_n pairs pass through to git;
 #   why_new=the hook test also sets GIT_DIR, which alone makes it pass;
 #   seam=none
-def test_git_c_config_from_a_hook_does_not_reach_the_scan(repo, worktree, monkeypatch):
-    one = worktree("one", make_state())
+def test_numbered_git_c_config_from_a_hook_does_not_reach_the_scan(repo, monkeypatch):
+    # A leaked core.bare=true makes git list the main worktree as bare.
+    put_state(repo, make_state())
     monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
     monkeypatch.setenv("GIT_CONFIG_KEY_0", "core.bare")
     monkeypatch.setenv("GIT_CONFIG_VALUE_0", "true")
+    assert [r["worktree"] for r in ss.scan([repo], None, NOW, 600)] == [str(repo)]
+
+
+# Value: protects=quoted `git -c` config a hook inherits does not reach the scan;
+#   fails_when=GIT_CONFIG_PARAMETERS passes through to git;
+#   why_new=the numbered form is a separate variable set;
+#   seam=none
+def test_quoted_git_c_config_from_a_hook_does_not_reach_the_scan(repo, monkeypatch):
+    put_state(repo, make_state())
     monkeypatch.setenv("GIT_CONFIG_PARAMETERS", "'core.bare'='true'")
-    assert [r["worktree"] for r in ss.scan([repo], None, NOW, 600)] == [str(one)]
+    assert [r["worktree"] for r in ss.scan([repo], None, NOW, 600)] == [str(repo)]
+
+
+# Value: protects=a worktree directory replaced by a symlink is not given another run;
+#   fails_when=the ownership check resolves the worktree path through the symlink;
+#   why_new=the symlink test replaces only the .git entry;
+#   seam=none
+def test_a_worktree_directory_symlinked_to_another_is_reported_unreadable(repo, worktree):
+    owner = worktree("owner", make_state())
+    thief = worktree("thief")
+    shutil.rmtree(thief)
+    thief.symlink_to(owner, target_is_directory=True)
+    records = {r["worktree"]: r for r in ss.scan([repo], None, NOW, 600)}
+    assert records[str(thief)] == {"worktree": str(thief), "condition": "unreadable"}
+    assert records[str(owner)]["condition"] == "ok"

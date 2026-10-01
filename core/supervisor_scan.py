@@ -115,11 +115,13 @@ def _owns(worktree: Path, git_directory: Path, common: Path, is_main: bool) -> b
     one directory under ``worktrees``, and git records there, in ``gitdir``,
     the ``.git`` file that points back at it. That file may be written relative
     to the directory that holds it. Its parent must be this worktree, so a
-    ``.git`` that is a symlink to another worktree's does not pass.
+    ``.git`` that is a symlink to another worktree's does not pass. A worktree
+    directory that is itself a symlink does not pass either: resolved, it would
+    name the worktree it points at.
     """
     if is_main:
         return git_directory == common
-    if git_directory.parent != common / "worktrees":
+    if git_directory.parent != common / "worktrees" or worktree.is_symlink():
         return False
     back = ps.read_pointer(git_directory / "gitdir")
     if back is None:
