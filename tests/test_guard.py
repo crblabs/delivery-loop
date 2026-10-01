@@ -332,3 +332,24 @@ def test_the_plugin_checkout_spelled_in_another_case_stays_protected(
     run, worktree = start_run()
     monkeypatch.setattr(rs, "PLUGIN_ROOT", Path(str(worktree).upper()))
     assert not _edit(run, "hooks/pipeline_hook.py").allow
+
+
+def test_the_operators_loop_config_and_git_config_are_protected(start_run) -> None:
+    # Value: protects=an edit tool cannot drop the gates of every future run or redirect
+    # the run's push through the user's own config; fails_when=those files sit outside the
+    # protected roots; why_new=adversarial review; seam=none
+    run, _ = start_run()
+    home = Path.home()
+    assert not _edit(run, str(home / ".config/delivery-loop/local-host.toml")).allow
+    assert not _edit(run, str(home / ".gitconfig")).allow
+    assert not _edit(run, str(home / ".config/git/config")).allow
+
+
+def test_a_case_variant_path_still_meets_the_carve_outs(start_run) -> None:
+    # Value: protects=on a case-insensitive disk /x/REPO/loop.toml is the run's loop.toml;
+    # fails_when=the relative path is computed case-sensitively and the edit passes;
+    # why_new=adversarial review; seam=none
+    run, worktree = start_run()
+    upper = Path(str(worktree.parent)) / worktree.name.upper()
+    assert not _edit(run, str(upper / "loop.toml")).allow
+    assert not _edit(run, str(upper / ".claude/skills/pipeline/stages/qa.md")).allow

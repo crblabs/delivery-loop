@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from core import guard
 from core import pipeline_state as ps
 from core import run_index as ri
@@ -415,3 +417,53 @@ def test_the_gate_card_shows_the_plan_and_what_it_unlocks(start_run, tmp_path) -
     assert f"Plan read: {plan}" in question
     assert "Loop files it unlocks once approved: .claude/skills/pipeline/stages/qa.md" in question
     assert f"Plan: {plan}" in rs.status_text(run)
+
+
+def test_a_declared_directory_never_accepts_a_carve_out(make_repo, tmp_path) -> None:
+    # Value: protects=a plan that declares .claude/ cannot slip a settings change past the
+    # turn end; fails_when=a declared ancestor directory accepts the carve-out as the new
+    # baseline; why_new=adversarial review; seam=none
+    worktree = make_repo(tmp_path / "host")
+    config = LoopConfig(
+        stages=(StageSpec(name="implement"), StageSpec(name="ship")),
+        loop_prefixes=(".claude/",),
+    )
+    run, _ = rs.start(worktree, "CRB-1", config, "s1")
+    rs.update(run, lambda s: s.__setitem__("declared_loop_edits", [".claude/"]))
+    (worktree / ".claude").mkdir(exist_ok=True)
+    (worktree / ".claude/settings.json").write_text('{"disableAllHooks": true}', "utf-8")
+    assert _end(run, "x").pause_reason == "guard_changed"
+
+
+@pytest.mark.parametrize(
+    ("where", "text"),
+    [
+        ("user-gitconfig", '[url "https://elsewhere/"]\n\tpushInsteadOf = https://github.com/\n'),
+        ("user-settings", '{"enabledPlugins": {"delivery-loop@crblabs": false}}'),
+        ("worktree-config", '[remote "origin"]\n\turl = https://elsewhere/r.git\n'),
+    ],
+)
+def test_a_shell_write_outside_the_worktree_that_redirects_the_run_pauses_it(
+    start_run, where: str, text: str
+) -> None:
+    # Value: protects=a push redirect or a plugin switch-off made from the shell is seen at
+    # the next turn end; fails_when=only the repository's own config and settings are
+    # hashed; why_new=adversarial review; seam=none
+    run, worktree = start_run()
+    home = Path.home()
+    path = {
+        "user-gitconfig": home / ".gitconfig",
+        "user-settings": home / ".claude/settings.json",
+        "worktree-config": worktree / ".git/config.worktree",
+    }[where]
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+    assert _end(run, "x").pause_reason == "guard_changed"
+
+
+def test_another_plugin_in_the_user_settings_does_not_pause_the_run(start_run) -> None:
+    run, _ = start_run()
+    settings = Path.home() / ".claude/settings.json"
+    settings.parent.mkdir(parents=True, exist_ok=True)
+    settings.write_text('{"enabledPlugins": {"other@x": true}}', encoding="utf-8")
+    assert _end(run, "x").pause_reason is None

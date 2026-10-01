@@ -224,6 +224,22 @@ def test_doctor_checks_the_python3_hooks_run_with(
     assert f"{level:4}  hook python3" in capsys.readouterr().out
 
 
+def test_a_terminal_start_ignores_an_agents_leftover_intent(
+    make_repo, tmp_path, monkeypatch
+) -> None:
+    # Value: protects=a person's own start is not bound to the agent's session by an
+    # intent left from a declined call; fails_when=the intent outranks a terminal start;
+    # why_new=adversarial review; seam=none
+    worktree = make_repo(tmp_path / "host")
+    monkeypatch.chdir(worktree)
+    monkeypatch.delenv("CLAUDE_SESSION_ID", raising=False)
+    ri.write_intent(ri.worktree_key(str(worktree)), "agent")
+    monkeypatch.setattr(ri, "in_terminal", lambda: True)
+    assert cli.main(["start", "CRB-1"]) == 0
+    assert rs.read(rs.find(str(worktree)))[1]["session_id"] is None
+    assert ri.take_intent(ri.worktree_key(str(worktree))) is None
+
+
 def test_start_prefers_the_harness_intent_over_a_typed_session(
     make_repo, tmp_path, monkeypatch
 ) -> None:

@@ -14,6 +14,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parent.parent
 
 
@@ -111,3 +113,30 @@ def test_a_typed_resume_through_the_prompt_shim(make_repo, tmp_path: Path) -> No
     done = _run([str(ROOT / "hooks/pipeline_hook.py"), "prompt"], payload, worktree)
     context = json.loads(done.stdout)["hookSpecificOutput"]["additionalContext"]
     assert context.startswith("delivery-loop resume: Stage 1/5")
+
+
+@pytest.mark.parametrize(
+    ("kind", "payload", "key"),
+    [
+        ("guard", {}, "hookSpecificOutput"),
+        ("stop", {}, "decision"),
+        ("stop", {"stop_hook_active": True}, None),
+    ],
+)
+def test_a_hook_that_runs_out_of_time_fails_closed(kind: str, payload: dict, key) -> None:
+    # Value: protects=a slow check denies the call or keeps the turn going instead of the
+    # harness killing the hook and letting it through; fails_when=no deadline of its own;
+    # why_new=adversarial review; seam=DEADLINES
+    script = (
+        f"import sys, time; sys.path.insert(0, {str(ROOT / 'hooks')!r}); "
+        f"import pipeline_hook as h; h.DEADLINES[{kind!r}] = 1; "
+        f"h._arm({kind!r}, {payload!r}); time.sleep(5)"
+    )
+    done = subprocess.run(
+        [sys.executable, "-c", script], capture_output=True, text=True, timeout=10
+    )
+    assert done.returncode == 0
+    if key is None:
+        assert done.stdout == ""
+    else:
+        assert key in json.loads(done.stdout)

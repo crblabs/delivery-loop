@@ -34,22 +34,52 @@ from core import run_index as ri
 COMMAND_NAME = "delivery-loop:pipeline"
 EDIT_TOOLS = ("Edit", "Write", "MultiEdit", "NotebookEdit")
 SESSION_ENV = "CLAUDE_SESSION_ID"
-# An MCP tool whose name says it writes, and the input fields that name a path.
-# A code host's MCP tool that writes to the remote repository: a write verb and
-# a repository object in the tool's own name, or a ``*_write`` tool. It is judged
-# by the publish policy, not as a local file. Reads (get, list, search, *_read)
-# and a local git server's commit are not.
+# A code host's MCP tool that writes to the remote repository. Its name is split
+# into words (snake, kebab or camel case); a tool that starts or ends with a read
+# verb is a read, and any other one that names a repository object is judged by
+# the publish policy, not as a local file. A local git server's tools are not.
 _MCP_HOST_RE = re.compile(r"^mcp__.*(github|gitlab|bitbucket|gitea).*__", re.I)
-_MCP_PUBLISH_VERB_RE = re.compile(r"(^|_)(create|update|delete|push|merge|fork)(_|$)", re.I)
-_MCP_PUBLISH_OBJECT_RE = re.compile(
-    r"file|branch|pull_request|merge_request|commit|release|repositor|tag|ref", re.I
+_WORD_RE = re.compile(r"[A-Z]?[a-z0-9]+|[A-Z]+(?![a-z])")
+_READ_VERBS = ("get", "list", "search", "read", "view", "diff", "compare", "download", "fetch")
+_REPO_OBJECTS = (
+    "file",
+    "files",
+    "branch",
+    "branches",
+    "pull",
+    "merge",
+    "commit",
+    "commits",
+    "release",
+    "releases",
+    "repository",
+    "repo",
+    "tag",
+    "tags",
+    "ref",
+    "refs",
+    "fork",
+    "push",
+    "content",
+    "contents",
+    "tree",
 )
 # The input fields that name the branch a code host's write goes to.
 _BRANCH_FIELDS = ("branch", "head")
+# An MCP tool whose name says it writes, and the input fields that name a path.
 _MCP_WRITE_RE = re.compile(r"^mcp__.*(write|edit|create|move|rename|delete|patch|replace)", re.I)
-_PATH_FIELDS = ("file_path", "notebook_path", "path", "destination", "target", "new_path")
-# The CLI module run directly, as ``python3 -m`` or by its file.
-_CLI_MODULE_RE = re.compile(r"adapters[./]claude_code[./]cli\b")
+_PATH_FIELDS = (
+    "file_path",
+    "notebook_path",
+    "path",
+    "source",
+    "destination",
+    "target",
+    "old_path",
+    "new_path",
+)
+# The CLI module, which can also be run directly, as ``python3 -m`` or by its file.
+_CLI_MODULE = "adapters.claude_code.cli"
 
 
 def payload_of(raw: str) -> dict | None:
@@ -87,24 +117,27 @@ def kind_of(tool_name: object) -> str:
     if tool_name == "Bash":
         return "shell"
     if isinstance(tool_name, str) and _MCP_HOST_RE.match(tool_name):
-        tool = tool_name.rsplit("__", 1)[-1]
-        verb = _MCP_PUBLISH_VERB_RE.search(tool) and _MCP_PUBLISH_OBJECT_RE.search(tool)
-        if verb or tool.lower().endswith("_write"):
+        words = [w.lower() for w in _WORD_RE.findall(tool_name.rsplit("__", 1)[-1])]
+        read = bool(words) and (words[0] in _READ_VERBS or words[-1] in _READ_VERBS)
+        if not read and any(w in _REPO_OBJECTS for w in words):
             return "publish"
     if isinstance(tool_name, str) and _MCP_WRITE_RE.match(tool_name):
         return "edit"
     return "other"
 
 
-def target_of(payload: dict) -> object:
+def targets_of(payload: dict) -> list:
+    """Every path an edit tool names: a move's source as well as its destination."""
     tool_input = payload.get("tool_input")
     if not isinstance(tool_input, dict) or kind_of(payload.get("tool_name")) != "edit":
-        return None
-    for field in _PATH_FIELDS:
-        value = tool_input.get(field)
-        if isinstance(value, str) and value:
-            return value
-    return None
+        return []
+    values = [tool_input.get(field) for field in _PATH_FIELDS]
+    return list(dict.fromkeys(v for v in values if isinstance(v, str) and v))
+
+
+def target_of(payload: dict) -> object:
+    targets = targets_of(payload)
+    return targets[0] if targets else None
 
 
 def branch_of(payload: dict) -> object:
@@ -124,11 +157,7 @@ def human_only_call(tool_name: object, tool_input: object) -> str | None:
     if not isinstance(tool_input, dict):
         return None
     if tool_name == "Bash":
-        command = tool_input.get("command")
-        sub = ri.human_only_command(command)
-        if sub is None and isinstance(command, str):
-            sub = ri.human_only_after(_CLI_MODULE_RE, command)
-        return sub
+        return ri.human_only_command(tool_input.get("command"), _CLI_MODULE)
     if tool_name == "Skill" and isinstance(tool_input.get("skill"), str):
         skill = tool_input["skill"].lstrip("/")
         words = str(tool_input.get("args") or "").split()
@@ -147,9 +176,9 @@ def human_only_message(sub: str) -> str:
     )
 
 
-# The forms a person types: the namespaced command, or its short name, which
-# Claude Code resolves to the plugin's command when no other command has it.
-_PROMPT_NAMES = (COMMAND_NAME, COMMAND_NAME.split(":", 1)[1])
+# Only the namespaced command: a short ``/pipeline`` may be another plugin's or a
+# leftover in-repo command, and must not resume or end this plugin's run.
+_PROMPT_NAMES = (COMMAND_NAME,)
 
 
 def prompt_command(prompt: object) -> str | None:
@@ -174,8 +203,10 @@ def needs_adapter(payload: dict) -> bool:
         return True
     if payload.get("tool_name") == "Bash" and ri.starts_run(tool_input.get("command")):
         return True
-    found = ri.find_entry(payload.get("cwd"), target_of(payload), payload.get("session_id"))
-    return found is not None
+    return any(
+        ri.find_entry(payload.get("cwd"), target, payload.get("session_id")) is not None
+        for target in targets_of(payload) or [None]
+    )
 
 
 def run_found(payload: dict) -> bool:
@@ -211,10 +242,23 @@ def old_python_hook(kind: str, payload: dict) -> dict | None:
         return None
     entry = found[1]
     if kind == "guard":
-        if kind_of(payload.get("tool_name")) == "edit":
+        # Without the full guard, every call that writes or publishes waits for
+        # a supported python3.
+        tool = payload.get("tool_name")
+        tool_input = payload.get("tool_input")
+        command = tool_input.get("command") if isinstance(tool_input, dict) else None
+        publishes = isinstance(command, str) and (
+            any(a[:1] == ["push"] for a in ri.git_calls(command))
+            or any(a[:2] == ["pr", "merge"] or a[:1] == ["api"] for a in ri.gh_calls(command))
+        )
+        if kind_of(tool) in ("edit", "publish") or publishes:
             return {"deny": ri.old_python_message()}
         return None
     if payload.get("stop_hook_active") is True:
+        return None
+    state = ri.read_json_file(ri.state_file(entry["run_dir"]), ri.STATE_MAX_BYTES)
+    if isinstance(state, dict) and state.get("status") != "running":
+        # A paused run waits for a person; blocking would only re-prompt the agent.
         return None
     bound = entry.get("session_id")
     if bound is not None and bound != payload.get("session_id"):

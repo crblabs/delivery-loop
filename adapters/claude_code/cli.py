@@ -95,6 +95,10 @@ def cmd_start(args: argparse.Namespace) -> int:
     # The intent the guard recorded from the harness's own payload outranks a
     # session given as an argument, which any caller can type.
     intent = ri.take_intent(ri.worktree_key(root)) if root is not None else None
+    if ri.in_terminal():
+        # A person's own start: an intent left by an agent call that was then
+        # declined or never ran is not theirs.
+        intent = None
     session = intent or _session(args)
     # The slash command names its session through ${CLAUDE_SESSION_ID}; if a
     # harness leaves that empty, the run still starts and binds at the first turn

@@ -76,9 +76,12 @@ _SEPARATORS = (";", "&&", "||", "|", "&", "\n")
 # The name counts as the CLI when a space follows it, or as the plugin's own
 # slash command (``<name>:pipeline``), so a path or a commit message that only
 # mentions the project does not match.
-_HUMAN_ONLY_PREFIX_RE = re.compile(r"(?<![\w.-])%s(?:(?=\s)|:pipeline\b)" % re.escape(CLI_NAME))
-_HUMAN_ONLY_WORD_RE = re.compile(r"\b(%s)\b" % "|".join(HUMAN_ONLY))
-_SEGMENT_END_RE = re.compile(r"[\n;&|]")
+# The CLI's options that take a value, so the subcommand is found past them.
+_OPTIONS_WITH_VALUE = ("--session", "--config")
+# How deep nested shells are followed.
+_NEST_MAX = 3
+# The plugin's slash command, as a nested session would be given it.
+_SLASH = "/%s:pipeline" % CLI_NAME
 _WRAPPERS = ("command", "exec", "env", "nohup", "time")
 _KEY_LEN = 12
 
@@ -384,40 +387,97 @@ def git_calls(command: str) -> list[list[str]]:
     return _calls(command, "git")
 
 
-def human_only_command(command: object) -> str | None:
-    """The subcommand when a shell line names the CLI with resume or abort, else ``None``.
+def subcommand(args: list[str]) -> str | None:
+    """The CLI's subcommand among its arguments, past its global options."""
+    i = 0
+    while i < len(args) and args[i].startswith("-"):
+        i += 2 if args[i] in _OPTIONS_WITH_VALUE else 1
+    return args[i] if i < len(args) else None
 
-    Read from the raw text, not the parsed words, so options before the
-    subcommand, ``bash -c`` and ``$(...)`` do not hide it. This is the early,
-    readable refusal; the CLI itself also refuses both outside a terminal.
+
+def _human_only_in(words: list[str], module: str | None) -> str | None:
+    """resume or abort when one simple command runs the CLI with it.
+
+    The CLI may sit at any word, behind a wrapper the guard does not know
+    (``sudo``, ``xargs``, ``timeout 5``, ``python3 -u``, a subshell's ``(``), and
+    may be the module that implements it (``-m`` or its file). A quoted word is
+    data, not a command, unless it is the plugin's slash command, which a nested
+    agent session given it as a prompt runs.
     """
-    if not isinstance(command, str) or CLI_NAME not in command:
+    for i, word in enumerate(words):
+        rest = None
+        if os.path.basename(word.lstrip("({")) == CLI_NAME or word.lstrip("({") == _SLASH:
+            rest = words[i + 1 :]
+        elif module and word == "-m" and words[i + 1 : i + 2] == [module]:
+            rest = words[i + 2 :]
+        elif module and word.replace("\\", "/").endswith(module.replace(".", "/") + ".py"):
+            rest = words[i + 1 :]
+        elif _SLASH in word and " " in word.strip():
+            tokens = word.split()
+            for j, token in enumerate(tokens):
+                if token.lstrip("/") == _SLASH.lstrip("/"):
+                    sub = subcommand(tokens[j + 1 :])
+                    if sub in HUMAN_ONLY:
+                        return sub
+        if rest is not None:
+            sub = subcommand(rest)
+            if sub is not None and sub.rstrip(")};") in HUMAN_ONLY:
+                return sub.rstrip(")};")
+    return None
+
+
+def _nested(command: str) -> list[str]:
+    """The shell text a line runs in a nested shell: the script after a ``-c``
+    option (``bash -c``, ``script -qc``), and each ``$(...)`` or backtick body."""
+    found = []
+    for words in _segments(command):
+        for i, word in enumerate(words[:-1]):
+            if word.startswith("-") and not word.startswith("--") and "c" in word[1:]:
+                found.append(words[i + 1])
+    at = command.find("$(")
+    while at != -1:
+        close = command.find(")", at + 2)
+        found.append(command[at + 2 : close if close != -1 else len(command)])
+        at = command.find("$(", at + 2)
+    found += command.split("`")[1::2]
+    return found
+
+
+def human_only_command(command: object, module: str | None = None, depth: int = 0) -> str | None:
+    """The subcommand when a shell line runs the CLI with resume or abort, else ``None``.
+
+    Read from the parsed words, so a commit message or an ``echo`` that only
+    mentions the CLI does not match, and from every nested shell (``bash -c``,
+    ``script -qc``, ``$(...)``), so wrapping the call does not hide it. This is
+    the early, readable refusal; the CLI itself also refuses both outside a
+    terminal.
+    """
+    if not isinstance(command, str) or depth > _NEST_MAX:
         return None
-    return human_only_after(_HUMAN_ONLY_PREFIX_RE, command)
-
-
-def human_only_after(prefix: "re.Pattern", command: str) -> str | None:
-    """The first resume or abort after a ``prefix`` match, in the same simple command.
-
-    Each simple command is searched once, from its first match, so a line that
-    repeats the prefix many times stays linear.
-    """
-    searched_to = -1
-    for match in prefix.finditer(command):
-        if match.end() <= searched_to:
-            continue
-        stop = _SEGMENT_END_RE.search(command, match.end())
-        searched_to = stop.start() if stop else len(command)
-        word = _HUMAN_ONLY_WORD_RE.search(command, match.end(), searched_to)
-        if word:
-            return word.group(1)
+    named = _program_word(CLI_NAME).search(command) or _SLASH in command
+    if not named and not (module and module.rsplit(".", 1)[-1] in command):
+        return None
+    for words in _segments(command):
+        sub = _human_only_in(words, module)
+        if sub is not None:
+            return sub
+    for inner in _nested(command):
+        sub = human_only_command(inner, module, depth + 1)
+        if sub is not None:
+            return sub
     return None
 
 
 def starts_run(command: object) -> bool:
-    return isinstance(command, str) and any(
-        args and args[0] == "start" for args in cli_calls(command)
-    )
+    """Whether a shell line may start a run: ``start`` past the global options,
+    or a call that reads its subcommand from stdin."""
+    if not isinstance(command, str):
+        return False
+    for args in cli_calls(command):
+        sub = subcommand(args)
+        if sub == "start" or (sub is None and "--args-stdin" in args):
+            return True
+    return False
 
 
 # --- Run directory: lock, events, abort ---------------------------------------

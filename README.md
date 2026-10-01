@@ -133,17 +133,20 @@ During a run, before an edit tool writes a file:
 - A loop file, such as a stage prompt override under
   `.claude/skills/pipeline/stages/`, is editable only when the approved plan
   lists it in a ```` ```loop-edits ```` block.
-- The plugin, `~/.claude` (or `$CLAUDE_CONFIG_DIR`), the loop's state home, and
-  a `.claude/settings.json` or `settings.local.json` in any directory are
-  denied, whatever the letter case.
+- The plugin, `~/.claude` (or `$CLAUDE_CONFIG_DIR`), the loop's state home,
+  your loop config in `~/.config/delivery-loop/`, your git config
+  (`~/.gitconfig`, `~/.config/git/config`), and a `.claude/settings.json` or
+  `settings.local.json` in any directory are denied, whatever the letter case.
 - Every other file is ordinary work and is allowed.
 
 The same rules apply to an MCP tool whose name says it writes (`write`, `edit`,
-`create`, `move`, `delete` and the like) when it names a path. A code host's MCP
+`create`, `move`, `delete` and the like) to every path it names, a move's
+source as well as its destination. A code host's MCP
 tool that writes to the remote (a GitHub, GitLab, Bitbucket or Gitea server's
-tools that create, update, delete or push files, branches, commits or pull
-requests) is allowed only in the stage that opens the pull request, only for
-the run's own branch, and a `merge` tool never. Its reads are not checked.
+tools that name files, branches, commits, releases or pull requests, other
+than its `get`, `list`, `search` and `read` tools) is allowed only in the stage
+that opens the pull request, only for the run's own branch, and a `merge` tool
+never.
 An MCP tool that writes under another name is not checked.
 
 A shell command is not checked before it runs, with three exceptions, and all
@@ -152,8 +155,11 @@ that opens the pull request, for the run's own branch, to `origin`: never
 forced, deleting or redirected with `-c`. `gh pr merge` and a merge through
 `gh api` are refused: a merge is a person's call. Other `gh` commands that
 write to the remote are not checked. And a shell line that runs
-`delivery-loop resume` or `abort` is refused early with an explanation; the
-CLI also refuses both outside a terminal. Neither is proof: an agent can give
+`delivery-loop resume` or `abort`, directly, behind a wrapper or in a nested
+shell, is refused early with an explanation; a line that only mentions them,
+such as a commit message, is not. The CLI also refuses both outside a terminal,
+and only the full `/delivery-loop:pipeline resume|abort`, typed by a person,
+applies them from Claude Code. Neither is proof: an agent can give
 a command a pseudo-terminal (`script`, `unbuffer`), spell the command so no
 text check sees it, or start a nested `claude -p` session. Each of those is a
 deliberate escape that leaves its trace in the session transcript, the same
@@ -161,15 +167,26 @@ class as rewriting the state file. The guard does not claim more.
 
 A shell write to a guarded file is caught at the next turn end: every turn end
 hashes the guarded files (the settings files by the keys that can switch hooks
-off or repoint them: `disableAllHooks`, `enabledPlugins`, `hooks`, `env`), the
-worktree's `.git` pointer and git config, and the run's config snapshot. A
-change the plan did not declare pauses the run with `guard_changed`. What this
+off or repoint them: `disableAllHooks`, `enabledPlugins`, `hooks`, `env`), your
+user settings by the same keys (only delivery-loop's own `enabledPlugins`
+entry), the worktree's `.git` pointer, the git config a push reads (the
+repository's, the worktree's `config.worktree`, yours, and the files their
+`include.path` names) and the run's config snapshot. A change the plan did not
+declare pauses the run with `guard_changed`; a carve-out is never accepted,
+even under a directory the plan declared. What this
 cannot catch: a shell write that switches the hooks off before that turn end, a
 shell edit of the run's own state or of the plugin cache, and a shell command
 that writes a resume into the state file itself. A determined agent with a
 shell can get past every text-based check here; the guard makes that
 deliberate and visible, not impossible. `loop-scan` flags a run whose index
-entry disappeared (`index_missing`). The rest is in `TODOS.md`.
+entry disappeared (`index_missing`).
+
+The hooks answer before Claude Code's own timeout: a guard check that runs
+past 25 seconds denies the call, and a turn end past 55 seconds keeps the turn
+going once. A hook that cannot start at all, such as when `python3` is missing
+from `PATH`, is a non-blocking error in Claude Code and lets the call through;
+`/delivery-loop:pipeline doctor` checks the `python3` the hooks run with. The
+rest is in `TODOS.md`.
 
 ## Runbook
 

@@ -26,11 +26,20 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import stat
 from pathlib import Path, PurePosixPath
 
 from core import run_index as ri
-from core.config import SETTINGS_FILES, SETTINGS_SWITCH_KEYS, LoopConfig
+from core.config import (
+    HARNESS_SETTINGS,
+    PLUGIN_ID_PREFIX,
+    SETTINGS_FILES,
+    SETTINGS_SWITCH_KEYS,
+    LoopConfig,
+    harness_home,
+    user_git_configs,
+)
 
 CONFIG_SNAPSHOT = ri.SNAPSHOT_FILE
 MAX_FILE_BYTES = 8 << 20
@@ -38,6 +47,10 @@ MAX_TOTAL_BYTES = 64 << 20
 MAX_PREFIX_FILES = 500
 GIT_POINTER = ".git"
 GIT_CONFIG = "<git>/config"
+GIT_WORKTREE_CONFIG = "<git>/config.worktree"
+GIT_INCLUDES = "<git>/includes"
+USER_GIT_CONFIG = "<user>/gitconfig"
+USER_SETTINGS = "<user>/settings"
 
 
 def config_hash(run_dir: Path) -> str:
@@ -87,9 +100,33 @@ def _hash_file(path: Path, rel: str, budget: _Budget) -> str:
     return _hash_bytes(data)
 
 
-def _switch_hash(settings: dict) -> str:
+def _switch_hash(settings: dict, plugin_only: bool = False) -> str:
     keys = {k: settings[k] for k in SETTINGS_SWITCH_KEYS if k in settings}
+    if plugin_only and isinstance(keys.get("enabledPlugins"), dict):
+        # In the user settings, other plugins come and go; only this one's
+        # entries can switch its hooks off.
+        own = {
+            k: v for k, v in keys["enabledPlugins"].items() if str(k).startswith(PLUGIN_ID_PREFIX)
+        }
+        if own:
+            keys["enabledPlugins"] = own
+        else:
+            del keys["enabledPlugins"]
     return _hash_bytes(json.dumps(keys, sort_keys=True).encode("utf-8"))
+
+
+def _user_settings_hash(path: Path) -> str:
+    try:
+        info = path.lstat()
+    except OSError:
+        return _switch_hash({})
+    if not stat.S_ISREG(info.st_mode) or info.st_size > MAX_FILE_BYTES:
+        return "irregular"
+    try:
+        settings = json.loads(path.read_bytes().decode("utf-8"))
+    except (OSError, ValueError, UnicodeDecodeError, RecursionError):
+        return "irregular"
+    return _switch_hash(settings, plugin_only=True) if isinstance(settings, dict) else "irregular"
 
 
 def guard_paths(worktree: Path, config: LoopConfig) -> list[str]:
@@ -115,11 +152,11 @@ def _prefix_files(worktree: Path, prefix: str) -> set[str]:
     return found
 
 
-def _git_config(worktree: Path) -> Path | None:
-    """The config file of the repository the worktree's ``.git`` names."""
+def _git_dirs(worktree: Path) -> tuple[Path, Path] | None:
+    """(the worktree's own git directory, the repository's common one)."""
     pointer = worktree / GIT_POINTER
     if pointer.is_dir() and not pointer.is_symlink():
-        return pointer / "config"
+        return pointer, pointer
     try:
         text = pointer.read_text(encoding="utf-8", errors="replace")[:4096]
     except OSError:
@@ -131,9 +168,14 @@ def _git_config(worktree: Path) -> Path | None:
     try:
         common = (gitdir / "commondir").read_text(encoding="utf-8").strip()
     except OSError:
-        return gitdir / "config"
-    common_dir = Path(common) if Path(common).is_absolute() else gitdir / common
-    return common_dir / "config"
+        return gitdir, gitdir
+    return gitdir, (Path(common) if Path(common).is_absolute() else gitdir / common)
+
+
+def _git_config(worktree: Path) -> Path | None:
+    """The config file of the repository the worktree's ``.git`` names."""
+    dirs = _git_dirs(worktree)
+    return None if dirs is None else dirs[1] / "config"
 
 
 # The git config sections that decide where a push goes, what runs it, or which
@@ -142,17 +184,19 @@ def _git_config(worktree: Path) -> Path | None:
 _PUSH_SECTIONS = ("remote", "url", "push", "core", "credential", "include", "includeif")
 
 
-def _git_config_hash(path: Path) -> str:
+def _push_lines(path: Path) -> list[str] | None:
+    """The push-relevant lines of one git config file; None when it is not a
+    small regular file (a missing file is an empty list)."""
     try:
         info = path.lstat()
     except OSError:
-        return "missing"
+        return []
     if not stat.S_ISREG(info.st_mode) or info.st_size > MAX_FILE_BYTES:
-        return "irregular"
+        return None
     try:
         text = path.read_text(encoding="utf-8", errors="replace")
     except OSError:
-        return "irregular"
+        return None
     kept, section = [], ""
     for line in text.splitlines():
         stripped = line.strip()
@@ -160,7 +204,33 @@ def _git_config_hash(path: Path) -> str:
             section = stripped[1:].split("]", 1)[0].split(None, 1)[0].split(".", 1)[0].casefold()
         if section in _PUSH_SECTIONS and stripped and not stripped.startswith(("#", ";")):
             kept.append(stripped)
-    return _hash_bytes("\n".join(kept).encode("utf-8"))
+    return kept
+
+
+def _git_config_hash(path: Path) -> str:
+    if not path.exists() and not path.is_symlink():
+        return "missing"
+    kept = _push_lines(path)
+    return "irregular" if kept is None else _hash_bytes("\n".join(kept).encode("utf-8"))
+
+
+_INCLUDE_RE = re.compile(r"^path\s*=\s*(.+)$", re.I)
+
+
+def _includes_hash(configs: list[Path]) -> str:
+    """The push-relevant lines of every file an ``include.path`` names, one level
+    deep: the include line alone is hashed with its config, not what it points to."""
+    parts = []
+    for config in configs:
+        for line in _push_lines(config) or []:
+            match = _INCLUDE_RE.match(line)
+            if not match:
+                continue
+            target = Path(match.group(1).strip().strip('"')).expanduser()
+            target = target if target.is_absolute() else config.parent / target
+            kept = _push_lines(target)
+            parts.append(f"{target}\n" + ("irregular" if kept is None else "\n".join(kept)))
+    return _hash_bytes("\n\n".join(parts).encode("utf-8"))
 
 
 def guard_map(worktree: Path, config: LoopConfig, run_dir: Path) -> dict[str, str]:
@@ -170,8 +240,16 @@ def guard_map(worktree: Path, config: LoopConfig, run_dir: Path) -> dict[str, st
         values[rel] = "over-cap" if rel.endswith("*") else _hash_file(worktree / rel, rel, budget)
     pointer = worktree / GIT_POINTER
     values[GIT_POINTER] = "dir" if pointer.is_dir() else _hash_file(pointer, GIT_POINTER, budget)
-    config_file = _git_config(worktree)
-    values[GIT_CONFIG] = "missing" if config_file is None else _git_config_hash(config_file)
+    dirs = _git_dirs(worktree)
+    git_files = [] if dirs is None else [dirs[1] / "config", dirs[0] / "config.worktree"]
+    values[GIT_CONFIG] = "missing" if dirs is None else _git_config_hash(git_files[0])
+    values[GIT_WORKTREE_CONFIG] = "missing" if dirs is None else _git_config_hash(git_files[1])
+    user_git = user_git_configs()
+    values[USER_GIT_CONFIG] = _hash_bytes(
+        "\n".join(f"{p}:{_git_config_hash(p)}" for p in user_git).encode("utf-8")
+    )
+    values[GIT_INCLUDES] = _includes_hash(user_git + git_files)
+    values[USER_SETTINGS] = _user_settings_hash(harness_home() / HARNESS_SETTINGS)
     values[f"<run>/{CONFIG_SNAPSHOT}"] = config_hash(run_dir)
     return values
 

@@ -100,6 +100,14 @@ SETTINGS_SWITCH_KEYS = ("disableAllHooks", "enabledPlugins", "hooks", "env")
 # harness reads instead when HARNESS_HOME_ENV names one.
 HARNESS_HOME = "~/.claude"
 HARNESS_HOME_ENV = "CLAUDE_CONFIG_DIR"
+# The user settings file in the harness's user directory. A shell write there can
+# switch every hook off, so the turn end hashes its switch keys too, with
+# ``enabledPlugins`` narrowed to this plugin's own entries.
+HARNESS_SETTINGS = "settings.json"
+PLUGIN_ID_PREFIX = "delivery-loop@"
+# The user-level git config files git reads before the repository's own.
+USER_GIT_CONFIGS = ("~/.gitconfig", "{xdg}/git/config")
+XDG_CONFIG_ENV = "XDG_CONFIG_HOME"
 # Where the plugin keeps its default stage prompts, from the plugin root.
 PLUGIN_STAGES_DIR = "skills/pipeline/stages"
 
@@ -570,6 +578,21 @@ _GIT_REPOSITORY_VARS = (
     "GIT_NAMESPACE",
     "GIT_PREFIX",
 )
+
+
+def harness_home() -> Path:
+    """The harness's user directory, as the harness itself resolves it."""
+    return Path(os.environ.get(HARNESS_HOME_ENV) or HARNESS_HOME).expanduser()
+
+
+def user_git_configs() -> list[Path]:
+    """The user-level git config files, in the order git reads them."""
+    xdg = os.environ.get(XDG_CONFIG_ENV) or str(Path("~/.config").expanduser())
+    return [Path(p.format(xdg=xdg)).expanduser() for p in USER_GIT_CONFIGS]
+
+
+def user_config_dir(home: Path | None = None) -> Path:
+    return (home or Path.home()) / USER_CONFIG_DIR
 
 
 def git_env() -> dict[str, str]:

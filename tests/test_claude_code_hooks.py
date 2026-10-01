@@ -304,11 +304,14 @@ def test_any_guard_error_on_a_run_denies(start_run, monkeypatch) -> None:
     assert out["hookSpecificOutput"]["permissionDecision"] == "deny"
 
 
-def test_a_typed_short_form_resume_is_applied(start_run) -> None:
+def test_a_short_form_resume_does_not_touch_the_run(start_run) -> None:
+    # Value: protects=another plugin's or a leftover /pipeline cannot resume this run;
+    # fails_when=the short name is read as this plugin's command; why_new=adversarial
+    # review; seam=none
     run, worktree = start_run()
     rs.update(run, lambda s: rs.pause(s, "needs_human", "ASK x"))
-    assert "Stage 1/5" in _context(ch.run_prompt(_prompt(worktree, "/pipeline resume")))
-    assert rs.read(run)[1]["status"] == "running"
+    assert ch.run_prompt(_prompt(worktree, "/pipeline resume")) == ch.PASS
+    assert rs.read(run)[1]["status"] == "awaiting_human"
 
 
 def test_a_pause_shows_the_person_its_card(start_run, tmp_path) -> None:
@@ -330,3 +333,12 @@ def test_a_new_session_in_the_worktree_is_shown_how_to_adopt_the_run(start_run) 
     out = _decision(ch.run_stop(_stop(worktree, session_id="after-clear")))
     assert "/delivery-loop:pipeline resume" in out["systemMessage"]
     assert "decision" not in out
+
+
+def test_a_move_is_judged_by_its_source_too(start_run, tmp_path) -> None:
+    # Value: protects=a guarded file cannot be moved out of the worktree by an MCP tool;
+    # fails_when=only the destination is checked; why_new=adversarial review; seam=none
+    _, worktree = start_run()
+    tool_input = {"source": str(worktree / "loop.toml"), "destination": str(tmp_path / "x")}
+    out = _decision(ch.run_guard(_pre(tmp_path, "mcp__filesystem__move_file", tool_input)))
+    assert out["hookSpecificOutput"]["permissionDecision"] == "deny"

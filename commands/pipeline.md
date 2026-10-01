@@ -6,9 +6,9 @@ allowed-tools: Bash(delivery-loop:*)
 ---
 
 ```!
-delivery-loop --session "${CLAUDE_SESSION_ID}" --args-stdin 2>&1 <<'DELIVERY_LOOP_ARGS'
+delivery-loop --session "${CLAUDE_SESSION_ID}" --args-stdin 2>&1 <<'DELIVERY_LOOP_ARGS_7C1F9E2B'
 $ARGUMENTS
-DELIVERY_LOOP_ARGS
+DELIVERY_LOOP_ARGS_7C1F9E2B
 ```
 
 The block above is the output of `delivery-loop $ARGUMENTS`.

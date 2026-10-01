@@ -46,7 +46,7 @@ from core import run_index as ri
 from core import run_state as rs
 from core.config import LoopConfig, git_env
 from core.guard_evidence import declared, guard_map
-from core.pipeline_loop_paths import parse_loop_edits_block
+from core.pipeline_loop_paths import is_carveout, parse_loop_edits_block
 
 _TAIL_CHARS = 500
 
@@ -238,7 +238,8 @@ def _check_guard(run: rs.Run, state: dict) -> TurnEndVerdict | None:
         return None
     changed = sorted(k for k in set(baseline) | set(current) if baseline.get(k) != current.get(k))
     edits = state.get("declared_loop_edits") or []
-    accepted = [k for k in changed if declared(k, edits)]
+    # A carve-out is never accepted, even under a directory the plan declared.
+    accepted = [k for k in changed if declared(k, edits) and not is_carveout(k, run.config)]
     if accepted:
         for k in accepted:
             if k in current:

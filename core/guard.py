@@ -34,7 +34,13 @@ from pathlib import Path
 
 from core import run_index as ri
 from core import run_state as rs
-from core.config import HARNESS_HOME, HARNESS_HOME_ENV, SETTINGS_FILES
+from core.config import (
+    HARNESS_HOME,
+    HARNESS_HOME_ENV,
+    SETTINGS_FILES,
+    user_config_dir,
+    user_git_configs,
+)
 from core.pipeline_loop_paths import classify_loop_path, is_carveout
 
 _GUARD_DOC = f"{ri.README_URL}what-the-guard-covers"
@@ -108,6 +114,10 @@ def protected_roots(run: rs.Run) -> list[Path]:
     """Directories outside any worktree that an edit tool may never write."""
     roots = [rs.PLUGIN_ROOT, Path(ri.state_home()), Path(HARNESS_HOME).expanduser()]
     roots.append(Path(run.config.state_root).expanduser())
+    # The operator's loop config for every run of a repository, and the git
+    # config files a push reads before the repository's own.
+    roots.append(user_config_dir())
+    roots += user_git_configs()
     if os.environ.get(HARNESS_HOME_ENV):
         roots.append(Path(os.environ[HARNESS_HOME_ENV]).expanduser())
     return [Path(os.path.realpath(r)) for r in roots]
@@ -136,17 +146,21 @@ def _absolute(path: str, cwd: str | None, worktree: Path) -> tuple[Path, Path]:
 
 
 def _relative(lexical: Path, resolved: Path, worktree: Path) -> tuple[str | None, str | None]:
-    """The path relative to the worktree, as written and as resolved; ``None`` outside."""
-    root = Path(os.path.realpath(worktree))
+    """The path relative to the worktree, as written and as resolved; ``None`` outside.
+
+    Compared ignoring letter case, as ``_under`` is: on a case-insensitive file
+    system ``/Users/x/REPO/loop.toml`` is the worktree's own ``loop.toml``.
+    """
+    roots = [Path(os.path.realpath(worktree)), Path(worktree)]
     out = []
     for candidate in (lexical, resolved):
-        try:
-            out.append(candidate.relative_to(root).as_posix())
-        except ValueError:
-            try:
-                out.append(candidate.relative_to(worktree).as_posix())
-            except ValueError:
-                out.append(None)
+        rel = None
+        for root in roots:
+            if _under(candidate, root):
+                text, base = str(candidate), str(root).rstrip("/")
+                rel = text[len(base) + 1 :] if len(text) > len(base) else ""
+                break
+        out.append(rel)
     return out[0], out[1]
 
 

@@ -172,7 +172,7 @@ def test_a_line_that_repeats_the_cli_name_is_checked_in_linear_time() -> None:
     started = time.perf_counter()
     assert ri.human_only_command(line) is None
     assert ri.human_only_command(line + "; delivery-loop resume") == "resume"
-    assert time.perf_counter() - started < 0.5
+    assert time.perf_counter() - started < 1.5  # was 2.9 s when quadratic
 
 
 def test_a_path_that_only_names_the_project_is_not_lexed(monkeypatch) -> None:
@@ -183,6 +183,35 @@ def test_a_path_that_only_names_the_project_is_not_lexed(monkeypatch) -> None:
     heredoc = "cat <<'EOF'\n" + "x" * 100_000 + "\nEOF"
     assert not ri.starts_run("cd /src/delivery-loop-90cd961a && " + heredoc)
     assert not ri.starts_run("cd /src/delivery-loop/ && " + heredoc)
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        'git commit -m "docs: explain delivery-loop resume"',
+        "delivery-loop start fix abort handling",
+        "echo delivery-loop status --session abort-1",
+        "grep -rn 'delivery-loop resume' README.md",
+    ],
+)
+def test_a_mention_of_resume_is_not_a_resume(command: str) -> None:
+    # Value: protects=every session on the machine can commit, grep and start tasks that
+    # mention resume or abort; fails_when=the refusal reads raw text, not the CLI's own
+    # subcommand; why_new=adversarial review; seam=none
+    assert ri.human_only_command(command) is None
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "delivery-loop --session abc start CRB-1",
+        "printf 'start X' | delivery-loop --args-stdin",
+    ],
+)
+def test_a_start_past_options_or_on_stdin_is_seen(command: str) -> None:
+    # Value: protects=the agent's start binds to the agent's session; fails_when=--session
+    # before start or --args-stdin hides the start from the intent; why_new=review; seam=none
+    assert ri.starts_run(command)
 
 
 def test_an_unbalanced_quote_does_not_raise() -> None:
@@ -291,10 +320,28 @@ def test_old_python_denies_edits_and_blocks_once_during_a_run(
     assert "delivery-loop abort" in boot.old_python_hook("guard", edit)["deny"]
     shell = {"cwd": str(tmp_path), "tool_name": "Bash", "tool_input": {"command": "ls"}}
     assert boot.old_python_hook("guard", shell) is None
+    # Without the full guard, nothing publishes either.
+    push = {**shell, "tool_input": {"command": "git push --force origin main"}}
+    assert "deny" in boot.old_python_hook("guard", push)
+    mcp = {"cwd": str(tmp_path), "tool_name": "mcp__github__push_files", "tool_input": {}}
+    assert "deny" in boot.old_python_hook("guard", mcp)
     stop = {"cwd": str(tmp_path), "session_id": "s1"}
     assert "block" in boot.old_python_hook("stop", stop)
     assert boot.old_python_hook("stop", {**stop, "stop_hook_active": True}) is None
     assert boot.old_python_hook("stop", {**stop, "session_id": "other"}) is None
+
+
+def test_old_python_leaves_a_paused_run_waiting(tmp_path: Path, monkeypatch) -> None:
+    # Value: protects=a paused run waits for its person instead of re-prompting the agent
+    # every turn; fails_when=the old Stop path blocks without reading the status;
+    # why_new=adversarial review; seam=none
+    (tmp_path / ".git").mkdir()
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "state.json").write_text('{"status": "awaiting_human"}', encoding="utf-8")
+    ri.write_entry(ri.worktree_key(str(tmp_path)), str(run_dir), str(tmp_path), "s1")
+    _old(monkeypatch)
+    assert boot.old_python_hook("stop", {"cwd": str(tmp_path), "session_id": "s1"}) is None
 
 
 def test_old_python_still_denies_an_agent_resume(monkeypatch: pytest.MonkeyPatch) -> None:

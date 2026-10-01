@@ -260,7 +260,10 @@ def run_guard(raw: str) -> HookResult:
     except Exception as exc:  # noqa: BLE001 - a guard that crashes must not let the call run
         try:
             touched = bool(
-                ri.find_entries(payload.get("cwd"), boot.target_of(payload), _session(payload))
+                any(
+                    ri.find_entries(payload.get("cwd"), t, _session(payload))
+                    for t in boot.targets_of(payload) or [None]
+                )
             )
         except Exception:  # noqa: BLE001
             touched = True
@@ -283,9 +286,15 @@ def _guard(payload: dict) -> HookResult:
             # Best effort: a start without its intent binds on the first turn end.
             with contextlib.suppress(OSError):
                 ri.write_intent(ri.worktree_key(root), session)
-    target = boot.target_of(payload)
+    targets = boot.targets_of(payload) or [None]
     branch = boot.branch_of(payload)
-    found = ri.find_entries(payload.get("cwd"), target, payload.get("session_id"))
+    found = list(
+        {
+            key: (key, entry)
+            for target in targets
+            for key, entry in ri.find_entries(payload.get("cwd"), target, payload.get("session_id"))
+        }.values()
+    )
     if not found:
         return PASS
     stderr = []
@@ -299,16 +308,21 @@ def _guard(payload: dict) -> HookResult:
                     return early
                 stderr += [early.stderr] if early is not None and early.stderr else []
                 continue
-            call = guard.PreToolCall(
-                session_id=session,
-                kind=boot.kind_of(tool_name),
-                tool_name=str(tool_name),
-                cwd=payload.get("cwd") if isinstance(payload.get("cwd"), str) else None,
-                command=command if isinstance(command, str) else None,
-                path=target if isinstance(target, str) else None,
-                branch=branch if isinstance(branch, str) else None,
-            )
-            verdict = guard.handle_pre_tool(call, run, state)
+            # Each path a call names is judged: a move's source as well as its
+            # destination.
+            for target in targets:
+                call = guard.PreToolCall(
+                    session_id=session,
+                    kind=boot.kind_of(tool_name),
+                    tool_name=str(tool_name),
+                    cwd=payload.get("cwd") if isinstance(payload.get("cwd"), str) else None,
+                    command=command if isinstance(command, str) else None,
+                    path=target if isinstance(target, str) else None,
+                    branch=branch if isinstance(branch, str) else None,
+                )
+                verdict = guard.handle_pre_tool(call, run, state)
+                if not verdict.allow:
+                    break
         except Exception as exc:  # noqa: BLE001 - any failure on a run fails closed
             ri.append_event(
                 entry["run_dir"], {"hook": "guard", "decision": "error", "reason": repr(exc)}
