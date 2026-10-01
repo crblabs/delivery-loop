@@ -9,9 +9,12 @@ copy.
 Three things live here:
 
   * The carve-out: the enforcement files a declaration can NEVER authorize (the
-    two hooks, their shims, this module itself and the two settings files). The
-    run state is not in the repository, so it is not listed. It is checked AFTER the
-    allow-list and always wins, so a task that must edit the guard itself keeps
+    two hooks, their shims, this module itself, the two settings files,
+    loop.toml and the worktree's .git pointer). The run state is not in the
+    repository, so it is not listed. A config file can only add to the
+    carve-out: the built-in entries stay in force under the default state
+    directory whatever a file sets. It is checked AFTER the allow-list and always
+    wins, so a task that must edit the guard itself keeps
     the pauses, while a task that edits a stage prompt or a doc runs hands-off.
   * `parse_loop_edits_block` / `parse_loop_edits_rejected`: extract the declared
     paths (and the rejected tokens) from a ```loop-edits fenced block in a task

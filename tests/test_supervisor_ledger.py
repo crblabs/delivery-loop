@@ -150,3 +150,20 @@ def test_pause_key_falls_back_to_worktree_when_unobservable():
     a = sl.pause_key({"worktree": "/repo/a", "condition": "corrupt"})
     b = sl.pause_key({"worktree": "/repo/b", "condition": "corrupt"})
     assert a != b
+
+
+def test_an_orphaned_run_has_its_own_key():
+    # Value: protects=the orphaned escalation reaches the operator once a paused or done run
+    # loses its worktree; fails_when=pause_key keeps the old pause or done key;
+    # why_new=decide escalates orphaned runs first and the ledger suppressed them; seam=none
+    paused = {
+        "run_id": "R",
+        "status": "awaiting_human",
+        "paused_reason": "x",
+        "paused_prompt_id": "p",
+    }
+    assert sl.pause_key({**paused, "orphaned": True}) == "R:orphaned"
+    prompt = {"outcome": "permission_prompt", "tool_use_id": "t1"}
+    assert sl.pause_key({**paused, "orphaned": True}, prompt) == "R:orphaned"
+    assert sl.pause_key({"run_id": "R", "status": "done", "orphaned": True}) == "R:orphaned"
+    assert sl.pause_key(paused) != "R:orphaned"

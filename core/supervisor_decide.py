@@ -30,7 +30,7 @@ import json
 import sys
 from pathlib import Path, PurePosixPath
 
-from core.config import DEFAULTS, LoopConfig, load_config
+from core.config import DEFAULTS, ConfigError, LoopConfig, config_for_run, load_cli_config
 
 # The carve-out list has one home; import it rather than copy it, so the
 # supervisor and the guard cannot disagree on what is an enforcement file.
@@ -195,6 +195,10 @@ def decide(
     allowlist = allowlist or []
     if not isinstance(record, dict):
         return _escalate("unobservable", "record is not an object")
+    if record.get("orphaned"):
+        # Checked first: nothing can resume a run whose worktree is gone, whatever
+        # its state file reads as without that worktree's config; loop-prune removes it.
+        return _escalate("orphaned", "the worktree is gone; loop-prune removes this run")
     if record.get("condition") != "ok":
         return _escalate("unobservable", f"cannot read this run ({record.get('condition')})")
     if record.get("pending_promotion"):
@@ -256,7 +260,11 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--question-file", default=None)
     parser.add_argument("--allow-path", action="append", default=[])
     parser.add_argument("--notify-only", action="store_true")
-    parser.add_argument("--config", default=None, help="a loop.toml, or the directory holding one")
+    parser.add_argument(
+        "--config",
+        default=None,
+        help="a loop.toml, or its directory (default: the run's own worktree config)",
+    )
     return parser.parse_args(argv)
 
 
@@ -278,7 +286,20 @@ def main(argv: list[str] | None = None) -> int:
     if question is not None and not isinstance(question, dict):
         print("MALFORMED_INPUT: --question-file must be a JSON object", file=sys.stderr)
         return 2
-    decision = decide(record, args.allow_path, question, args.notify_only, load_config(args.config))
+    config = load_cli_config(args.config)
+    if config is None:
+        return 2
+    try:
+        # An orphaned run has no worktree to read a config from; decide() escalates it.
+        if not record.get("orphaned"):
+            config = config_for_run(record.get("worktree"), config, args.config is not None)
+    except ConfigError as exc:
+        # The run cannot be read under its own config, so it is escalated as
+        # unobservable rather than judged under another one. The reason goes to
+        # stderr, so the operator learns which file to repair.
+        print(f"CONFIG_INVALID: {exc}", file=sys.stderr)
+        record = {**record, "condition": "config_invalid", "error": str(exc)}
+    decision = decide(record, args.allow_path, question, args.notify_only, config)
     print(json.dumps(decision, indent=2, sort_keys=True))
     return 0
 

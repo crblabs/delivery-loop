@@ -19,8 +19,9 @@ here.
 A run that already wrote its question as a card (the delivery-loop stages do) is
 passed through under a fresh header. Every other pause is synthesised from the
 scan record and the pending gate: a guard change, a promotion, a failed run, a
-stale run, a harness permission prompt, or an ``AskUserQuestion``. A ``done``
-run is one line.
+stale run, an unreadable run (a bad state file or config), an orphaned run
+whose worktree is gone, a harness permission prompt, or an ``AskUserQuestion``.
+A ``done`` run is one line.
 
 Inputs are the JSON a scan record and a question already carry.
 ``--first-line`` prints only the notification line. The tool never writes and
@@ -36,7 +37,7 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-from core.config import DEFAULTS, LoopConfig, load_config
+from core.config import DEFAULTS, ConfigError, LoopConfig, config_for_run, load_cli_config
 
 WORD_BUDGET = 60
 FIRST_LINE_CHARS = 200
@@ -264,16 +265,52 @@ def _liveness_card(record: dict, config: LoopConfig) -> dict[str, str]:
     )
 
 
-def _synthesise(record: dict, question: dict | None, config: LoopConfig) -> dict[str, str]:
+def _unreadable_card(condition: object, config: LoopConfig) -> dict[str, str]:
+    """A run the supervisor cannot read: its config or state file needs repair."""
+    return _card(
+        f"Cannot read this run ({condition}). Repair it?",
+        f"1. Fix its config or state file, then {config.resume_command}",
+        f"2. {config.abort_command}",
+        "",
+        "fix | abort",
+    )
+
+
+def _orphaned_card(prune: str) -> dict[str, str]:
+    """A run whose worktree is gone: nothing can resume it, so it is pruned.
+
+    ``loop-prune --yes`` deletes every orphaned run, not only this one, so the
+    card has the operator list them first. ``prune`` is the command as this card
+    was rendered: with the same ``--config``, it reads the same state root.
+    """
+    return _card(
+        "Worktree is gone. Prune this run?",
+        f"1. Run {prune} to list every orphaned run, then {prune} --yes",
+        "2. Wait, if the worktree comes back",
+        "",
+        "prune | wait",
+    )
+
+
+def _synthesise(
+    record: dict, question: dict | None, config: LoopConfig, prune: str = "loop-prune"
+) -> dict[str, str]:
     """A card for a pause the run did not write as one. A gate in the transcript
     outranks the state file, and paused_reason outlives the pause it named, so
     only a run paused now gets a pause card."""
     q = question if isinstance(question, dict) else {}
     status = record.get("status")
+    condition = record.get("condition")
+    if record.get("orphaned"):
+        return _orphaned_card(prune)
     if q.get("outcome") == "pending":
         return _question_card(q)
     if q.get("outcome") == "permission_prompt":
         return _permission_card(q)
+    # After the gates: a session blocked on a prompt needs the prompt answered
+    # before anything else, even when its run cannot be read.
+    if condition not in (None, "ok"):
+        return _unreadable_card(condition, config)
     if status == "failed":
         return _failed_card(record.get("paused_reason"), config)
     if status == "awaiting_human":
@@ -291,6 +328,10 @@ def _fit(card: dict[str, str]) -> dict[str, str]:
 
 
 def _state_word(record: dict) -> str:
+    if record.get("orphaned"):
+        return "orphaned"
+    if record.get("condition") not in (None, "ok"):
+        return "unreadable"
     live = "stale" if record.get("is_stale") else "running"
     return {"awaiting_human": "paused", "failed": "failed"}.get(str(record.get("status")), live)
 
@@ -305,15 +346,25 @@ def _body_lines(card: dict[str, str]) -> list[str]:
     return lines
 
 
-def render(record: dict, question: dict | None = None, config: LoopConfig = DEFAULTS) -> str:
+def render(
+    record: dict,
+    question: dict | None = None,
+    config: LoopConfig = DEFAULTS,
+    prune: str = "loop-prune",
+) -> str:
     """The card for one run, header first. A done run is one line, unless a
     permission prompt is parked on it."""
     prompt = isinstance(question, dict) and question.get("outcome") == "permission_prompt"
+    # A run that is gone or cannot be read gets its own card first: neither its
+    # done line nor a card it wrote earlier says what a person can do now.
+    if record.get("orphaned") or record.get("condition") not in (None, "ok"):
+        card = _synthesise(record, question, config, prune)
+        return "\n".join([header(record, _state_word(record), config), *_body_lines(_fit(card))])
     if record.get("status") == "done" and not prompt:
         task, pr = record.get("task") or "?", _pr_number(record.get("pr_url"))
         return f"{task} | done | {pr} | merge or close"
     card = extract_card(record.get("pending_question") or "") or _synthesise(
-        record, question, config
+        record, question, config, prune
     )
     return "\n".join([header(record, _state_word(record), config), *_body_lines(_fit(card))])
 
@@ -340,9 +391,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--first-line", action="store_true", help="print only the notification line"
     )
-    parser.add_argument("--config", default=None, help="a loop.toml, or the directory holding one")
+    parser.add_argument(
+        "--config",
+        default=None,
+        help="a loop.toml, or its directory (default: the run's own worktree config)",
+    )
     args = parser.parse_args(argv)
-    config = load_config(args.config)
+    config = load_cli_config(args.config)
+    if config is None:
+        return 2
     try:
         record = _load(args.record_file)
         question = _load(args.question_file)
@@ -354,7 +411,17 @@ def main(argv: list[str] | None = None) -> int:
     if not isinstance(record, dict):
         print("supervisor_card: the record must be one JSON object", file=sys.stderr)
         return 2
-    card = render(record, question, config)
+    try:
+        # An orphaned run has no worktree to read a config from; it gets its own card.
+        if not record.get("orphaned"):
+            config = config_for_run(record.get("worktree"), config, args.config is not None)
+    except ConfigError as exc:
+        # The card still shows, as a run that cannot be read, in the command's
+        # own wording, and the reason goes to stderr.
+        print(f"CONFIG_INVALID: {exc}", file=sys.stderr)
+        record = {**record, "condition": "config_invalid"}
+    prune = "loop-prune" if args.config is None else f"loop-prune --config {args.config}"
+    card = render(record, question, config, prune)
     print(first_line(card) if args.first_line else card)
     return 0
 

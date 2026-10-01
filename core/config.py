@@ -4,15 +4,23 @@
 Every harness name, command name and tracker name the loop needs is a field on
 ``LoopConfig`` and lives nowhere else, so the rest of ``core/`` holds no harness
 literal at all. The defaults reproduce the values the loop ran on before the
-seam existed, so an absent, empty or partial ``loop.toml`` behaves exactly as
-the code behaved with the literals inline.
+seam existed, with two kinds of exception. The values that named one operator's
+setup, the session label and the tracker prefix, are neutral, so a repository
+with no ``loop.toml`` at all runs on defaults that fit it. And ``loop.toml`` and
+the worktree's ``.git`` pointer are carve-outs, and the built-in carve-outs stay
+in force under ``.claude`` whatever state directory a file sets.
 
-``load_config`` reads one ``loop.toml`` with ``tomllib`` and falls back to the
-default for every key the file does not set. A key the loop does not read yet is
-ignored, so a host may keep the whole template in place. A key the loop no
-longer reads is refused, so a host learns that its meaning changed. What is read is
-validated: a path may not be absolute and may not escape its root, a prefix may
-not be empty, and the tracker pattern must compile.
+``load_config`` looks in three places, in order: ``loop.toml`` in the
+repository, then ``~/.config/delivery-loop/<repo-slug>.toml`` for the operator,
+then the built-in defaults. The files are merged key by key, so the repository
+file wins over the user file for every key it sets, and a key neither sets keeps
+its default. Neither file is required. A key the loop does not read yet is
+ignored, so a host may keep the whole template in place, but a key written in
+the repository file overrides the user file even when it holds the default. A
+key the loop no longer reads is refused, so a host learns that its meaning
+changed. What is read is validated: a path may not be absolute and may not
+escape its root, a prefix may not be empty, and the tracker pattern must
+compile.
 
 Path fields are written with placeholders, ``{state_dir}``, ``{state_file}`` and
 ``{state_stem}``, substituted once when the object is built. A host that moves
@@ -37,20 +45,32 @@ off. The default tuple is the five stages the loop shipped with, so a host that
 declares nothing keeps them. A host with another skillset writes its own
 ``[[stages]]`` array and the loop drives that instead.
 
-The object is built once and passed down. Nothing here is read at import time by
+The object is built at an entry point and passed down. Without ``--config``,
+every supervisor command also builds one per run, from that run's own worktree,
+through ``config_for_run``. Nothing here is read at import time by
 another module except ``DEFAULTS``, which is the value every public function
 falls back to when a caller passes no config.
 """
 
 from __future__ import annotations
 
+import os
 import re
+import subprocess
+import sys
 import tomllib
 from dataclasses import dataclass
 from functools import cached_property
 from pathlib import Path, PurePosixPath
 
 CONFIG_FILENAME = "loop.toml"
+# The operator's own configuration, one file per repository, under the home
+# directory: ``<USER_CONFIG_DIR>/<repo-slug>.toml``.
+USER_CONFIG_DIR = ".config/delivery-loop"
+_SLUG_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+# A working ``git rev-parse`` answers in milliseconds; a stuck one must not stall
+# a supervisor call for long, so it times out and the loader reports ConfigError.
+_GIT_TIMEOUT_S = 3
 
 # Substituted into the path fields when the object is built, so one setting
 # moves every path that lives under the harness state directory.
@@ -60,7 +80,17 @@ _EXPANDED_TUPLES = ("carve_outs", "carve_out_prefixes", "loop_prefixes", "loop_e
 
 
 class ConfigError(ValueError):
-    """A loop.toml the loop refuses: a bad type, an unsafe path, a bad pattern."""
+    """A config file the loop refuses: a bad type, an unsafe path, a bad pattern."""
+
+
+# A group that holds a quantifier and is itself repeated, the shape behind
+# catastrophic backtracking.
+_NESTED_QUANTIFIER = re.compile(r"\((?:[^()\\]|\\.)*[+*}](?:[^()\\]|\\.)*\)[+*{]")
+
+
+def _grouped(prefix: str) -> str:
+    """The prefix as one unit inside the pattern, so "a|b" cannot split it."""
+    return f"(?:{prefix})" if "|" in prefix else prefix
 
 
 def _set(target: object, name: str, value: object) -> None:
@@ -182,7 +212,7 @@ DEFAULT_STAGES = (
 
 @dataclass(frozen=True)
 class LoopConfig:
-    """Every value the loop takes from its host, with today's values as defaults.
+    """Every value the loop takes from its host, with neutral defaults.
 
     ``state_dir`` names the harness directory inside a worktree. ``state_root``
     is the directory every run's state lives under, outside any repository, and
@@ -194,7 +224,8 @@ class LoopConfig:
     in order. ``session_label`` names the session in a card header,
     ``resume_command`` and ``abort_command`` are the operator commands a card
     quotes, and ``tracker_prefix`` with ``tracker_pattern`` recognise an issue
-    identifier in a worktree name.
+    identifier in a worktree name. ``tracker_prefix`` is a regular expression
+    fragment; the default matches any run of letters.
     """
 
     state_dir: str = ".claude"
@@ -210,22 +241,32 @@ class LoopConfig:
         "{state_dir}/hooks/pipeline-guard",
         "{state_dir}/hooks/pipeline-stop",
         "{state_dir}/hooks/pipeline_loop_paths.py",
+        # The loop reads loop.toml without being asked, so a run may not edit it.
+        CONFIG_FILENAME,
+        # The worktree's .git pointer names the repository, and so the user file.
+        ".git",
     )
-    carve_out_prefixes: tuple[str, ...] = ()
+    # The main checkout's git directory names the repository too (commondir).
+    carve_out_prefixes: tuple[str, ...] = (".git/",)
     loop_prefixes: tuple[str, ...] = ("{state_dir}/hooks/", "{state_dir}/skills/pipeline/")
     loop_exact: tuple[str, ...] = ("{state_dir}/settings.json",)
     stage_shorthand: str = "stages/"
     stage_target: str = "{state_dir}/skills/pipeline/stages/"
     stages: tuple[StageSpec, ...] = DEFAULT_STAGES
-    session_label: str = "Emdash session"
+    session_label: str = "Session"
     resume_command: str = "/pipeline resume"
     abort_command: str = "/pipeline abort"
-    tracker_prefix: str = "cod"
+    tracker_prefix: str = "[A-Za-z]+"
     tracker_pattern: str = r"({tracker_prefix}-\d+)"
 
     def __post_init__(self) -> None:
         _refuse_empty("state_dir", self.state_dir)
         _refuse_unsafe("state_dir", self.state_dir)
+        # One spelling per directory, so "./.harness" and ".harness/" expand to
+        # the same carve-outs the path checks compare against.
+        _set(self, "state_dir", PurePosixPath(self.state_dir).as_posix())
+        if self.state_dir == ".":
+            raise ConfigError("state_dir must name a directory inside the worktree")
         _refuse_empty("state_root", self.state_root)
         if not (self.state_root.startswith("/") or self.state_root.startswith("~")):
             raise ConfigError(
@@ -249,7 +290,7 @@ class LoopConfig:
         _set(
             self,
             "tracker_pattern",
-            _expand(self.tracker_pattern, {"tracker_prefix": self.tracker_prefix}),
+            _expand(self.tracker_pattern, {"tracker_prefix": _grouped(self.tracker_prefix)}),
         )
 
     def _validate(self) -> None:
@@ -259,6 +300,10 @@ class LoopConfig:
         _refuse_empty("ledger_name", self.ledger_name)
         if "/" in self.ledger_name:
             raise ConfigError(f"ledger_name names one file, not a path: {self.ledger_name!r}")
+        # The ledger is appended to under the home directory, so it may only ever
+        # be a .jsonl file of its own, never an existing dotfile.
+        if not self.ledger_name.endswith(".jsonl"):
+            raise ConfigError(f"ledger_name must end in .jsonl: {self.ledger_name!r}")
         for name in _EXPANDED_TUPLES:
             for value in getattr(self, name):
                 _refuse_empty(name, value)
@@ -268,8 +313,14 @@ class LoopConfig:
         _refuse_empty("tracker_prefix", self.tracker_prefix)
         try:
             re.compile(self.tracker_pattern)
-        except re.error as exc:
+        except (re.error, OverflowError, RecursionError) as exc:
             raise ConfigError(f"tracker_pattern is not a regular expression: {exc}") from exc
+        # A repository file is read without a flag, and a nested quantifier such
+        # as "(a+)+" can make one card take minutes to match a worktree name.
+        if _NESTED_QUANTIFIER.search(self.tracker_pattern):
+            raise ConfigError(
+                f"tracker_pattern may not repeat a group that repeats: {self.tracker_pattern!r}"
+            )
         self._validate_stages()
 
     def _validate_stages(self) -> None:
@@ -336,6 +387,7 @@ _STRING_KEYS = (
     ("tracker_prefix", "tracker", "prefix"),
     ("tracker_pattern", "tracker", "pattern"),
 )
+_ADDITIVE = ("carve_outs", "carve_out_prefixes")
 _LIST_KEYS = (
     ("carve_outs", "loop_paths", "carve_outs"),
     ("carve_out_prefixes", "loop_paths", "carve_out_prefixes"),
@@ -414,7 +466,10 @@ def from_mapping(data: dict) -> LoopConfig:
     setting only the tracker prefix reshapes the tracker pattern. A key the loop
     does not read yet is ignored, but a key it no longer reads is refused, with
     what replaced it. An array of ``[[stages]]`` tables replaces the whole stage
-    list; a file with no such array keeps the default five.
+    list; a file with no such array keeps the default five. The carve-out lists
+    are the exception to replacement: a file's entries are added to the defaults,
+    and the defaults stay in force at the default state directory too, so no
+    file can take a carve-out away.
     """
     if not isinstance(data, dict):
         raise ConfigError(f"a loop.toml must be a table, got {data!r}")
@@ -432,28 +487,268 @@ def from_mapping(data: dict) -> LoopConfig:
             values[field_name] = _strs(table, key)
     if "stages" in data:
         values["stages"] = _stages(data["stages"])
-    return LoopConfig(**values)
+    # A file may add carve-outs but never remove one: the carve-outs guard the
+    # loop's own enforcement files, and a repository file is read without a flag.
+    for name in _ADDITIVE:
+        if name in values:
+            default = LoopConfig.__dataclass_fields__[name].default
+            values[name] = tuple(dict.fromkeys((*default, *values[name])))
+    config = LoopConfig(**values)
+    # The built-in carve-outs also stay in force at the default state
+    # directory, so a file that moves state_dir cannot move them away.
+    for name in _ADDITIVE:
+        _set(config, name, tuple(dict.fromkeys((*getattr(config, name), *getattr(DEFAULTS, name)))))
+    return config
 
 
-def load_config(path: str | Path | None = None) -> LoopConfig:
-    """Read one loop.toml, or return the defaults when there is no file to read.
+# Variables that make git answer for another repository than the one in cwd, as
+# they do inside a git hook. They are dropped, so cwd alone picks the repository.
+_GIT_REPOSITORY_VARS = (
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_COMMON_DIR",
+    "GIT_INDEX_FILE",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_NAMESPACE",
+    "GIT_PREFIX",
+)
 
-    ``path`` may name the file or the directory that holds it. A missing file is
-    not an error: the loop has a default for every value. A file that is present
-    but unreadable, unparseable or invalid is an error, because a host that
-    wrote one meant it to be read.
+
+def _git(cwd: Path, *args: str) -> str | None:
+    """One line of git output, or None when cwd is in no repository.
+
+    Any other failure raises ``ConfigError``: a missing or stuck git, or a
+    repository git refuses to read. Treating those as "no repository" would drop
+    the user file, and with it the carve-outs the operator added there.
     """
-    if path is None:
-        return DEFAULTS
-    candidate = Path(path)
-    if candidate.is_dir():
-        candidate = candidate / CONFIG_FILENAME
-    if not candidate.is_file():
-        return DEFAULTS
+    env = {k: v for k, v in os.environ.items() if k not in _GIT_REPOSITORY_VARS}
+    # git translates its messages, and the "not a git repository" check below
+    # reads one, so the messages are kept in English.
+    env |= {"LC_ALL": "C", "LANGUAGE": "C"}
+    try:
+        done = subprocess.run(
+            ["git", *args],
+            cwd=cwd,
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=_GIT_TIMEOUT_S,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise ConfigError(f"cannot run git in {cwd} to find the repository: {exc}") from exc
+    out = done.stdout.strip()
+    if done.returncode == 0 and out and "\n" in out:
+        # git before 2.31 echoes --path-format back, which would read as a name.
+        raise ConfigError(f"git in {cwd} answered more than one line; git 2.31 or later is needed")
+    if done.returncode == 0 and out:
+        return out
+    if "not a git repository" in done.stderr and not _has_git_entry(cwd):
+        return None
+    # A .git that git cannot read, for example a worktree pointer a run rewrote,
+    # is a failure, not "no repository": that would drop the user file.
+    raise ConfigError(f"git cannot read the repository in {cwd}: {done.stderr.strip()}")
+
+
+def _has_git_entry(start: Path) -> bool:
+    """Whether ``start`` or a parent holds a ``.git`` file or directory."""
+    path = Path(os.path.abspath(start))
+    # lexists, so a dangling .git symlink counts as an entry too.
+    return any(os.path.lexists(p / ".git") for p in (path, *path.parents))
+
+
+def repo_root(start: Path) -> Path:
+    """The top level of the repository ``start`` is in, or ``start`` outside one."""
+    out = _git(start, "rev-parse", "--show-toplevel")
+    return Path(out) if out else start
+
+
+def repo_slug(start: Path) -> str | None:
+    """The repository's name: the directory of its main checkout.
+
+    Every worktree of one repository shares one git directory, so the slug is
+    read from there and not from the worktree's own directory name, which a
+    worktree manager is free to choose. Outside a repository there is no slug.
+    """
+    common = _git(start, "rev-parse", "--path-format=absolute", "--git-common-dir")
+    if common is None:
+        return None
+    common_dir = Path(common)
+    # A dot-named git directory, .git or the .bare of a bare-clone layout, is
+    # named after the checkout that holds it.
+    slug = (common_dir.parent if common_dir.name.startswith(".") else common_dir).name
+    slug = slug.removesuffix(".git")
+    return slug if _SLUG_RE.fullmatch(slug) and slug not in (".", "..") else None
+
+
+def _read(candidate: Path) -> dict:
     try:
         data = tomllib.loads(candidate.read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError) as exc:
         raise ConfigError(f"cannot read {candidate}: {exc}") from exc
-    except tomllib.TOMLDecodeError as exc:
+    except (tomllib.TOMLDecodeError, RecursionError) as exc:
         raise ConfigError(f"{candidate} is not valid TOML: {exc}") from exc
-    return from_mapping(data)
+    return data
+
+
+def _merge(base: dict, over: dict) -> dict:
+    """``over`` on top of ``base``, table by table; any other value is replaced whole."""
+    merged = dict(base)
+    for key, value in over.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = _merge(merged[key], value)
+        else:
+            merged[key] = value
+    return merged
+
+
+def config_paths(
+    path: str | Path | None = None, slug: str | None = None, home: Path | None = None
+) -> tuple[Path, Path | None]:
+    """The repository file and the user file, strongest first, present or not.
+
+    ``path`` names the repository's loop.toml or the directory that holds it.
+    When omitted, the file is the one at the root of the repository the current
+    directory is in, or in the current directory outside a repository. ``slug``
+    names the repository for the user file and is read from git when omitted;
+    with no slug there is no user file.
+
+    Two repositories whose main checkouts share a directory name share a slug,
+    and so share one user file.
+    """
+    if path is None:
+        candidate = repo_root(Path.cwd()) / CONFIG_FILENAME
+    else:
+        candidate = Path(path)
+        if candidate.is_dir():
+            candidate = candidate / CONFIG_FILENAME
+    if slug is None:
+        slug = repo_slug(candidate.parent)
+    elif not _SLUG_RE.match(slug) or slug in (".", ".."):
+        raise ConfigError(f"unsafe repo slug: {slug!r}")
+    if slug is None:
+        return candidate, None
+    return candidate, (home or Path.home()) / USER_CONFIG_DIR / f"{slug}.toml"
+
+
+def load_config(
+    path: str | Path | None = None,
+    slug: str | None = None,
+    home: Path | None = None,
+    implicit: bool | None = None,
+) -> LoopConfig:
+    """The config from the repository file, the user file and the defaults, in that order.
+
+    ``path``, ``slug`` and ``home`` are as ``config_paths`` takes them. Either
+    file may be missing: the loop has a default for every value. A file that is
+    present but unreadable, unparseable or invalid is an error, because whoever
+    wrote one meant it to be read.
+
+    A file read without being named, the user file always and the repository
+    file unless ``path`` names it, may not set the machine-wide keys: the hook
+    and every command must agree on where the run state lives. ``implicit``
+    overrides that test for a caller that passes a path it found itself.
+    """
+    repo_file, user_file = config_paths(path, slug, home)
+    implicit = path is None if implicit is None else implicit
+    data: dict = {}
+    added: dict[str, list] = {}
+    layers: list[LoopConfig] = []
+    for candidate in (user_file, repo_file):
+        if candidate is not None and candidate.is_file():
+            if candidate == repo_file and implicit and candidate.is_symlink():
+                # The carve-out names loop.toml, not the file it points to, so a
+                # link would let a run edit the config through its target.
+                raise ConfigError(f"{candidate} is a symbolic link; commit the file itself")
+            one = _read(candidate)
+            if candidate == user_file or implicit:
+                _refuse_machine_keys(candidate, one)
+            # Each file is checked on its own, so a bad key is refused even when
+            # the other file sets the same key over it.
+            try:
+                layers.append(from_mapping(one))
+                data = _merge(data, one)
+            except ConfigError as exc:
+                raise ConfigError(f"{candidate}: {exc}") from exc
+            except RecursionError as exc:
+                raise ConfigError(f"{candidate}: its tables nest too deeply") from exc
+            _collect_carve_outs(one, added)
+    if added and isinstance(data.get("loop_paths"), dict):
+        # The carve-out lists add up across the files, so the repository file
+        # cannot drop a carve-out the user file adds. A loop_paths that is not a
+        # table is left for from_mapping to refuse.
+        data["loop_paths"] = {**data["loop_paths"], **added}
+    if not data:
+        return DEFAULTS
+    config = from_mapping(data)
+    # Each file's carve-outs stay in force as that file expanded them, so a file
+    # that moves state_dir cannot carry another file's protections away.
+    for name in _ADDITIVE:
+        kept = (path for layer in layers for path in getattr(layer, name))
+        _set(config, name, tuple(dict.fromkeys((*getattr(config, name), *kept))))
+    return config
+
+
+# Keys that say where the run state lives. Every worktree's hook and every
+# supervisor command must read the same value, so they come only from
+# DELIVERY_LOOP_HOME or a file named with --config.
+_MACHINE_KEYS = ("state_root", "state_file")
+
+
+def _refuse_machine_keys(candidate: Path, data: dict) -> None:
+    table = data.get("harness")
+    if not isinstance(table, dict):
+        return
+    for key in _MACHINE_KEYS:
+        if key in table:
+            raise ConfigError(
+                f"{candidate}: [harness] {key} is read only from DELIVERY_LOOP_HOME or a file"
+                " named with --config, so the hook and every command use one state location"
+            )
+
+
+def _collect_carve_outs(data: dict, added: dict[str, list]) -> None:
+    table = data.get("loop_paths")
+    if not isinstance(table, dict):
+        return
+    for field_name, _, key in _LIST_KEYS:
+        if field_name in _ADDITIVE and key in table:
+            # Checked here, because the list from another file would otherwise
+            # replace a bad value before from_mapping could refuse it.
+            added[key] = [*added.get(key, []), *_strs(table, key)]
+
+
+def config_for_run(worktree: object, config: LoopConfig, explicit: bool) -> LoopConfig:
+    """The config one run is judged by: its own worktree's, unless one was named.
+
+    With no ``--config``, a command reads a run under the config of the worktree
+    the run lives in, as ``loop-scan`` does, so every command applies the same
+    carve-outs, stages and commands to it. A record that names a worktree that is
+    gone raises ``ConfigError``, as a bad file does: judging it under another
+    config could loosen its carve-outs.
+    """
+    if explicit or not isinstance(worktree, str):
+        return config
+    if not Path(worktree).is_dir():
+        raise ConfigError(f"the worktree {worktree} is gone, so its config cannot be read")
+    return load_config(Path(worktree), implicit=True)
+
+
+def load_cli_config(path: str | Path | None, label: str = "CONFIG_INVALID") -> LoopConfig | None:
+    """``load_config`` for a command's entry point: None after reporting a bad file.
+
+    A command reads the repository file and the user file without being asked
+    to, so a broken one is reported on stderr under ``label`` (``CONFIG_INVALID``
+    unless the command names its own, as loop-scan and loop-prune do) and the
+    command exits 2, the code for "cannot observe", and not with a traceback.
+    """
+    try:
+        if path is not None:
+            named = Path(path) / CONFIG_FILENAME if Path(path).is_dir() else Path(path)
+            if not named.is_file():
+                # A mistyped --config would otherwise judge every run by the defaults.
+                raise ConfigError(f"--config names no file: {named}")
+        return load_config(path)
+    except ConfigError as exc:
+        print(f"{label}: {exc}", file=sys.stderr)
+        return None

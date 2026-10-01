@@ -90,7 +90,9 @@ the project environment, and `uv run <name>` runs one. The names share the
 
 Every run's state lives outside the repository, under `~/.delivery-loop`, in
 `runs/<owner>-<repo>/<worktree>-<hash>/`. A host repository needs no ignore
-rule. Set `DELIVERY_LOOP_HOME`, or `state_root` in `loop.toml`, to move it.
+rule. Set `DELIVERY_LOOP_HOME`, or `state_root` in a `loop.toml` that you name
+with `--config`, to move it. A `loop.toml` that a command finds by itself may not
+move it, so the hook and every command agree. See `templates/README.md`.
 
 Each command takes `--help`. `[project.scripts]` in `pyproject.toml` is the
 table that declares them, and `tests/test_entry_points.py` reads that table and

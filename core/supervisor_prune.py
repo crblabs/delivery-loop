@@ -23,7 +23,7 @@ from pathlib import Path
 
 from core import pipeline_state as ps
 from core import supervisor_scan as ss
-from core.config import DEFAULTS, ConfigError, LoopConfig, load_config
+from core.config import DEFAULTS, LoopConfig, load_cli_config
 
 
 def orphaned(config: LoopConfig = DEFAULTS) -> list[tuple[Path, Path]]:
@@ -40,16 +40,19 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
         description="List the delivery-loop runs whose worktree is gone, and delete them."
     )
     parser.add_argument("--yes", action="store_true", help="delete the listed run directories")
-    parser.add_argument("--config", default=None, help="a loop.toml, or the directory holding one")
+    parser.add_argument(
+        "--config",
+        default=None,
+        help="a loop.toml, or its directory (default: loop.toml at the repository root)",
+    )
     return parser.parse_args(argv)
 
 
-def main(argv: list[str] | None = None, config: LoopConfig = DEFAULTS) -> int:
+def main(argv: list[str] | None = None) -> int:
     args = _parse_args(sys.argv[1:] if argv is None else argv)
-    try:
-        config = load_config(args.config) if args.config else config
-    except ConfigError as exc:
-        print(f"PRUNE_CONFIG_INVALID: {exc}", file=sys.stderr)
+    # The same lookup as loop-scan, so both read the same state root.
+    config = load_cli_config(args.config, "PRUNE_CONFIG_INVALID")
+    if config is None:
         return 2
     runs_root = (ps.state_home(config) / ps.RUNS_DIR).resolve()
     report = []

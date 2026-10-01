@@ -26,8 +26,8 @@ against the loop's own vocabulary, never a harness's.
 - **The tracker write path.** The single place that writes to the issue
   tracker, so tracker access is one seam and not scattered.
 - **The configuration seam.** `config.py`: one frozen `LoopConfig` holding
-  every value that names the harness or the tracker, and the loader that reads
-  a `loop.toml` over it.
+  every value that names the harness or the tracker, and the loader that merges
+  the repository `loop.toml` and the user file over it.
 
 ## A stage is declared, not hard-coded
 
@@ -56,12 +56,13 @@ resumed under another.
 Every value that names the harness or the tracker is a field on `LoopConfig` in
 `config.py`, and nowhere else. To add one:
 
-1. Add the field to `LoopConfig` with today's value as its default. Write a
-   path under the harness state directory with the `{state_dir}` placeholder,
-   so one setting moves every path that names it. The run state is not under
-   that directory: it lives under `state_root`, outside the repository, so
-   `{state_file}` and `{state_stem}` give its name and never its location. A
-   tracker value takes `{tracker_prefix}` the same way.
+1. Add the field to `LoopConfig` with a neutral default, one that names no
+   single operator's setup. Write a path under the harness state directory
+   with the `{state_dir}` placeholder, so one setting moves every path that
+   names it. The run state is not under that directory: it lives under
+   `state_root`, outside the repository, so `{state_file}` and `{state_stem}`
+   give its name and never its location. A tracker value takes
+   `{tracker_prefix}` the same way.
 2. Add its table and key to `_STRING_KEYS` or `_LIST_KEYS`, so a `loop.toml`
    can set it, and validate it in `_validate` if a wrong value could do damage.
 3. Take the config as a parameter where the value is used. A public function
@@ -73,11 +74,18 @@ Every value that names the harness or the tracker is a field on `LoopConfig` in
 A field of a stage rather than of the loop goes on `StageSpec` instead, and is
 read by `_stages` in the loader from the `[[stages]]` table.
 
-The config is built once, at the entry point, from a `loop.toml` when the
-operator names one, and is passed down from there. No module reads a file, an
+The config is built at the entry point and is passed down from there. Without
+`--config`, every supervisor command (`loop-scan`, `loop-decide`, `loop-card`,
+`loop-pause-stats`) also builds one config per run, from that run's own
+worktree, through `config_for_run` or `load_config`.
+`load_config` merges `loop.toml` in the repository over
+`~/.config/delivery-loop/<repo-slug>.toml` over the built-in defaults, key by
+key. `templates/README.md` describes that lookup order. No module reads a file, an
 environment variable or a mutable global at import time. A missing, empty or
-partial `loop.toml` yields the defaults, so a host that has configured nothing
-gets exactly the behaviour the loop had when the values were literals.
+partial `loop.toml` with no user file yields the defaults, and a key that no
+file sets keeps its default. The defaults are neutral: they name
+no one operator's worktree layout, session label or tracker prefix, so a host
+that configured nothing still gets values that fit it.
 
 ## What does not belong here
 
@@ -91,7 +99,7 @@ gets exactly the behaviour the loop had when the values were literals.
   formats. An adapter translates those before core sees them.
 - Prompt text. That lives in `prompts/`.
 - Per-repo values such as a repository slug or a gate command. Those come from
-  `loop.toml`, read through the configuration seam.
+  `loop.toml` or the user file, read through the configuration seam.
 - Tracker vendor specifics beyond the one write path named above.
 
 ## Note

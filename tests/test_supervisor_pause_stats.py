@@ -88,3 +88,20 @@ def test_summarize_covers_every_category_key():
     assert summary["removable_auto_accept"] == 1
     assert summary["carveout"] == 1
     assert summary["not_paused"] == 1
+
+
+def test_an_orphaned_run_is_unobservable_with_a_named_config():
+    # Value: protects=pause-stats counts an orphaned run as unobservable, the same way decide
+    # escalates it; fails_when=classify_pause ignores the orphaned flag; why_new=with --config
+    # the per-run lookup does not raise, so only this check catches it; seam=none
+    record = {
+        "condition": "ok",
+        "orphaned": True,
+        "status": "awaiting_human",
+        "paused_reason": "guard_changed",
+        "guard_files_seen": [{"docs/x.md": "a"}],
+        "guard_pending": {"docs/x.md": "b"},
+    }
+    summary = sps.summarize([record], ["docs/x.md"], per_run=False)
+    assert summary["unobservable"] == 1
+    assert summary["removable_auto_accept"] == 0
