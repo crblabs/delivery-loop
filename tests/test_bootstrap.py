@@ -55,6 +55,11 @@ def test_every_route_to_resume_or_abort_is_recognised(tool, tool_input, sub) -> 
         ("mcp__filesystem__write_file", "edit"),
         ("mcp__fs__move_file", "edit"),
         ("mcp__filesystem__read_file", "other"),
+        ("mcp__github__push_files", "publish"),
+        ("mcp__github__create_or_update_file", "publish"),
+        ("mcp__plugin_github_github__merge_pull_request", "publish"),
+        ("mcp__git__git_commit", "other"),
+        ("mcp__github__get_file_contents", "other"),
         ("Read", "other"),
     ],
 )

@@ -321,3 +321,12 @@ def test_a_pause_shows_the_person_its_card(start_run, tmp_path) -> None:
     assert out["systemMessage"].startswith("delivery-loop paused this run (gate).")
     assert f"Plan read: {plan}" in out["systemMessage"]
     assert "/delivery-loop:pipeline resume" in out["systemMessage"]
+
+
+def test_a_new_session_in_the_worktree_is_shown_how_to_adopt_the_run(start_run) -> None:
+    # Value: protects=the adoption note reaches the person as a system message; fails_when=
+    # the Stop hook drops the verdict's note; why_new=red-team review; seam=none
+    run, worktree = start_run()
+    out = _decision(ch.run_stop(_stop(worktree, session_id="after-clear")))
+    assert "/delivery-loop:pipeline resume" in out["systemMessage"]
+    assert "decision" not in out

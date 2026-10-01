@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from core import guard
 from core import pipeline_state as ps
 from core import run_index as ri
 from core import run_state as rs
@@ -75,10 +76,30 @@ def test_a_gated_stage_pauses_after_it_is_done(start_run, tmp_path: Path) -> Non
     state = _state(run)
     assert state["current_stage"] == "implement"
     assert state["plan_path"] == str(plan)
-    assert state["declared_loop_edits"] == [".claude/skills/pipeline/stages/qa.md"]
+    assert state["declared_loop_edits"] == []
+    assert state["pending_loop_edits"] == [".claude/skills/pipeline/stages/qa.md"]
     text = rs.resume(run, "person")
     assert text.startswith("Stage 2/5: implement")
     assert f"Approved plan: {plan}" in text
+    assert _state(run)["declared_loop_edits"] == [".claude/skills/pipeline/stages/qa.md"]
+
+
+def test_a_plan_unlocks_nothing_until_the_gate_is_approved(start_run, tmp_path) -> None:
+    # Value: protects=a person approves the loop files a plan unlocks before the agent
+    # can edit them, and approves the plan as it reads at resume; fails_when=the unlock
+    # list is applied at the gate pause or kept from an earlier plan text;
+    # why_new=red-team review; seam=none
+    run, worktree = start_run()
+    plan = tmp_path / "plan.md"
+    plan.write_text("```loop-edits\nstages/qa.md\n```\n", encoding="utf-8")
+    _end(run, f"PLAN: {plan}\n{DONE}")
+    target = str(worktree / ".claude/skills/pipeline/stages/qa.md")
+    call = guard.PreToolCall("s1", "edit", "Write", str(worktree), None, target)
+    assert not guard.handle_pre_tool(call, run).allow
+    plan.write_text("Revised: no loop files.\n", encoding="utf-8")
+    rs.resume(run, "person")
+    assert _state(run)["declared_loop_edits"] == []
+    assert not guard.handle_pre_tool(call, run).allow
 
 
 def test_a_pause_keeps_the_card_as_the_pending_question(start_run) -> None:
@@ -95,8 +116,12 @@ def test_a_clean_tree_stage_needs_its_work_committed(make_repo, tmp_path: Path, 
     run, _ = rs.start(worktree, "CRB-1", _two_stages(), "s1")
     (worktree / "new.py").write_text("x = 1\n", encoding="utf-8")
     verdict = _end(run, DONE)
-    assert verdict.block and "uncommitted changes" in verdict.reinject
+    # An untracked file is named, with .gitignore offered for files that are not work.
+    assert verdict.block and "untracked files (new.py)" in verdict.reinject
+    assert ".gitignore" in verdict.reinject
     git(worktree, "add", "new.py")
+    verdict = _end(run, DONE)
+    assert verdict.block and "uncommitted changes; commit them" in verdict.reinject
     git(worktree, "commit", "-q", "-m", "add")
     verdict = _end(run, DONE)
     assert verdict.block and verdict.reinject.startswith("Stage 2/2: ship")
@@ -125,7 +150,7 @@ def test_a_clean_tree_check_ignores_an_inherited_git_dir(make_repo, tmp_path, mo
     monkeypatch.setenv("GIT_DIR", str(other / ".git"))
     monkeypatch.setenv("GIT_WORK_TREE", str(other))
     verdict = _end(run, DONE)
-    assert verdict.block and "uncommitted changes" in verdict.reinject
+    assert verdict.block and "untracked files (new.py)" in verdict.reinject
 
 
 def test_the_last_stage_finishes_the_run_and_drops_the_index(make_repo, tmp_path) -> None:
@@ -145,9 +170,22 @@ def test_another_session_in_the_worktree_is_left_alone(start_run) -> None:
     # Value: protects=a second terminal cannot drive or stall the run;
     # fails_when=any session's Stop advances it; why_new=session binding; seam=none
     run, _ = start_run()
-    before = _state(run)["revision"]
+    first = _end(run, "hello", session="other")
+    assert not first.block and first.pause_reason is None
+    state = _state(run)
+    assert state["session_id"] == "s1" and state["attempts"]["autoplan"] == 0
     assert _end(run, "hello", session="other") == te.PASS
-    assert _state(run)["revision"] == before
+    assert _state(run)["revision"] == state["revision"]
+
+
+def test_another_session_is_told_once_how_to_adopt_the_run(start_run) -> None:
+    # Value: protects=after /clear the person learns why the run stopped being driven
+    # and how to pick it up; fails_when=a new session id is ignored without a word;
+    # why_new=red-team review; seam=none
+    run, _ = start_run()
+    note = _end(run, "hello", session="after-clear").note
+    assert note and "/delivery-loop:pipeline resume" in note
+    assert _end(run, "hello", session="after-clear").note is None
 
 
 def test_an_unbound_run_binds_the_first_session_that_ends_a_turn(start_run) -> None:
@@ -155,7 +193,7 @@ def test_an_unbound_run_binds_the_first_session_that_ends_a_turn(start_run) -> N
     _end(run, "hello", session="s9")
     assert _state(run)["session_id"] == "s9"
     assert ri.read_entry(ri.session_path("s9"))["worktree"] == str(worktree)
-    assert _end(run, "hello", session="s1") == te.PASS
+    assert not _end(run, "hello", session="s1").block
 
 
 def test_a_paused_run_lets_turns_end(start_run) -> None:
@@ -340,5 +378,5 @@ def test_the_gate_card_shows_the_plan_and_what_it_unlocks(start_run, tmp_path) -
     _end(run, f"PLAN: {plan}\n{DONE}")
     question = _state(run)["pending_question"]
     assert f"Plan read: {plan}" in question
-    assert "Loop files it unlocks: .claude/skills/pipeline/stages/qa.md" in question
+    assert "Loop files it unlocks once approved: .claude/skills/pipeline/stages/qa.md" in question
     assert f"Plan: {plan}" in rs.status_text(run)

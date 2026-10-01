@@ -35,6 +35,14 @@ COMMAND_NAME = "delivery-loop:pipeline"
 EDIT_TOOLS = ("Edit", "Write", "MultiEdit", "NotebookEdit")
 SESSION_ENV = "CLAUDE_SESSION_ID"
 # An MCP tool whose name says it writes, and the input fields that name a path.
+# An MCP tool of a code host whose name says it writes to the remote repository:
+# judged by the publish policy, not as a local file. A local git server's commit
+# is not one.
+_MCP_PUBLISH_RE = re.compile(
+    r"^mcp__.*(github|gitlab|bitbucket|gitea).*__.*"
+    r"(push|merge|commit|create_or_update_file|branch|pull_request|fork|release)",
+    re.I,
+)
 _MCP_WRITE_RE = re.compile(r"^mcp__.*(write|edit|create|move|rename|delete|patch|replace)", re.I)
 _PATH_FIELDS = ("file_path", "notebook_path", "path", "destination", "target", "new_path")
 # The CLI module run directly, as ``python3 -m`` or by its file.
@@ -75,6 +83,8 @@ def kind_of(tool_name: object) -> str:
         return "edit"
     if tool_name == "Bash":
         return "shell"
+    if isinstance(tool_name, str) and _MCP_PUBLISH_RE.match(tool_name):
+        return "publish"
     if isinstance(tool_name, str) and _MCP_WRITE_RE.match(tool_name):
         return "edit"
     return "other"

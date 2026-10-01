@@ -75,7 +75,8 @@ _SETTINGS_TAILS = tuple("/" + rel.casefold() for rel in SETTINGS_FILES)
 @dataclass(frozen=True)
 class PreToolCall:
     """One tool call, in the loop's terms. ``kind`` is ``edit`` for a tool that
-    writes ``path``, ``shell`` for one that runs ``command``, ``other`` otherwise;
+    writes ``path``, ``shell`` for one that runs ``command``, ``publish`` for one
+    that writes to the remote repository itself, ``other`` otherwise;
     ``tool_name`` is the harness's own name, for messages only."""
 
     session_id: str | None
@@ -252,9 +253,48 @@ def _forbidden_flags(flags: list[str]) -> list[str]:
     return bad
 
 
+_MERGE_RE = re.compile(r"merge", re.I)
+# The REST endpoints that merge: a pull request's /merge, a repository's /merges.
+_MERGE_PATH_RE = re.compile(r"/merges?(?:$|[/?])")
+
+
 def _publishing(run: rs.Run, state: dict) -> bool:
     stage = run.config.stages[state["current"]]
     return stage.emits.split(":", 1)[0].strip().upper() == "PR"
+
+
+def _check_publish(tool_name: str, run: rs.Run, state: dict) -> PreToolVerdict:
+    """A tool that writes to the remote directly: only the publishing stage, and
+    never a merge, which is a person's call."""
+    if _MERGE_RE.search(tool_name):
+        return _deny(
+            tool_name,
+            "a merge lands the work on a shared branch, and that is a person's call",
+            "open the pull request and leave the merge to a person",
+        )
+    if not _publishing(run, state):
+        return _deny(
+            tool_name,
+            f"stage {state['current_stage']} does not publish; only the stage that opens the "
+            "pull request writes to the remote",
+            "commit locally and leave publishing to that stage",
+        )
+    return ALLOW
+
+
+def _check_gh(command: str) -> PreToolVerdict | None:
+    """``gh pr merge`` or a merge through ``gh api``: never from a run."""
+    for args in ri.gh_calls(command):
+        merge = args[:2] == ["pr", "merge"] or (
+            args[:1] == ["api"] and any(_MERGE_PATH_RE.search(a) for a in args[1:])
+        )
+        if merge:
+            return _deny(
+                "gh " + " ".join(args[:2]),
+                "a merge lands the work on a shared branch, and that is a person's call",
+                "open the pull request and leave the merge to a person",
+            )
+    return None
 
 
 def _check_push(command: str, run: rs.Run, state: dict) -> PreToolVerdict:
@@ -332,6 +372,8 @@ def handle_pre_tool(call: PreToolCall, run: rs.Run, state: dict | None = None) -
         return ALLOW
     if call.kind == "edit":
         return _check_edit(call, run, state)
+    if call.kind == "publish":
+        return _check_publish(call.tool_name, run, state)
     if call.kind == "shell" and call.command:
-        return _check_push(call.command, run, state)
+        return _check_gh(call.command) or _check_push(call.command, run, state)
     return ALLOW

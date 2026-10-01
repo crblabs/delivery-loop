@@ -96,6 +96,14 @@ def cmd_start(args: argparse.Namespace) -> int:
     # session given as an argument, which any caller can type.
     intent = ri.take_intent(ri.worktree_key(root)) if root is not None else None
     session = intent or _session(args)
+    if session is None and not ri.in_terminal():
+        # Unbound, the run would go to whichever session in this worktree ends a
+        # turn first, not necessarily the one that started it.
+        return _fail(
+            "start could not tell which Claude Code session runs it. Cause: it was run "
+            "from a script or a nested shell, not the slash command or a terminal. Fix: "
+            f"/{boot.COMMAND_NAME} start <task>, or delivery-loop start <task> in a terminal."
+        )
     try:
         _, text = rs.start(Path(os.getcwd()), task, config, session)
     except (rs.RunError, ri.LockTimeout) as exc:

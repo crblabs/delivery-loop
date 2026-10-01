@@ -233,7 +233,9 @@ def run_stop(raw: str) -> HookResult:
         {
             "hook": "stop",
             "session": event.session_id,
-            "decision": "block" if verdict.block else ("pause" if verdict.pause_reason else "pass"),
+            "decision": "block"
+            if verdict.block
+            else ("pause" if verdict.pause_reason else ("note" if verdict.note else "pass")),
             "reason": verdict.pause_reason,
         },
     )
@@ -242,6 +244,8 @@ def run_stop(raw: str) -> HookResult:
     if verdict.pause_reason:
         # The turn ends here; show the person why, in the session they are in.
         return HookResult(stdout=boot.system_message_json(_pause_note(run, verdict.pause_reason)))
+    if verdict.note:
+        return HookResult(stdout=boot.system_message_json(verdict.note))
     return PASS
 
 

@@ -15,9 +15,26 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
 from adapters.claude_code import bootstrap as boot  # noqa: E402
 from core import run_index as ri  # noqa: E402
 
-if __name__ == "__main__":
+
+
+def _run(argv):
     if ri.old_python():
-        sys.exit(boot.old_python_cli(sys.argv[1:]))
+        return boot.old_python_cli(argv)
     from adapters.claude_code.cli import main
 
-    sys.exit(main())
+    return main(argv)
+
+
+if __name__ == "__main__":
+    argv = sys.argv[1:]
+    if "--args-stdin" not in argv:
+        sys.exit(_run(argv))
+    # The slash command's one shell call: the exit status goes in the output and
+    # the process exits 0, so the block needs no second shell operation and the
+    # command's allowed-tools covers all of it.
+    try:
+        code = _run(argv)
+    except SystemExit as exc:
+        code = 0 if exc.code is None else exc.code if isinstance(exc.code, int) else 2
+    sys.stdout.flush()
+    print("[delivery-loop exit %d]" % code)

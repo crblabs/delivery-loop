@@ -9,7 +9,6 @@ allowed-tools: Bash(delivery-loop:*)
 delivery-loop --session "${CLAUDE_SESSION_ID}" --args-stdin 2>&1 <<'DELIVERY_LOOP_ARGS'
 $ARGUMENTS
 DELIVERY_LOOP_ARGS
-echo "[delivery-loop exit $?]"
 ```
 
 The block above is the output of `delivery-loop $ARGUMENTS`.

@@ -139,13 +139,18 @@ During a run, before an edit tool writes a file:
 - Every other file is ordinary work and is allowed.
 
 The same rules apply to an MCP tool whose name says it writes (`write`, `edit`,
-`create`, `move`, `delete` and the like) when it names a path. An MCP tool that
-writes under another name is not checked.
+`create`, `move`, `delete` and the like) when it names a path. A code host's MCP
+tool that writes to the remote (a GitHub, GitLab, Bitbucket or Gitea server's
+`push`, `commit`, `create_or_update_file`, `branch` or `pull_request` tools) is
+allowed only in the stage that opens the pull request, and a `merge` tool never.
+An MCP tool that writes under another name is not checked.
 
-A shell command is not checked before it runs, with two exceptions, and both
-read the command text, so both are advisory. `git push` is allowed in the stage
+A shell command is not checked before it runs, with three exceptions, and all
+read the command text, so all are advisory. `git push` is allowed in the stage
 that opens the pull request, for the run's own branch, to `origin`: never
-forced, deleting or redirected with `-c`. And a shell line that runs
+forced, deleting or redirected with `-c`. `gh pr merge` and a merge through
+`gh api` are refused: a merge is a person's call. Other `gh` commands that
+write to the remote are not checked. And a shell line that runs
 `delivery-loop resume` or `abort` is refused early with an explanation; the
 CLI also refuses both outside a terminal. Neither is proof: an agent can give
 a command a pseudo-terminal (`script`, `unbuffer`), spell the command so no
@@ -181,6 +186,9 @@ entry disappeared (`index_missing`). The rest is in `TODOS.md`.
   the next section.
 - **`python3` is too old.** Put 3.11 or later first on `PATH`, or end the run
   with `delivery-loop abort`, which works on any `python3`.
+- **The run stopped being driven after `/clear` or in a new session.** The run
+  stays bound to the session that started it; the new session is told once.
+  Type `/delivery-loop:pipeline resume` there to drive it from that session.
 - **The loop is in the way and you need it gone now.** Type
   `/delivery-loop:pipeline abort` to end the run, then `/plugin disable
   delivery-loop` to turn the hooks off in every session. `/plugin enable

@@ -109,6 +109,19 @@ def test_the_slash_command_passes_its_words_where_no_shell_reads_them() -> None:
     assert text.count("$ARGUMENTS") == 2  # the heredoc, and the prose describing it
 
 
+def test_the_slash_command_runs_only_what_its_allowed_tools_cover() -> None:
+    # Value: protects=the slash command runs for a person whose settings allow nothing
+    # else; fails_when=its shell block adds a second command, such as an echo, that
+    # Claude Code stops for approval; why_new=red-team review reproduced it; seam=none
+    text = (ROOT / "commands/pipeline.md").read_text(encoding="utf-8")
+    front = text.split("---")[1]
+    allowed = re.search(r"^allowed-tools: (.+)$", front, re.M).group(1)
+    assert allowed == "Bash(delivery-loop:*)"
+    block = text.split("```!\n", 1)[1].split("\n```", 1)[0].splitlines()
+    assert block[0].startswith("delivery-loop ") and block[0].endswith("<<'DELIVERY_LOOP_ARGS'")
+    assert block[1:] == ["$ARGUMENTS", "DELIVERY_LOOP_ARGS"]
+
+
 def test_every_default_stage_has_a_prompt_in_the_plugin() -> None:
     from core.config import DEFAULTS
 

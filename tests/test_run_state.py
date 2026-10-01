@@ -74,6 +74,20 @@ def test_start_refuses_a_second_run_in_one_worktree(start_run) -> None:
         rs.start(worktree, "CRB-2", DEFAULTS)
 
 
+def test_one_session_cannot_start_a_second_run_elsewhere(start_run, make_repo, tmp_path) -> None:
+    # Value: protects=every run a session starts is driven by its turn ends; fails_when=a
+    # second start rebinds the session and strands the first run; why_new=red-team review;
+    # seam=none
+    run, worktree = start_run()
+    other = make_repo(tmp_path / "other")
+    with pytest.raises(rs.RunError, match="already drives the run in"):
+        rs.start(other, "CRB-2", DEFAULTS, "s1")
+    rs.start(other, "CRB-2", DEFAULTS, "s2")
+    ri.abort_run(run.key, run.entry, "person")
+    third = make_repo(tmp_path / "third")
+    rs.start(third, "CRB-3", DEFAULTS, "s1")
+
+
 def test_start_after_an_aborted_run_keeps_the_old_state(start_run) -> None:
     run, worktree = start_run()
     old_id = _state(run)["run_id"]

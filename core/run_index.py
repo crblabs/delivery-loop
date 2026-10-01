@@ -374,6 +374,11 @@ def cli_calls(command: str) -> list[list[str]]:
     return _calls(command, CLI_NAME)
 
 
+def gh_calls(command: str) -> list[list[str]]:
+    """Every GitHub CLI invocation in a shell line, as its arguments after ``gh``."""
+    return _calls(command, "gh")
+
+
 def git_calls(command: str) -> list[list[str]]:
     """Every git invocation in a shell line, as its arguments after ``git``."""
     return _calls(command, "git")

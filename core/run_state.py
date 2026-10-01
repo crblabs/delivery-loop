@@ -23,7 +23,9 @@ works on an interpreter older than the floor.
 from __future__ import annotations
 
 import json
+import os
 import re
+import stat
 import subprocess
 import uuid
 from collections.abc import Callable
@@ -46,6 +48,7 @@ from core.config import (
     to_dict,
 )
 from core.guard_evidence import config_hash, guard_map
+from core.pipeline_loop_paths import parse_loop_edits_block
 
 PLUGIN_ROOT = Path(__file__).resolve().parent.parent
 STAGES_DIR = PLUGIN_ROOT / PLUGIN_STAGES_DIR
@@ -214,6 +217,19 @@ def _initial_state(
     }
 
 
+def _session_run(session_id: str | None, worktree: Path) -> str | None:
+    """The worktree of another active run this session drives, if any."""
+    if not session_id or not ri._safe_id(session_id):
+        return None
+    entry = ri.read_entry(ri.session_path(session_id))
+    if entry is None or entry.get("worktree") == str(worktree):
+        return None
+    state = ri.read_json_file(ri.state_file(entry["run_dir"]), ri.STATE_MAX_BYTES)
+    if not isinstance(state, dict) or state.get("session_id") != session_id:
+        return None
+    return entry.get("worktree") if state.get("status") in ACTIVE else None
+
+
 def start(
     cwd: Path, task: str, config: LoopConfig, session_id: str | None = None
 ) -> tuple[Run, str]:
@@ -244,6 +260,13 @@ def start(
                     f"Fix: delivery-loop status, or ask a person to run {config.abort_command}."
                 )
             ri.remove_entry(key, existing.get("session_id"))
+        other = _session_run(session_id, worktree)
+        if other is not None:
+            raise RunError(
+                f"this session already drives the run in {other}. Cause: one session drives "
+                f"one run; its turn ends would drive only one of them. Fix: finish or have a "
+                f"person run {config.abort_command} there, or start from another session."
+            )
         legacy = legacy_install(worktree, config)
         if legacy:
             raise RunError(
@@ -365,6 +388,36 @@ def pause(state: dict, reason: str, question: str, prompt_id: object = None) -> 
     )
 
 
+# A plan is prose; anything larger is not one.
+MAX_PLAN_BYTES = 1 << 20
+
+
+def read_plan(path: Path) -> str | None:
+    """The plan's text, from a small regular file only, never waiting on a pipe.
+
+    The path comes from the agent's message, and a Stop hook that runs past its
+    timeout lets the turn end, so a device, a FIFO or a huge file is refused.
+    """
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+    except OSError:
+        return None
+    with os.fdopen(fd, "rb") as handle:
+        info = os.fstat(handle.fileno())
+        if not stat.S_ISREG(info.st_mode) or info.st_size > MAX_PLAN_BYTES:
+            return None
+        data = handle.read(MAX_PLAN_BYTES + 1)
+    return data.decode("utf-8", errors="replace")
+
+
+def _approve_plan(run: Run, state: dict) -> None:
+    """At a gate, unlock the loop files the plan declares as it reads now."""
+    plan = state.get("plan_path")
+    text = read_plan(Path(plan)) if plan else None
+    state["declared_loop_edits"] = parse_loop_edits_block(text, run.config) if text else []
+    state.pop("pending_loop_edits", None)
+
+
 def resume(run: Run, by: str, session_id: str | None = None) -> str:
     """Resume a paused run for a person, and return the text the agent continues with.
 
@@ -395,6 +448,8 @@ def resume(run: Run, by: str, session_id: str | None = None) -> str:
         ):
             state["guard_baseline"] = state["guard_pending"]
             state["guard_files_seen"].append(state["guard_pending"])
+        if state.get("paused_reason") == "gate":
+            _approve_plan(run, state)
         state["guard_pending"] = None
         state["status"] = "running"
         state["attempts"][state["current_stage"]] = 0

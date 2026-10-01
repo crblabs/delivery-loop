@@ -125,6 +125,39 @@ def _at_ship(run: rs.Run) -> None:
     rs.update(run, move)
 
 
+def _publish(run: rs.Run, tool: str):
+    call = guard.PreToolCall("s1", "publish", tool, str(run.worktree), None, None)
+    return guard.handle_pre_tool(call, run)
+
+
+def test_a_code_host_tool_publishes_only_in_the_publishing_stage(start_run) -> None:
+    # Value: protects=the publish policy holds for MCP tools that write to the remote, and
+    # no run merges; fails_when=create_or_update_file is judged as a local file, or a merge
+    # tool passes; why_new=red-team review; seam=none
+    run = _ship_run(start_run)
+    assert not _publish(run, "mcp__github__create_or_update_file").allow
+    assert not _publish(run, "mcp__github__push_files").allow
+    _at_ship(run)
+    assert _publish(run, "mcp__github__create_pull_request").allow
+    assert not _publish(run, "mcp__github__merge_pull_request").allow
+
+
+@pytest.mark.parametrize(
+    ("command", "allowed"),
+    [
+        ("gh pr merge 7 --squash", False),
+        ("cd x && gh api -X PUT repos/o/r/pulls/7/merge", False),
+        ("gh api repos/o/r/merges -f base=main -f head=x", False),
+        ("gh pr view 7 --json mergeable", True),
+        ("gh pr create --fill", True),
+    ],
+)
+def test_no_run_merges_through_gh(start_run, command: str, allowed: bool) -> None:
+    run = _ship_run(start_run)
+    _at_ship(run)
+    assert _bash(run, command).allow is allowed
+
+
 @pytest.mark.parametrize(
     "command",
     ["git push -u origin HEAD", "git push origin main", "git push", "git push -u origin main"],

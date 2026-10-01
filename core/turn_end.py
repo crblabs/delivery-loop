@@ -37,9 +37,7 @@ That catches a shell edit, which the edit guard never sees.
 
 from __future__ import annotations
 
-import os
 import re
-import stat
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -67,6 +65,8 @@ class TurnEndVerdict:
     block: bool
     reinject: str | None = None
     pause_reason: str | None = None
+    # Shown to the person without blocking, such as how to adopt a run.
+    note: str | None = None
 
 
 PASS = TurnEndVerdict(block=False)
@@ -98,7 +98,8 @@ def _emitted(message: str, emits: str) -> str | None:
 STATUS_TIMEOUT_S = 10
 
 
-def _dirty(worktree: Path) -> bool | None:
+def _changes(worktree: Path) -> list[str] | None:
+    """``git status --porcelain`` lines for the worktree, or None when it fails."""
     try:
         done = subprocess.run(
             ["git", "status", "--porcelain"],
@@ -111,35 +112,32 @@ def _dirty(worktree: Path) -> bool | None:
         )
     except (OSError, subprocess.SubprocessError):
         return None
-    return None if done.returncode != 0 else bool(done.stdout.strip())
+    return None if done.returncode != 0 else done.stdout.splitlines()
 
 
-# A plan is prose; anything larger is not one.
-MAX_PLAN_BYTES = 1 << 20
+def _unclean(worktree: Path) -> str | None:
+    """Why a clean_tree stage cannot be done yet, or None when the tree is clean."""
+    lines = _changes(worktree)
+    if lines is None:
+        return "git status failed, so the worktree may have uncommitted changes; fix it first"
+    untracked = [line[3:] for line in lines if line.startswith("?? ")]
+    if len(untracked) < len(lines):
+        return "the worktree has uncommitted changes; commit them first"
+    if untracked:
+        names = ", ".join(untracked[:5]) + (", ..." if len(untracked) > 5 else "")
+        return (
+            f"the worktree has untracked files ({names}); commit the ones that belong to "
+            "the work and add the others to .gitignore"
+        )
+    return None
+
+
 _URL_RE = re.compile(r"^https?://\S+$")
 
 
 def _plan_path(plan: str, worktree: Path) -> Path:
     path = Path(plan).expanduser()
     return path if path.is_absolute() else worktree / path
-
-
-def _read_plan(path: Path) -> str | None:
-    """The plan's text, from a small regular file only, never waiting on a pipe.
-
-    The path comes from the agent's message, and a Stop hook that runs past its
-    timeout lets the turn end, so a device, a FIFO or a huge file is refused.
-    """
-    try:
-        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
-    except OSError:
-        return None
-    with os.fdopen(fd, "rb") as handle:
-        info = os.fstat(handle.fileno())
-        if not stat.S_ISREG(info.st_mode) or info.st_size > MAX_PLAN_BYTES:
-            return None
-        data = handle.read(MAX_PLAN_BYTES + 1)
-    return data.decode("utf-8", errors="replace")
 
 
 def _block(state: dict, text: str) -> TurnEndVerdict:
@@ -170,11 +168,13 @@ def _gate_card(name: str, gate: str, state: dict, config: LoopConfig) -> str:
     """The card for a gate: what is being approved, the plan file the loop read and
     the loop files it unlocks, so a person approves what the run will act on."""
     plan = state.get("plan_path")
-    edits = state.get("declared_loop_edits") or []
+    edits = state.get("pending_loop_edits") or state.get("declared_loop_edits") or []
     lines = []
     if plan:
         lines.append(f"Plan read: {plan}")
-        lines.append("Loop files it unlocks: " + (", ".join(edits) if edits else "none"))
+        lines.append(
+            "Loop files it unlocks once approved: " + (", ".join(edits) if edits else "none")
+        )
     lines += [
         f"ASK   Stage {name} is done and asks for a person ({gate}). Continue to "
         f"{state['current_stage']}?",
@@ -195,19 +195,26 @@ def _advance(run: rs.Run, state: dict, message: str) -> TurnEndVerdict:
         label = stage.emits.split(":", 1)[0].strip().upper()
         if label == "PLAN" and value:
             path = _plan_path(value, run.worktree)
-            text = _read_plan(path)
+            text = rs.read_plan(path)
             if text is None:
                 return _no_token(
                     run, state, f"PLAN: {value} is not a readable plan file of at most 1 MB"
                 )
             state["plan_path"] = str(path)
-            state["declared_loop_edits"] = parse_loop_edits_block(text, config)
+            edits = parse_loop_edits_block(text, config)
+            if stage.gate != "none":
+                # The plan unlocks nothing until a person approves it at the
+                # gate; resume reads it again then.
+                state["pending_loop_edits"] = edits
+            else:
+                state["declared_loop_edits"] = edits
         elif label == "PR" and value:
             if not _URL_RE.match(value):
                 return _no_token(run, state, f"PR: {value} is not the pull request's url")
             state["pr_url"] = value
-    if stage.clean_tree and _dirty(run.worktree) is not False:
-        return _no_token(run, state, "the worktree has uncommitted changes; commit them first")
+    unclean = _unclean(run.worktree) if stage.clean_tree else None
+    if unclean:
+        return _no_token(run, state, unclean)
     state["history"].append({"at": ri.now_iso(), "event": "done", "stage": stage.name})
     if state["current"] + 1 >= len(config.stages):
         state["status"] = "done"
@@ -251,6 +258,10 @@ def _check_guard(run: rs.Run, state: dict) -> TurnEndVerdict | None:
     return TurnEndVerdict(block=False, pause_reason="guard_changed")
 
 
+# How many other sessions a run remembers having told about adoption.
+_TOLD_MAX = 20
+
+
 def handle_turn_end(event: TurnEnd, run: rs.Run, timeout: float = ri.HOOK_LOCK_S) -> TurnEndVerdict:
     """Decide one turn end of an active run, writing the state once under its lock."""
 
@@ -274,10 +285,30 @@ def handle_turn_end(event: TurnEnd, run: rs.Run, timeout: float = ri.HOOK_LOCK_S
             return _advance(run, state, message)
         return _no_token(run, state, "the last line was not a token")
 
+    def tell(state: dict) -> TurnEndVerdict:
+        told = state.setdefault("told_sessions", [])
+        if state["status"] != "running" or event.session_id in told:
+            return PASS
+        told.append(event.session_id)
+        del told[:-_TOLD_MAX]
+        return TurnEndVerdict(
+            block=False,
+            note=(
+                f"delivery-loop: the run in this worktree (task {state.get('task')}, stage "
+                f"{state['current_stage']}) is driven by another session, so this one is "
+                f"not. After /clear or a new session, type {run.config.resume_command} "
+                "here to drive it from this session."
+            ),
+        )
+
     _, state = rs.read(run)
     if state is None or state.get("status") != "running":
         return PASS
     bound = state.get("session_id")
     if bound is not None and bound != event.session_id:
+        # Once per session: a /clear starts a new session id, and the run would
+        # otherwise stop being driven without a word.
+        if event.session_id and event.session_id not in (state.get("told_sessions") or []):
+            return rs.update(run, tell, timeout)
         return PASS
     return rs.update(run, apply, timeout)

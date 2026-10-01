@@ -47,6 +47,23 @@ def test_start_uses_the_agents_intent_when_no_session_is_given(
     assert rs.read(rs.find(str(worktree)))[1]["session_id"] == "s8"
 
 
+def test_an_unbound_start_outside_a_terminal_is_refused(
+    make_repo, tmp_path: Path, monkeypatch, capsys
+) -> None:
+    # Value: protects=a run goes to the session that started it; fails_when=a start from a
+    # script binds the first session that ends a turn in the worktree; why_new=red-team
+    # review; seam=none
+    worktree = make_repo(tmp_path / "host")
+    monkeypatch.chdir(worktree)
+    monkeypatch.delenv("CLAUDE_SESSION_ID", raising=False)
+    monkeypatch.setattr(ri, "in_terminal", lambda: False)
+    assert cli.main(["start", "CRB-1"]) == 2
+    assert "could not tell which Claude Code session" in capsys.readouterr().err
+    assert rs.find(str(worktree)) is None
+    monkeypatch.setattr(ri, "in_terminal", lambda: True)
+    assert cli.main(["start", "CRB-1"]) == 0
+
+
 def test_start_refuses_a_bad_config(make_repo, tmp_path: Path, monkeypatch, capsys) -> None:
     worktree = make_repo(tmp_path / "host")
     (worktree / "loop.toml").write_text("[harness\n", encoding="utf-8")
