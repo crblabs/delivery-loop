@@ -67,3 +67,16 @@ later, with why.
 
 - **What:** an eval suite that runs each stage prompt against a fixture task.
 - **Why:** a prompt change is only checked by a real run today.
+
+## Two small inconsistencies in hook notes (found by /qa, deferred as low)
+
+- **What:** the gate's pause note repeats "Continue / End" after a card whose
+  REC and ALT lines already name the same two commands; and on a python3 older
+  than the floor, a typed abort's note lacks the `delivery-loop abort:` prefix
+  the normal path uses.
+- **Why:** cosmetic; the person still sees the right commands and result.
+- **Repro:** end a gated stage (`PLAN: <file>` then the done token) and read the
+  Stop hook's `systemMessage`; type `/delivery-loop:pipeline abort` with a
+  python3 3.10 or older first on PATH.
+- **Context:** `adapters/claude_code/hooks.py` `_pause_note`;
+  `adapters/claude_code/bootstrap.py` `old_python_hook`.
