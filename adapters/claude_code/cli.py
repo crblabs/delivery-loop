@@ -39,15 +39,19 @@ _OLD_COMMANDS = ("/pipeline resume", "/pipeline abort")
 
 
 def _parser() -> argparse.ArgumentParser:
+    # No abbreviations: ``--sess`` or ``--args`` would hide a subcommand or a
+    # session from the guard, which reads the words as typed.
     parser = argparse.ArgumentParser(
-        prog=ri.CLI_NAME, description="Drive the delivery loop in this worktree."
+        prog=ri.CLI_NAME,
+        description="Drive the delivery loop in this worktree.",
+        allow_abbrev=False,
     )
     parser.add_argument("--session", default=None, help="the Claude Code session id")
     parser.add_argument(
         "--args-stdin", action="store_true", help="read the subcommand and its words from stdin"
     )
     sub = parser.add_subparsers(dest="command")
-    start = sub.add_parser("start", help="start a run in this worktree")
+    start = sub.add_parser("start", help="start a run in this worktree", allow_abbrev=False)
     start.add_argument("task", nargs="*", help="the task: an issue id or a short title")
     start.add_argument("--config", default=None, help="a loop.toml to run under")
     sub.add_parser("status", help="show the run in this worktree")
@@ -332,11 +336,23 @@ def _from_stdin(argv: list[str]) -> list[str]:
     return [*argv, sub, *([task] if task else []), *config]
 
 
+def _refuse_unknown_options(parser: argparse.ArgumentParser, argv: list[str]) -> None:
+    """Name an unknown global option, such as ``--sess``, before argparse reads
+    the word after it as the subcommand and reports that instead."""
+    known = set(parser._option_string_actions)
+    i = 0
+    while i < len(argv) and argv[i].startswith("-") and argv[i] != "--":
+        if argv[i].split("=", 1)[0] not in known:
+            parser.error(f"unrecognized arguments: {argv[i]}")
+        i += 2 if argv[i] == "--session" else 1
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = _parser()
     argv = sys.argv[1:] if argv is None else argv
     if "--args-stdin" in argv:
         argv = _from_stdin(argv)
+    _refuse_unknown_options(parser, argv)
     args = parser.parse_args(argv)
     if args.command is None:
         parser.print_help()

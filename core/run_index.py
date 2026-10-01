@@ -82,7 +82,15 @@ _OPTIONS_WITH_VALUE = ("--session", "--config")
 _NEST_MAX = 3
 # The plugin's slash command, as a nested session would be given it.
 _SLASH = "/%s:pipeline" % CLI_NAME
-_WRAPPERS = ("command", "exec", "env", "nohup", "time")
+_WRAPPERS = ("builtin", "command", "exec", "env", "nohup", "time")
+# Shells whose quoted words may be shell text: a here-string, or the text piped
+# into one. ``source`` and ``.`` read stdin as a script too, as a command's
+# first word.
+_SHELLS = ("sh", "bash", "zsh", "dash", "ksh")
+_SOURCES = ("source", ".")
+_PIPES = ("|", "|&")
+# The operands that still make a shell read its script from stdin.
+_STDIN_OPERANDS = ("-", "-s", "/dev/stdin")
 _KEY_LEN = 12
 
 
@@ -311,8 +319,9 @@ def take_intent(key: str, now: float | None = None) -> str | None:
 # --- Commands in a shell line -------------------------------------------------
 
 
-def _segments(command: str) -> list[list[str]]:
-    """Each simple command in a shell line, as its words. Best effort, never raises."""
+def _pieces(command: str) -> list[tuple[list[str], str]]:
+    """Each simple command in a shell line, as its words and the separator that
+    follows it (``""`` at the end). Best effort, never raises."""
     try:
         lexer = shlex.shlex(command, posix=True, punctuation_chars=";&|")
         lexer.whitespace_split = True
@@ -320,13 +329,19 @@ def _segments(command: str) -> list[list[str]]:
         words = list(lexer)
     except ValueError:
         words = command.split()
-    out: list[list[str]] = [[]]
+    out: list[tuple[list[str], str]] = [([], "")]
     for word in words:
         if word in _SEPARATORS or (word and set(word) <= set(";&|")):
-            out.append([])
+            out[-1] = (out[-1][0], word)
+            out.append(([], ""))
         else:
-            out[-1].append(word)
-    return [s for s in out if s]
+            out[-1][0].append(word)
+    return [p for p in out if p[0]]
+
+
+def _segments(command: str) -> list[list[str]]:
+    """Each simple command in a shell line, as its words. Best effort, never raises."""
+    return [words for words, _ in _pieces(command)]
 
 
 def _strip_prefix(words: list[str]) -> list[str]:
@@ -387,11 +402,25 @@ def git_calls(command: str) -> list[list[str]]:
     return _calls(command, "git")
 
 
+def _takes_value(word: str) -> bool:
+    """Whether an option word consumes the next word.
+
+    An installed CLI that still abbreviates reads a unique prefix of a long
+    option as the option (``--s`` and ``--sess`` are ``--session``), so a prefix
+    takes a value as the full name does.
+    """
+    if word in _OPTIONS_WITH_VALUE:
+        return True
+    if len(word) < 3 or not word.startswith("--") or "=" in word:
+        return False
+    return any(option.startswith(word) for option in _OPTIONS_WITH_VALUE)
+
+
 def subcommand(args: list[str]) -> str | None:
     """The CLI's subcommand among its arguments, past its global options."""
     i = 0
     while i < len(args) and args[i].startswith("-"):
-        i += 2 if args[i] in _OPTIONS_WITH_VALUE else 1
+        i += 2 if _takes_value(args[i]) else 1
     return args[i] if i < len(args) else None
 
 
@@ -426,14 +455,60 @@ def _human_only_in(words: list[str], module: str | None) -> str | None:
     return None
 
 
+def _short_c(word: str) -> bool:
+    """Whether a word is a short option cluster with ``c`` (``-c``, ``-qc``)."""
+    return word.startswith("-") and not word.startswith("--") and "c" in word[1:]
+
+
+def _shell_at(words: list[str]) -> int:
+    """The index of the first word naming a shell, or -1."""
+    for i, word in enumerate(words):
+        if os.path.basename(word.lstrip("({")) in _SHELLS:
+            return i
+    return -1
+
+
+def _reads_stdin(words: list[str]) -> bool:
+    """Whether a simple command runs its stdin, or a word substituted from it, as
+    shell text: a shell with no script file (``sh``, ``sudo bash -s``, ``xargs sh
+    -c '{}'``), or ``source``/``.`` of stdin."""
+    program = _strip_prefix(words)
+    if program and program[0].lstrip("({") in _SOURCES:
+        return all(word in _STDIN_OPERANDS for word in program[1:])
+    at = _shell_at(words)
+    if at == -1:
+        return False
+    rest = words[at + 1 :]
+    if any(_short_c(word) for word in rest):
+        return True
+    return all(word.startswith("-") or word in _STDIN_OPERANDS for word in rest)
+
+
 def _nested(command: str) -> list[str]:
     """The shell text a line runs in a nested shell: the script after a ``-c``
-    option (``bash -c``, ``script -qc``), and each ``$(...)`` or backtick body."""
+    option (``bash -c``, ``script -qc``), the words ``eval`` joins, a shell's
+    here-string, the commands of a pipeline that feed a shell's stdin, and each
+    ``$(...)`` or backtick body."""
     found = []
-    for words in _segments(command):
+    pieces = _pieces(command)
+    start = 0
+    for n, (words, separator) in enumerate(pieces):
         for i, word in enumerate(words[:-1]):
-            if word.startswith("-") and not word.startswith("--") and "c" in word[1:]:
+            if _short_c(word):
                 found.append(words[i + 1])
+        program = _strip_prefix(words)
+        if program and os.path.basename(program[0].lstrip("({")) == "eval":
+            found.append(" ".join(program[1:]))
+        if _shell_at(words) != -1:
+            for i, word in enumerate(words):
+                if word == "<<<" and i + 1 < len(words):
+                    found.append(words[i + 1])
+                elif word.startswith("<<<") and len(word) > 3:
+                    found.append(word[3:])
+        if n > start and _reads_stdin(words):
+            found += [" ".join(feeder) for feeder, _ in pieces[start:n]]
+        if separator not in _PIPES:
+            start = n + 1
     at = command.find("$(")
     while at != -1:
         close = command.find(")", at + 2)
@@ -448,9 +523,11 @@ def human_only_command(command: object, module: str | None = None, depth: int = 
 
     Read from the parsed words, so a commit message or an ``echo`` that only
     mentions the CLI does not match, and from every nested shell (``bash -c``,
-    ``script -qc``, ``$(...)``), so wrapping the call does not hide it. This is
-    the early, readable refusal; the CLI itself also refuses both outside a
-    terminal.
+    ``script -qc``, ``$(...)``, ``eval``, ``bash <<<``, ``printf ... | sh``), so
+    wrapping the call does not hide it. This is the early, readable refusal; the
+    CLI itself also refuses both outside a terminal, which is what stops text
+    the guard cannot read: escapes and variable splicing, a string run by
+    another interpreter (``python3 -c``, ``ssh host``), or ``xargs``.
     """
     if not isinstance(command, str) or depth > _NEST_MAX:
         return None
