@@ -12,6 +12,7 @@ loop-card = "core.supervisor_card:main"
 loop-card-check = "core.card_shape:main"
 loop-pause-stats = "core.supervisor_pause_stats:main"
 loop-prune = "core.supervisor_prune:main"
+loop-ledger = "core.supervisor_ledger:main"
 loop-transcript = "adapters.claude_code.supervisor_transcript:main"
 loop-no-dash = "core.no_unicode_dash:main"
 

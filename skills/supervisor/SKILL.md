@@ -46,9 +46,18 @@ at startup and stops if a run is active.
 
 ## One supervisor per repository
 
-Run only one supervisor per repository. Two supervisors send every
-notification twice. The plugin has no lock command yet, so this is your
-responsibility.
+Only one supervisor runs per repository. The routine takes a lock with
+`loop-ledger lock` before it works. If another supervisor holds the lock, this
+one stops. The kernel frees the lock when the process that holds it exits.
+
+## The ledger
+
+The supervisor keeps a private ledger under your home directory, one file per
+repository. `loop-ledger path` prints where it is. The ledger remembers each
+notification it sent, so a restarted supervisor does not repeat one. A pause is
+notified again after 1800 seconds; a `done` run is notified once. Notifications
+are at-least-once: after a crash you may see one repeat, never a silent miss.
+To reset the memory, delete the ledger file.
 
 ## The decision table
 
@@ -110,6 +119,6 @@ category is a pause a person still answers.
 
 - `SKILL.md`: this file.
 - `ROUTINE.md`: the loop you follow, command blocks as code.
-- `loop-scan`, `loop-transcript`, `loop-decide`, `loop-card`, `loop-prune` and
-  `loop-pause-stats`: the commands the routine calls. The plugin puts them on
+- `loop-scan`, `loop-transcript`, `loop-decide`, `loop-card`, `loop-ledger`,
+  `loop-prune` and `loop-pause-stats`: the commands the routine calls. The plugin puts them on
   your `PATH`.

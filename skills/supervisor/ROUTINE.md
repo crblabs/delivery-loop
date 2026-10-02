@@ -25,6 +25,17 @@ gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null > "$S/repo" || :
 echo "repo: $(cat "$S/repo")"
 ```
 
+Take the single-supervisor lock. Run this block in the background (the Bash
+tool's `run_in_background`), because it holds the lock for as long as it runs.
+It prints `LOCKED` and keeps running. If it prints `LOCK_HELD` and exits 1,
+another supervisor watches this repository: stop. The name `all` stands for a
+supervisor that watches every repository.
+
+```bash
+S="${TMPDIR:-/tmp}/dl-supervisor"; REPO=$(cat "$S/repo")
+loop-ledger --repo "${REPO:-all}" lock
+```
+
 ## Step 1: scan every run
 
 Read every run's state. Exit `1` means at least one run needs attention. Exit
@@ -77,10 +88,16 @@ When step 2 wrote no question for the run, leave out `--question-file`.
 
 ## Step 4: escalate
 
-For each `escalate` decision, check whether you already notified this pause in
-this session. A pause is the run id, the decision's `reason`, the record's
-`paused_prompt_id`, and the question's `tool_use_id`. Skip a pause you notified
-less than 1800 seconds ago. Notify a `done` run once, and never again.
+For each `escalate` decision, ask the ledger whether this pause needs a
+notification on a channel. Use one channel name per way you send: `desktop`,
+`tracker` or `session`. Exit 0 means send it. Exit 1 means this channel already
+sent it less than 1800 seconds ago, or the run is `done` and was already
+notified once: skip it.
+
+```bash
+S="${TMPDIR:-/tmp}/dl-supervisor"; REPO=$(cat "$S/repo")
+loop-ledger --repo "${REPO:-all}" check --record-file "$S/record-<n>.json" --question-file "$S/question-<n>.json" --channel <channel>
+```
 
 Render the card the operator reads:
 
@@ -100,6 +117,19 @@ Then send it:
   `task` names an issue, post the full card as one comment on that issue.
 - Otherwise, print the full card in this session.
 
+After each send that succeeds, record it in the ledger, one line per channel.
+The ledger lives under your home directory and survives a restart, so a new
+supervisor session does not repeat a notification. A crash between the send and
+the record can repeat one notification, never lose one.
+
+```bash
+S="${TMPDIR:-/tmp}/dl-supervisor"; REPO=$(cat "$S/repo")
+loop-ledger --repo "${REPO:-all}" record --record-file "$S/record-<n>.json" --question-file "$S/question-<n>.json" --channel <channel>
+```
+
+In `check` and `record`, leave out `--question-file` when the run has no
+question. Pass the same files to both, so both name the same pause.
+
 For a `permission_prompt` decision, the card names the tool and the command,
 and the reply is `Yes` or `No` to the prompt. For an `orphaned` decision, list
 the runs whose worktree is gone, and tell the operator to delete them with
@@ -112,5 +142,17 @@ loop-prune
 ## Step 5: pace yourself
 
 Wait, then run the loop again from step 1. Under `/loop`, schedule the next
-turn with `ScheduleWakeup`. Do not scan more than once a minute. Notify a pause
-again when 1800 seconds have passed since you last notified it.
+turn with `ScheduleWakeup`. Do not scan more than once a minute. The ledger
+decides when a pause is notified again: `check` says yes once 1800 seconds have
+passed since the last notification on that channel.
+
+## Stopping
+
+When the operator ends the supervisor, release the lock. This ends the
+background process that holds it. The lock is also freed when that process
+dies.
+
+```bash
+S="${TMPDIR:-/tmp}/dl-supervisor"; REPO=$(cat "$S/repo")
+loop-ledger --repo "${REPO:-all}" unlock
+```
