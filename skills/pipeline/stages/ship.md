@@ -15,6 +15,13 @@ If gstack's decision log is available, write the body's `## Decisions` section
 with `gstack-decision-search --scope branch --json | loop-pr-decisions`. Paste
 its output as it is. It prints `None` when the run decided nothing.
 
+Run `loop-impact --base origin/<base branch> --format both`. If the repository
+has a zone map (`docs/architecture.zones.toml`), paste its output, as it is, as
+the body's `## Picture` section. Do not draw the diagram by hand. If it says no
+zone map is configured, the body has no `## Picture` section. If it names a
+changed file that no zone owns, add that path to the zone map, commit, and run
+it again. The zone map is an ordinary file of the repository.
+
 Before you open the pull request, also check the body with
 `loop-pr-body < <body file>`. If it names a missing section, add that section
 and check again.
