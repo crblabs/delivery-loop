@@ -86,6 +86,20 @@ def add_worktree() -> Callable[[Path, Path], Path]:
 
 
 @pytest.fixture
+def stage_skills(home: Path) -> Path:
+    """A skill for each default stage command under this test's home, as
+    ``delivery-loop start`` refuses to start without them; return the skills dir."""
+    from core.config import DEFAULT_STAGES
+
+    skills = Path.home() / ".claude" / "skills"
+    for stage in DEFAULT_STAGES:
+        name = stage.command.lstrip("/")
+        (skills / name).mkdir(parents=True, exist_ok=True)
+        (skills / name / "SKILL.md").write_text(f"---\nname: {name}\n---\n", encoding="utf-8")
+    return skills
+
+
+@pytest.fixture
 def start_run(make_repo: Callable[[Path], Path], tmp_path: Path):
     """Start a run on the default stages in a new repository; return (run, worktree).
 

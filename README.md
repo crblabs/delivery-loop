@@ -83,6 +83,8 @@ but a hook that changes under a running run may not read its state the same way.
 - macOS or Linux. Windows is not supported.
 
 `delivery-loop doctor` checks each of these and says what to fix.
+`delivery-loop start` refuses to start a run while a stage's command is not
+found in your skills, the repository's `.claude/skills` or an installed plugin.
 
 ## Using it
 
