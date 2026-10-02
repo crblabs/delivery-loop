@@ -31,7 +31,15 @@ from pathlib import Path
 from adapters.claude_code import bootstrap as boot
 from core import run_index as ri
 from core import run_state as rs
-from core.config import HARNESS_HOME, HARNESS_HOME_ENV, ConfigError, LoopConfig, load_config
+from core.config import (
+    DEFAULT_STAGES,
+    HARNESS_HOME,
+    HARNESS_HOME_ENV,
+    ConfigError,
+    LoopConfig,
+    StageSpec,
+    load_config,
+)
 
 PLUGIN_BIN = rs.PLUGIN_ROOT / "bin" / ri.CLI_NAME
 _CONFIG_TAIL_RE = re.compile(r"\s--config(?:=|\s+)(\S+)\s*$")
@@ -92,6 +100,11 @@ def cmd_start(args: argparse.Namespace) -> int:
         config = _load(args.config, Path(root) if root else None)
     except ConfigError as exc:
         return _fail(f"CONFIG_INVALID: {exc}")
+    # Before the intent is taken, so a refused start leaves it for the next one.
+    worktree = Path(root) if root else None
+    missing = [stage for stage, sure in missing_commands(config, worktree) if sure]
+    if missing:
+        return _fail(_missing_text(missing))
     # The intent the guard recorded from the harness's own payload outranks a
     # session given as an argument, which any caller can type.
     intent = ri.take_intent(ri.worktree_key(root)) if root is not None else None
@@ -208,6 +221,41 @@ def _command_found(command: str, places: list[Path]) -> bool:
     return False
 
 
+def missing_commands(config: LoopConfig, worktree: Path | None) -> list[tuple[StageSpec, bool]]:
+    """Each stage whose command was not found, and whether the miss is certain.
+
+    A plain ``/name`` is looked up everywhere the harness keeps user, project and
+    installed plugin skills, so a miss there is certain. A ``plugin:name`` may come
+    from a plugin loaded with ``--plugin-dir`` or a local marketplace, which this
+    lookup cannot see, so that miss is only a doctor warning.
+    """
+    places = _skill_dirs(worktree)
+    return [
+        (stage, ":" not in stage.command)
+        for stage in config.stages
+        if stage.command and not _command_found(stage.command, places)
+    ]
+
+
+def _missing_text(stages: list[StageSpec]) -> str:
+    names = ", ".join(f"{stage.command} (stage {stage.name})" for stage in stages)
+    text = (
+        f"start refused: {names} not found. Cause: the run would stop at that stage. Fix: "
+        "install the skill, or declare other stages in loop.toml; delivery-loop doctor "
+        "shows where it looked."
+    )
+    if all(stage.command in {s.command for s in DEFAULT_STAGES} for stage in stages):
+        home = Path(os.environ.get(HARNESS_HOME_ENV) or HARNESS_HOME).expanduser()
+        gstack = home / "skills" / "gstack"
+        text += (
+            " The default stages call gstack. Install it:\n"
+            f"  git clone --depth 1 https://github.com/garrytan/gstack.git {gstack}\n"
+            f"  cd {gstack} && ./setup --team\n"
+            "Then restart Claude Code."
+        )
+    return text
+
+
 def _hook_python() -> tuple[str, tuple[int, ...] | None]:
     """The ``python3`` a hook runs with, the first on PATH as Claude Code finds it,
     and its version; ``("missing", None)`` when there is none."""
@@ -271,20 +319,20 @@ def doctor_checks(cwd: Path) -> list[tuple[str, str, str]]:
                 checks.append(
                     ("warn", "commands", f"config still names {old}; use /delivery-loop:pipeline")
                 )
-        places = _skill_dirs(worktree)
         for stage in config.stages:
             if worktree is not None and rs.resolve_prompt(stage, worktree, config) is None:
                 checks.append(("fail", f"stage {stage.name}", f"no prompt file {stage.prompt}"))
-            if stage.command and not _command_found(stage.command, places):
-                searched = ", ".join(str(p) for p in places[:4])
-                checks.append(
-                    (
-                        "warn",
-                        f"stage {stage.name}",
-                        f"{stage.command} not found in {searched} or the plugin cache; install "
-                        "the skill or declare other stages in loop.toml",
-                    )
+        searched = ", ".join(str(p) for p in _skill_dirs(worktree)[:4])
+        # A certain miss fails because start refuses on it, through the same lookup.
+        for stage, sure in missing_commands(config, worktree):
+            checks.append(
+                (
+                    "fail" if sure else "warn",
+                    f"stage {stage.name}",
+                    f"{stage.command} not found in {searched} or the plugin cache; install "
+                    "the skill or declare other stages in loop.toml",
                 )
+            )
         if worktree is not None:
             legacy = rs.legacy_install(worktree, config)
             if legacy:

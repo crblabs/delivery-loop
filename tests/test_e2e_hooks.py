@@ -42,7 +42,7 @@ def _stop(cwd: Path, message: str) -> dict:
     }
 
 
-def test_a_run_from_start_to_a_guarded_edit(make_repo, tmp_path: Path) -> None:
+def test_a_run_from_start_to_a_guarded_edit(make_repo, stage_skills, tmp_path: Path) -> None:
     # Value: protects=the done-when: a new repo starts a run with no file added, and the
     # hooks drive and guard it; fails_when=any wiring between shim, adapter and core
     # breaks; why_new=plugin; seam=subprocess
@@ -97,7 +97,7 @@ def test_the_no_run_path_loads_nothing_heavy(tmp_path: Path) -> None:
             assert heavy not in loaded, (kind, heavy)
 
 
-def test_a_typed_resume_through_the_prompt_shim(make_repo, tmp_path: Path) -> None:
+def test_a_typed_resume_through_the_prompt_shim(make_repo, stage_skills, tmp_path: Path) -> None:
     worktree = make_repo(tmp_path / "host")
     started = _run(
         [str(ROOT / "bin/delivery-loop"), "--session", "s1", "start", "CRB-1"], None, worktree
