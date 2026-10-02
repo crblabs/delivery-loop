@@ -16,18 +16,28 @@ identities so a pause notification never suppresses a later failure, and ``done`
 is never re-notified. A ``permission_prompt`` question carries its own identity,
 keyed on the ``tool_use_id`` before the terminal check, so a prompt on a done run
 still notifies rather than collapsing into that run's ``done`` key.
+
+``loop-ledger`` exposes these functions to the supervisor routine. ``lock`` takes
+the lock and holds it until the process is ended, and ``unlock`` ends that
+process. ``check`` exits 0 when a pause should be notified on a channel and 1
+when it should not. ``record`` appends one delivered notification. ``path``
+prints where the ledger lives.
 """
 
 from __future__ import annotations
 
+import argparse
 import fcntl
 import json
 import os
 import re
+import signal
+import sys
 from datetime import datetime
 from pathlib import Path
 
-from core.config import DEFAULTS, LoopConfig
+from core import pipeline_state as ps
+from core.config import DEFAULTS, LoopConfig, load_cli_config
 
 _SLUG_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 
@@ -164,3 +174,132 @@ def append_notification(path: Path, key: str, channel: str, now: datetime) -> No
         os.write(fd, prefix + payload.encode() + b"\n")
     finally:
         os.close(fd)
+
+
+# ------------------------------------------------------------------ command line
+
+
+def _read_json(source: str | None) -> tuple[bool, object]:
+    """``(ok, value)``: no file, an empty file or ``null`` is ``(True, None)``."""
+    if source is None:
+        return (True, None)
+    try:
+        raw = Path(source).read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeDecodeError):
+        return (False, None)
+    if not raw or raw == "null":
+        return (True, None)
+    try:
+        return (True, json.loads(raw))
+    except ValueError:
+        return (False, None)
+
+
+def _hold(handle: int) -> int:
+    """Keep the lock until a signal ends this process; the kernel then frees it."""
+
+    def _stop(_signum: int, _frame: object) -> None:
+        raise SystemExit(0)
+
+    signal.signal(signal.SIGTERM, _stop)
+    signal.signal(signal.SIGINT, _stop)
+    print(f"LOCKED: pid {os.getpid()}", flush=True)
+    try:
+        while True:
+            signal.pause()
+    finally:
+        os.close(handle)
+
+
+def _unlock(repo_slug: str, config: LoopConfig) -> int:
+    """End the process that holds the lock, by the pid the lock file records."""
+    lock = ledger_path(repo_slug, config=config).with_suffix(".lock")
+    try:
+        pid = int(lock.read_text(encoding="utf-8").strip())
+    except (OSError, ValueError):
+        pid = None
+    handle = acquire_lock(repo_slug, config=config)
+    if handle is not None:
+        os.close(handle)
+        print("NOT_LOCKED: no supervisor holds the lock")
+        return 0
+    if pid is None:
+        print(f"LOCK_UNREADABLE: {lock}", file=sys.stderr)
+        return 2
+    os.kill(pid, signal.SIGTERM)
+    print(f"UNLOCKED: sent the end signal to pid {pid}")
+    return 0
+
+
+def _parse_args(argv: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        prog="loop-ledger", description="The supervisor's lock and notification ledger."
+    )
+    parser.add_argument("--repo", required=True, help="the owner/name the supervisor watches")
+    parser.add_argument("--config", help="a loop.toml, or its directory, that moves the ledger")
+    sub = parser.add_subparsers(dest="verb", required=True)
+    sub.add_parser("lock", help="take the lock and hold it until this process is ended")
+    sub.add_parser("unlock", help="end the process that holds the lock")
+    sub.add_parser("path", help="print the ledger file's path")
+    for verb, text in (
+        ("check", "exit 0 when this pause should be notified on this channel, 1 when not"),
+        ("record", "record one delivered notification"),
+    ):
+        one = sub.add_parser(verb, help=text)
+        one.add_argument("--record-file", required=True, help="one loop-scan record")
+        one.add_argument("--question-file", help="a loop-transcript result")
+        one.add_argument("--channel", required=True, help="where it goes, such as desktop")
+        one.add_argument("--now", help="ISO-8601 override for tests")
+        if verb == "check":
+            one.add_argument("--reescalate-after", type=int, default=1800, help="seconds")
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = _parse_args(sys.argv[1:] if argv is None else argv)
+    config = load_cli_config(args.config)
+    if config is None:
+        return 2
+    try:
+        slug = ps.repo_slug(args.repo)
+        path = ledger_path(slug, config=config)
+    except ValueError as exc:
+        print(f"MALFORMED_INPUT: {exc}", file=sys.stderr)
+        return 2
+    if args.verb == "path":
+        print(path)
+        return 0
+    if args.verb == "lock":
+        return _lock(slug, config, path)
+    if args.verb == "unlock":
+        return _unlock(slug, config)
+    return _check_or_record(args, path)
+
+
+def _lock(repo_slug: str, config: LoopConfig, path: Path) -> int:
+    handle = acquire_lock(repo_slug, config=config)
+    if handle is None:
+        print(f"LOCK_HELD: another supervisor holds {path.with_suffix('.lock')}")
+        return 1
+    return _hold(handle)
+
+
+def _check_or_record(args: argparse.Namespace, path: Path) -> int:
+    ok_record, record = _read_json(args.record_file)
+    ok_question, question = _read_json(args.question_file)
+    if not ok_record or not isinstance(record, dict) or not ok_question:
+        print("MALFORMED_INPUT: --record-file or --question-file did not parse", file=sys.stderr)
+        return 2
+    key = pause_key(record, question if isinstance(question, dict) else None)
+    now = _parse(args.now) or datetime.now().astimezone()
+    if args.verb == "record":
+        append_notification(path, key, args.channel, now)
+        print(json.dumps({"key": key, "channel": args.channel, "recorded": True}))
+        return 0
+    notify = should_notify(read_ledger(path), key, args.channel, now, args.reescalate_after)
+    print(json.dumps({"key": key, "channel": args.channel, "notify": notify}))
+    return 0 if notify else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

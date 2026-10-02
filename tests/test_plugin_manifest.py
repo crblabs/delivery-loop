@@ -94,6 +94,20 @@ def test_the_cli_and_the_hooks_are_executable() -> None:
     for rel in (
         "bin/delivery-loop",
         "bin/loop-no-dash",
+        "bin/loop-comments",
+        "bin/loop-complexity",
+        "bin/loop-pr-body",
+        "bin/loop-pr-decisions",
+        "bin/loop-scan",
+        "bin/loop-transcript",
+        "bin/loop-decide",
+        "bin/loop-card",
+        "bin/loop-pause-stats",
+        "bin/loop-prune",
+        "bin/loop-ledger",
+        "bin/loop-pre-push",
+        "bin/loop-impact",
+        "bin/loop-issue",
         "hooks/pipeline_hook.py",
     ):
         assert os.access(ROOT / rel, os.X_OK), rel

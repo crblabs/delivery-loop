@@ -27,7 +27,7 @@ def test_start_without_a_task_shows_an_example(
 
 
 def test_start_prints_stage_one_and_binds_the_session(
-    make_repo, tmp_path: Path, monkeypatch, capsys
+    make_repo, stage_skills, tmp_path: Path, monkeypatch, capsys
 ) -> None:
     worktree = make_repo(tmp_path / "host")
     monkeypatch.chdir(worktree)
@@ -37,7 +37,7 @@ def test_start_prints_stage_one_and_binds_the_session(
 
 
 def test_start_uses_the_agents_intent_when_no_session_is_given(
-    make_repo, tmp_path: Path, monkeypatch
+    make_repo, stage_skills, tmp_path: Path, monkeypatch
 ) -> None:
     worktree = make_repo(tmp_path / "host")
     monkeypatch.chdir(worktree)
@@ -48,7 +48,7 @@ def test_start_uses_the_agents_intent_when_no_session_is_given(
 
 
 def test_an_unbound_start_outside_a_terminal_is_refused(
-    make_repo, tmp_path: Path, monkeypatch, capsys
+    make_repo, stage_skills, tmp_path: Path, monkeypatch, capsys
 ) -> None:
     # Value: protects=a run goes to the session that started it; fails_when=a start from a
     # script binds the first session that ends a turn in the worktree; why_new=red-team
@@ -75,7 +75,7 @@ def test_start_refuses_a_bad_config(make_repo, tmp_path: Path, monkeypatch, caps
 
 
 def test_start_with_a_named_config_moves_the_run_but_not_the_index(
-    make_repo, tmp_path: Path, monkeypatch
+    make_repo, stage_skills, tmp_path: Path, monkeypatch
 ) -> None:
     # Value: protects=hooks find a run started under --config that moves state_root;
     # fails_when=the index follows state_root; why_new=spec review; seam=none
@@ -142,7 +142,9 @@ def test_the_slash_command_defers_resume_to_the_prompt_hook(start_run, monkeypat
     assert rs.read(run)[1]["status"] == "awaiting_human"
 
 
-def test_a_task_title_on_stdin_is_kept_as_typed(make_repo, tmp_path, monkeypatch, capsys) -> None:
+def test_a_task_title_on_stdin_is_kept_as_typed(
+    make_repo, stage_skills, tmp_path, monkeypatch, capsys
+) -> None:
     # Value: protects=a task with an apostrophe, quotes or $(...) starts as typed;
     # fails_when=the words are split or expanded; why_new=review QA probe; seam=none
     worktree = make_repo(tmp_path / "host")
@@ -161,7 +163,7 @@ def hook_python(monkeypatch):
 
 
 def test_doctor_passes_in_a_repository_and_names_the_cli(
-    make_repo, tmp_path: Path, monkeypatch, capsys, hook_python
+    make_repo, stage_skills, tmp_path: Path, monkeypatch, capsys, hook_python
 ) -> None:
     monkeypatch.chdir(make_repo(tmp_path / "host"))
     code = cli.main(["doctor"])
@@ -169,8 +171,7 @@ def test_doctor_passes_in_a_repository_and_names_the_cli(
     assert code == 0, out
     assert "OK    git worktree" in out
     assert "alias delivery-loop=" in out
-    # No gstack skills under this test's home: each stage command is a warning, not a failure.
-    assert "WARN  stage autoplan: /autoplan not found" in out
+    assert "stage autoplan" not in out
 
 
 def test_doctor_finds_an_installed_skill(
@@ -182,6 +183,79 @@ def test_doctor_finds_an_installed_skill(
     monkeypatch.chdir(make_repo(tmp_path / "host"))
     cli.main(["doctor"])
     assert "stage autoplan" not in capsys.readouterr().out
+
+
+def test_start_refuses_a_missing_stage_skill_and_names_it(
+    make_repo, stage_skills, tmp_path: Path, monkeypatch, capsys
+) -> None:
+    # Value: protects=a run does not start when a stage's skill is missing; fails_when=start
+    # skips the lookup and the run stops mid-way; why_new=port of a gstack guard; seam=none
+    worktree = make_repo(tmp_path / "host")
+    monkeypatch.chdir(worktree)
+    ri.write_intent(ri.worktree_key(str(worktree)), "s1")
+    (stage_skills / "qa" / "SKILL.md").unlink()
+    assert cli.main(["--session", "s1", "start", "CRB-1"]) == 2
+    err = capsys.readouterr().err
+    assert "/qa (stage qa) not found" in err
+    assert "/autoplan" not in err
+    assert "gstack.git" in err
+    assert rs.find(str(worktree)) is None
+    # The refusal leaves the agent's intent for the start that follows the fix.
+    assert ri.take_intent(ri.worktree_key(str(worktree))) == "s1"
+
+
+def test_start_names_no_gstack_for_a_custom_stage(
+    make_repo, tmp_path: Path, monkeypatch, capsys
+) -> None:
+    worktree = make_repo(tmp_path / "host")
+    (worktree / "loop.toml").write_text(
+        '[[stages]]\nname = "build"\ncommand = "/build-it"\n', encoding="utf-8"
+    )
+    monkeypatch.chdir(worktree)
+    assert cli.main(["--session", "s1", "start", "CRB-1"]) == 2
+    err = capsys.readouterr().err
+    assert "/build-it (stage build) not found" in err
+    assert "gstack" not in err
+
+
+def test_start_finds_a_project_skill_and_a_plugin_command_only_warns(
+    make_repo, tmp_path: Path, monkeypatch, capsys, hook_python
+) -> None:
+    worktree = make_repo(tmp_path / "host")
+    (worktree / ".claude/skills/build-it").mkdir(parents=True)
+    (worktree / ".claude/skills/build-it/SKILL.md").write_text("---\n", encoding="utf-8")
+    prompts = worktree / ".claude/skills/pipeline/stages"
+    prompts.mkdir(parents=True)
+    for name in ("build", "ext"):
+        (prompts / f"{name}.md").write_text("Do it.\n", encoding="utf-8")
+    (worktree / "loop.toml").write_text(
+        '[[stages]]\nname = "build"\ncommand = "/build-it"\n\n'
+        '[[stages]]\nname = "ext"\ncommand = "/some-plugin:check"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(worktree)
+    assert cli.main(["--session", "s1", "start", "CRB-1"]) == 0
+    capsys.readouterr()
+    # A plugin's command may come from a plugin dir the lookup cannot see: a warning only.
+    assert cli.main(["doctor"]) == 0
+    assert "WARN  stage ext: /some-plugin:check not found" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("installed", [True, False])
+def test_doctor_and_start_agree_on_the_stage_skills(
+    make_repo, tmp_path: Path, monkeypatch, capsys, hook_python, installed
+) -> None:
+    if installed:
+        skills = Path.home() / ".claude/skills"
+        for name in ("autoplan", "qa", "review", "ship"):
+            (skills / name).mkdir(parents=True)
+            (skills / name / "SKILL.md").write_text("---\n", encoding="utf-8")
+    monkeypatch.chdir(make_repo(tmp_path / "host"))
+    doctor = cli.main(["doctor"])
+    out = capsys.readouterr().out
+    assert ("FAIL  stage autoplan: /autoplan not found" in out) is not installed
+    assert (doctor == 0) is installed
+    assert (cli.main(["--session", "s1", "start", "CRB-1"]) == 0) is installed
 
 
 def test_doctor_fails_outside_a_repository_and_on_a_legacy_install(
@@ -224,8 +298,76 @@ def test_doctor_checks_the_python3_hooks_run_with(
     assert f"{level:4}  hook python3" in capsys.readouterr().out
 
 
+SSH_ORIGIN = "git@github.com:owner/repo.git"
+HTTPS_ORIGIN = "https://github.com/owner/repo.git"
+OPT_IN = '[repo]\npush_transport = "https"\n'
+
+
+def _origin(git, worktree: Path) -> str:
+    return git(worktree, "config", "--get", "remote.origin.url").strip()
+
+
+def test_start_leaves_origin_alone_by_default(
+    make_repo, stage_skills, git, github_origin, tmp_path: Path, monkeypatch
+) -> None:
+    # Value: protects=a host whose SSH works keeps its origin; fails_when=start rewrites
+    # origin without push_transport set; why_new=push_transport is opt-in; seam=none
+    worktree = make_repo(tmp_path / "host")
+    github_origin(worktree, SSH_ORIGIN)
+    monkeypatch.chdir(worktree)
+    assert cli.main(["--session", "s1", "start", "CRB-1"]) == 0
+    assert _origin(git, worktree) == SSH_ORIGIN
+
+
+def test_start_reroutes_origin_to_https_when_opted_in(
+    make_repo, stage_skills, git, github_origin, tmp_path: Path, monkeypatch
+) -> None:
+    # Value: protects=the last stage's push goes over HTTPS; fails_when=start ignores
+    # push_transport or rewrites after the guard baseline; why_new=ported preflight; seam=none
+    worktree = make_repo(tmp_path / "host")
+    github_origin(worktree, SSH_ORIGIN)
+    (worktree / "loop.toml").write_text(OPT_IN, encoding="utf-8")
+    monkeypatch.chdir(worktree)
+    assert cli.main(["--session", "s1", "start", "CRB-1"]) == 0
+    assert _origin(git, worktree) == HTTPS_ORIGIN
+    run = rs.find(str(worktree))
+    assert run is not None and run.config.push_transport == "https"
+    events = ri.read_events(str(run.run_dir), 5)
+    assert "set by this start" in events[-1]["push_transport"]
+
+
+def test_start_refuses_when_origin_cannot_be_rerouted(
+    make_repo, stage_skills, git, tmp_path: Path, monkeypatch, capsys
+) -> None:
+    worktree = make_repo(tmp_path / "host")
+    git(worktree, "remote", "add", "origin", "git@gitlab.com:owner/repo.git")
+    (worktree / "loop.toml").write_text(OPT_IN, encoding="utf-8")
+    monkeypatch.chdir(worktree)
+    assert cli.main(["--session", "s1", "start", "CRB-1"]) == 2
+    err = capsys.readouterr().err
+    assert "PREFLIGHT_PUSH_ORIGIN" in err and "push_transport" in err
+    assert rs.find(str(worktree)) is None
+    assert _origin(git, worktree) == "git@gitlab.com:owner/repo.git"
+
+
+def test_doctor_shows_the_push_transport_only_when_it_is_set(
+    make_repo, git, tmp_path: Path, monkeypatch, capsys, hook_python
+) -> None:
+    worktree = make_repo(tmp_path / "host")
+    git(worktree, "remote", "add", "origin", SSH_ORIGIN)
+    monkeypatch.chdir(worktree)
+    cli.main(["doctor"])
+    assert "push transport" not in capsys.readouterr().out
+    (worktree / "loop.toml").write_text(OPT_IN, encoding="utf-8")
+    cli.main(["doctor"])
+    out = capsys.readouterr().out
+    assert f"WARN  push transport: origin is {SSH_ORIGIN}; start will reroute it" in out
+    # doctor only reads.
+    assert _origin(git, worktree) == SSH_ORIGIN
+
+
 def test_a_terminal_start_ignores_an_agents_leftover_intent(
-    make_repo, tmp_path, monkeypatch
+    make_repo, stage_skills, tmp_path, monkeypatch
 ) -> None:
     # Value: protects=a person's own start is not bound to the agent's session by an
     # intent left from a declined call; fails_when=the intent outranks a terminal start;
@@ -241,7 +383,7 @@ def test_a_terminal_start_ignores_an_agents_leftover_intent(
 
 
 def test_start_prefers_the_harness_intent_over_a_typed_session(
-    make_repo, tmp_path, monkeypatch
+    make_repo, stage_skills, tmp_path, monkeypatch
 ) -> None:
     # Value: protects=the agent cannot bind its run to a session that never ends a turn;
     # fails_when=--session outranks the intent the guard recorded; why_new=re-review;

@@ -1,1 +1,1 @@
-"""One subpackage per harness. A harness name may appear only inside one."""
+"""One subpackage per harness or tracker. A harness name may appear only inside one."""

@@ -92,11 +92,16 @@ def test_the_defaults_are_pinned() -> None:
     assert d.guard_watch == (".claude/hooks/pipeline_stop.py", ".claude/hooks/pipeline_guard.py")
     assert d.stage_shorthand == "stages/"
     assert d.stage_target == ".claude/skills/pipeline/stages/"
+
+
+def test_the_command_tracker_and_repo_defaults_are_pinned() -> None:
+    d = cfg.DEFAULTS
     assert d.session_label == "Session"
     assert d.resume_command == "/delivery-loop:pipeline resume"
     assert d.abort_command == "/delivery-loop:pipeline abort"
     assert d.tracker_prefix == "[A-Za-z]+"
     assert d.tracker_pattern == r"([A-Za-z]+-\d+)"
+    assert d.push_transport == ""
 
 
 def test_defaults_still_classify_the_paths_they_used_to() -> None:
@@ -452,6 +457,27 @@ def test_a_tracker_pattern_that_does_not_compile_is_refused(tmp_path: Path) -> N
         cfg.load_config(write(tmp_path, '[tracker]\npattern = "(unclosed"\n'))
 
 
+def test_the_tracker_names_a_draft_inherits_are_read(tmp_path: Path) -> None:
+    # Value: protects=loop-issue fills a draft's team, project and milestone from loop.toml;
+    # fails_when=the keys stay unread and every draft must repeat them; why_new=issue writer
+    d = cfg.DEFAULTS
+    assert (d.tracker_team, d.tracker_project, d.tracker_milestone) == ("", "", "")
+    text = '[tracker]\nteam = "Platform"\nproject = "Q4 work"\nmilestone = "Beta"\n'
+    config = cfg.load_config(write(tmp_path, text))
+    assert (config.tracker_team, config.tracker_project, config.tracker_milestone) == (
+        "Platform",
+        "Q4 work",
+        "Beta",
+    )
+    assert cfg.from_dict(cfg.to_dict(config)) == config
+
+
+@pytest.mark.parametrize("value", ["3", '"two\\nlines"'])
+def test_a_tracker_name_that_is_not_one_line_of_text_is_refused(tmp_path: Path, value: str) -> None:
+    with pytest.raises(cfg.ConfigError):
+        cfg.load_config(write(tmp_path, f"[tracker]\nteam = {value}\n"))
+
+
 def test_a_state_file_that_is_a_path_is_refused(tmp_path: Path) -> None:
     with pytest.raises(cfg.ConfigError):
         cfg.load_config(write(tmp_path, '[harness]\nstate_file = "a/b.json"\n'))
@@ -467,6 +493,57 @@ def test_a_wrong_type_is_refused(tmp_path: Path) -> None:
 def test_broken_toml_is_refused(tmp_path: Path) -> None:
     with pytest.raises(cfg.ConfigError):
         cfg.load_config(write(tmp_path, "[harness\n"))
+
+
+# Value: protects=origin is rewritten only for a host that opted in;
+#   fails_when=the key is ignored, read from the wrong table, or accepts a typo;
+#   why_new=push_transport is a new key; seam=none
+def test_push_transport_is_opt_in_and_only_takes_https(tmp_path: Path) -> None:
+    assert cfg.load_config(write(tmp_path, '[repo]\nslug = "o/r"\n')).push_transport == ""
+    opted = cfg.load_config(write(tmp_path, '[repo]\npush_transport = "https"\n'))
+    assert opted.push_transport == "https"
+    assert cfg.from_dict(cfg.to_dict(opted)) == opted
+    for bad in ('"ssh"', '"HTTPS"', "true"):
+        with pytest.raises(cfg.ConfigError, match="push_transport"):
+            cfg.load_config(write(tmp_path, f"[repo]\npush_transport = {bad}\n"))
+
+
+def test_a_snapshot_from_before_push_transport_still_loads() -> None:
+    # A run started before the key existed recorded no push_transport.
+    old = cfg.to_dict(cfg.DEFAULTS)
+    del old["push_transport"]
+    assert cfg.from_dict(old) == cfg.DEFAULTS
+
+
+def test_the_user_file_can_opt_in_for_one_operator(tmp_path: Path) -> None:
+    user = tmp_path / "home" / cfg.USER_CONFIG_DIR / "host.toml"
+    user.parent.mkdir(parents=True)
+    user.write_text('[repo]\npush_transport = "https"\n', encoding="utf-8")
+    config = cfg.load_config(tmp_path / "absent.toml", slug="host", home=tmp_path / "home")
+    assert config.push_transport == "https"
+
+
+# Value: protects=installing the plugin opts in, and a developer or a repository
+#   opts out; fails_when=a rule is off by default, a switch is read from the wrong
+#   table, or accepts a non-boolean; why_new=the checks were ported; seam=none
+def test_the_check_switches_are_on_and_turn_off(tmp_path: Path) -> None:
+    assert cfg.DEFAULTS.check_comments and cfg.DEFAULTS.check_complexity
+    off = cfg.load_config(write(tmp_path, "[checks]\ncomments = false\ncomplexity = false\n"))
+    assert not off.check_comments and not off.check_complexity
+    assert cfg.from_dict(cfg.to_dict(off)) == off
+    with pytest.raises(cfg.ConfigError, match="comments"):
+        cfg.load_config(write(tmp_path, '[checks]\ncomments = "no"\n'))
+
+
+def test_a_developer_turns_a_check_off_for_themselves(tmp_path: Path) -> None:
+    user = tmp_path / "home" / cfg.USER_CONFIG_DIR / "host.toml"
+    user.parent.mkdir(parents=True)
+    user.write_text("[checks]\ncomplexity = false\n", encoding="utf-8")
+    config = cfg.load_config(tmp_path / "absent.toml", slug="host", home=tmp_path / "home")
+    assert not config.check_complexity and config.check_comments
+    # The repository file wins over the developer's file.
+    repo = write(tmp_path, "[checks]\ncomplexity = true\n")
+    assert cfg.load_config(repo, slug="host", home=tmp_path / "home").check_complexity
 
 
 def test_the_config_is_frozen() -> None:

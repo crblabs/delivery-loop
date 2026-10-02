@@ -1,0 +1,50 @@
+# An example zone map for `loop-impact`.
+#
+# Copy this file to `docs/architecture.zones.toml` in your repository and
+# replace the zones with your own. `loop-impact` reads it to colour the zones a
+# branch touched; the ship stage pastes that picture into the pull request.
+#
+# The rules the loader enforces:
+#   * A zone key is letters, digits, `_` and `-`.
+#   * Every `paths` entry is an exact file path, or a directory prefix ending
+#     `/**` that owns everything under it. No other glob.
+#   * The most specific pattern wins: an exact path beats a prefix, a longer
+#     prefix beats a shorter one. Two zones may not declare the same pattern.
+#   * Every `edges` target is a defined zone. An edge `a -> b` says a change in
+#     `a` can reach `b`. Python imports are found by themselves; declare an
+#     edge for any other dependency (a job that runs a script, a check that
+#     reads every file of a zone).
+#   * A changed file that no zone owns fails `loop-impact`. Own it in a zone, or
+#     list it under `unzoned`. `loop-impact --coverage` lists every tracked file
+#     that is owned by no zone.
+
+schema = 1
+
+# Paths deliberately owned by no zone (exact paths or `dir/**` prefixes).
+unzoned = ["LICENSE"]
+
+[zones.data]
+title = "Data"
+paths = ["data/**", "migrations/**"]
+edges = ["api"]
+
+[zones.api]
+title = "API"
+paths = ["src/api/**", "openapi.yaml"]
+edges = ["web"]
+
+[zones.web]
+title = "Web app"
+paths = ["src/web/**"]
+edges = []
+
+[zones.ci]
+title = "CI and tests"
+paths = [".github/**", "tests/**"]
+edges = []
+
+[zones.project]
+title = "Project root"
+# The pattern language has no root wildcard, so root files are listed exactly.
+paths = ["README.md", "pyproject.toml", "docs/**"]
+edges = []

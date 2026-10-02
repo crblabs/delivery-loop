@@ -9,8 +9,9 @@ A stage ends on a token in the last line of the agent's message:
 
   * ``<promise>STAGE DONE</promise>``: the stage is done. Its ``emits`` value
     (``PLAN: <path>``, ``PR: <url>``) must come before it, and a ``clean_tree``
-    stage needs a committed worktree that passes the no-unicode-dash rule. The
-    run moves to the next stage, or ends. A stage with a gate stops for a person
+    stage needs a committed worktree that passes the no-unicode-dash rule, and
+    the comment and complexity rules unless the config turns them off. The run
+    moves to the next stage, or ends. A stage with a gate stops for a person
     after it.
   * ``<promise>NEEDS HUMAN</promise>``: the stage stops for a person. The
     decision card above it is kept as the pending question.
@@ -43,10 +44,12 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
+from core import comments_gate as cg
+from core import complexity_gate as cx
 from core import no_unicode_dash as nd
 from core import run_index as ri
 from core import run_state as rs
-from core.config import LoopConfig, git_env
+from core.config import LoopConfig, StageSpec, git_env
 from core.guard_evidence import declared, guard_map
 from core.pipeline_loop_paths import is_carveout, parse_loop_edits_block
 
@@ -178,6 +181,37 @@ def _dashes(worktree: Path, state: dict) -> str | None:
     )
 
 
+# The rules beside the dash rule, each with the config switch that turns it off:
+# the switch, the command a person reruns, the gate and its fault type.
+_SWITCHED_RULES = (
+    ("check_comments", "loop-comments", cg.gate, cg.CommentsError),
+    ("check_complexity", "loop-complexity", cx.gate, cx.GateError),
+)
+
+
+def _switched(run: rs.Run, state: dict) -> str | None:
+    """Why the branch fails a rule the config leaves on, or None when it passes."""
+    base = _dash_base(run.worktree, state)
+    if base is None:
+        return None
+    for switch, command, gate, fault in _SWITCHED_RULES:
+        if not getattr(run.config, switch):
+            continue
+        try:
+            found = gate(run.worktree, base)
+        except fault as exc:
+            return f"the {command} check could not run ({exc}); fix it first"
+        if found:
+            shown = "\n".join(f"  {f.message()}" for f in found[:_DASHES_SHOWN])
+            extra = len(found) - _DASHES_SHOWN
+            more = f"\n  ... and {extra} more" if extra > 0 else ""
+            return (
+                f"{command} found {len(found)} problem(s) in the branch; run {command} "
+                f"--base {base} and fix each one, then commit\n{shown}{more}"
+            )
+    return None
+
+
 _URL_RE = re.compile(r"^https?://\S+$")
 
 
@@ -231,6 +265,13 @@ def _gate_card(name: str, gate: str, state: dict, config: LoopConfig) -> str:
     return "\n".join(lines)
 
 
+def _tree_failure(run: rs.Run, state: dict, stage: StageSpec) -> str | None:
+    """Why a ``clean_tree`` stage's worktree cannot end the stage, or None."""
+    if not stage.clean_tree:
+        return None
+    return _unclean(run.worktree) or _dashes(run.worktree, state) or _switched(run, state)
+
+
 def _advance(run: rs.Run, state: dict, message: str) -> TurnEndVerdict:
     config = run.config
     stage = config.stages[state["current"]]
@@ -258,12 +299,9 @@ def _advance(run: rs.Run, state: dict, message: str) -> TurnEndVerdict:
             if not _URL_RE.match(value):
                 return _no_token(run, state, f"PR: {value} is not the pull request's url")
             state["pr_url"] = value
-    unclean = _unclean(run.worktree) if stage.clean_tree else None
-    if unclean:
-        return _no_token(run, state, unclean)
-    dashes = _dashes(run.worktree, state) if stage.clean_tree else None
-    if dashes:
-        return _no_token(run, state, dashes)
+    failed = _tree_failure(run, state, stage)
+    if failed:
+        return _no_token(run, state, failed)
     state["history"].append({"at": ri.now_iso(), "event": "done", "stage": stage.name})
     if state["current"] + 1 >= len(config.stages):
         state["status"] = "done"

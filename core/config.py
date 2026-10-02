@@ -152,6 +152,12 @@ def _refuse_empty(name: str, value: object) -> None:
         raise ConfigError(f"{name} may not be empty")
 
 
+def _refuse_multiline(name: str, value: object) -> None:
+    # A draft's front matter holds one value per line, so a name must fit on one.
+    if not isinstance(value, str) or "\n" in value or "\r" in value:
+        raise ConfigError(f"{name} takes a one-line string, got {value!r}")
+
+
 def _refuse_unsafe(name: str, value: str) -> None:
     """Refuse an absolute path and one that climbs out of the repository root."""
     if value.startswith("/") or value.startswith("~"):
@@ -161,6 +167,9 @@ def _refuse_unsafe(name: str, value: str) -> None:
 
 
 GATES = ("none", "approval", "review_batch")
+# How start treats origin: "" leaves it alone, "https" reroutes a GitHub SSH
+# origin to HTTPS first, for a host whose SSH key cannot push.
+PUSH_TRANSPORTS = ("", "https")
 
 # A stage name is a dict key, a file name component and a token in a message, so
 # it may hold no separator and may not read as a relative path.
@@ -243,6 +252,10 @@ DEFAULT_STAGES = (
 )
 
 
+# The tracker names an issue draft inherits when it names none.
+_TRACKER_NAMES = ("tracker_team", "tracker_project", "tracker_milestone")
+
+
 @dataclass(frozen=True)
 class LoopConfig:
     """Every value the loop takes from its host, with neutral defaults.
@@ -260,7 +273,15 @@ class LoopConfig:
     ``resume_command`` and ``abort_command`` are the operator commands a card
     quotes, and ``tracker_prefix`` with ``tracker_pattern`` recognise an issue
     identifier in a worktree name. ``tracker_prefix`` is a regular expression
-    fragment; the default matches any run of letters.
+    fragment; the default matches any run of letters. ``tracker_team``,
+    ``tracker_project`` and ``tracker_milestone`` are the names an issue draft
+    inherits when it names none; empty means the draft must name its own.
+    ``push_transport`` is one
+    of ``PUSH_TRANSPORTS``: empty leaves ``origin`` as it is, ``https`` makes
+    start reroute a GitHub SSH origin to HTTPS before the run.
+    ``check_comments`` and ``check_complexity`` say whether a ``clean_tree``
+    stage must also pass ``loop-comments`` and ``loop-complexity``. Both are on:
+    installing the plugin opts in, and a developer or a repository turns one off.
     """
 
     state_dir: str = ".claude"
@@ -293,6 +314,12 @@ class LoopConfig:
     abort_command: str = "/delivery-loop:pipeline abort"
     tracker_prefix: str = "[A-Za-z]+"
     tracker_pattern: str = r"({tracker_prefix}-\d+)"
+    tracker_team: str = ""
+    tracker_project: str = ""
+    tracker_milestone: str = ""
+    push_transport: str = ""
+    check_comments: bool = True
+    check_complexity: bool = True
 
     def __post_init__(self) -> None:
         _refuse_empty("state_dir", self.state_dir)
@@ -312,6 +339,8 @@ class LoopConfig:
             raise ConfigError(f"state_file names one file, not a path: {self.state_file!r}")
         self._expand()
         self._validate()
+        for name in _TRACKER_NAMES:
+            _refuse_multiline(name, getattr(self, name))
 
     def _expand(self) -> None:
         stem = PurePosixPath(self.state_file).stem
@@ -356,7 +385,17 @@ class LoopConfig:
             raise ConfigError(
                 f"tracker_pattern may not repeat a group that repeats: {self.tracker_pattern!r}"
             )
+        self._validate_switches()
         self._validate_stages()
+
+    def _validate_switches(self) -> None:
+        if self.push_transport not in PUSH_TRANSPORTS:
+            raise ConfigError(
+                f'push_transport must be empty or "https", got {self.push_transport!r}'
+            )
+        for name in ("check_comments", "check_complexity"):
+            if not isinstance(getattr(self, name), bool):
+                raise ConfigError(f"{name} takes true or false, got {getattr(self, name)!r}")
 
     def _validate_stages(self) -> None:
         _set(self, "stages", _as_tuple("stages", self.stages))
@@ -451,6 +490,14 @@ _STRING_KEYS = (
     ("abort_command", "commands", "abort"),
     ("tracker_prefix", "tracker", "prefix"),
     ("tracker_pattern", "tracker", "pattern"),
+    ("tracker_team", "tracker", "team"),
+    ("tracker_project", "tracker", "project"),
+    ("tracker_milestone", "tracker", "milestone"),
+    ("push_transport", "repo", "push_transport"),
+)
+_BOOL_KEYS = (
+    ("check_comments", "checks", "comments"),
+    ("check_complexity", "checks", "complexity"),
 )
 _ADDITIVE = ("carve_outs", "carve_out_prefixes", "guard_watch")
 _LIST_KEYS = (
@@ -524,6 +571,24 @@ _REMOVED_KEYS = (
 )
 
 
+def _keyed_values(data: dict) -> dict[str, object]:
+    """The string, list and boolean fields a file sets, by field name."""
+    values: dict[str, object] = {}
+    for field_name, table_name, key in _STRING_KEYS:
+        table = _table(data, table_name)
+        if key in table:
+            values[field_name] = _str(table, key)
+    for field_name, table_name, key in _LIST_KEYS:
+        table = _table(data, table_name)
+        if key in table:
+            values[field_name] = _strs(table, key)
+    for field_name, table_name, key in _BOOL_KEYS:
+        table = _table(data, table_name)
+        if key in table:
+            values[field_name] = _bool(table, key, f"[{table_name}]")
+    return values
+
+
 def from_mapping(data: dict) -> LoopConfig:
     """One config from a parsed loop.toml, defaulting every key the file omits.
 
@@ -542,15 +607,7 @@ def from_mapping(data: dict) -> LoopConfig:
     for table_name, key, replacement in _REMOVED_KEYS:
         if key in _table(data, table_name):
             raise ConfigError(f"[{table_name}] {key} is no longer read: {replacement}")
-    values: dict[str, object] = {}
-    for field_name, table_name, key in _STRING_KEYS:
-        table = _table(data, table_name)
-        if key in table:
-            values[field_name] = _str(table, key)
-    for field_name, table_name, key in _LIST_KEYS:
-        table = _table(data, table_name)
-        if key in table:
-            values[field_name] = _strs(table, key)
+    values = _keyed_values(data)
     if "stages" in data:
         values["stages"] = _stages(data["stages"])
     # A file may add carve-outs but never remove one: the carve-outs guard the

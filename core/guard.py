@@ -21,6 +21,10 @@ worktree. It holds three rules:
     refspec is denied. This policy reads the command text, so it is advisory: a
     determined shell line can hide a push. The README says so.
 
+  * An issue tracker's own write tool (``tracker``) is denied. A run writes only
+    to its worktree and its pull request; an issue it finds is a draft that
+    ``loop-issue`` lints, left in the pull request body for a person to file.
+
 Nothing else in a shell command is checked here; the turn-end guard map catches
 a shell edit of a guarded file after the fact.
 """
@@ -82,7 +86,8 @@ _SETTINGS_TAILS = tuple("/" + rel.casefold() for rel in SETTINGS_FILES)
 class PreToolCall:
     """One tool call, in the loop's terms. ``kind`` is ``edit`` for a tool that
     writes ``path``, ``shell`` for one that runs ``command``, ``publish`` for one
-    that writes to the remote repository itself, ``other`` otherwise;
+    that writes to the remote repository itself, ``tracker`` for one that writes
+    to an issue tracker, ``other`` otherwise;
     ``tool_name`` is the harness's own name, for messages only. ``branch`` is the
     branch a ``publish`` call names, if it names one."""
 
@@ -406,6 +411,14 @@ def handle_pre_tool(call: PreToolCall, run: rs.Run, state: dict | None = None) -
         return _check_edit(call, run, state)
     if call.kind == "publish":
         return _check_publish(call, run, state)
+    if call.kind == "tracker":
+        return _deny(
+            call.tool_name,
+            "a run writes only to its worktree and its pull request, and loop-issue is the one "
+            "path that writes an issue",
+            "write the issue as a draft, check it with `loop-issue DRAFT.md`, and put it in the "
+            "pull request body; a person files it after the run with `loop-issue DRAFT.md --apply`",
+        )
     if call.kind == "shell" and call.command:
         return _check_gh(call.command) or _check_push(call.command, run, state)
     return ALLOW

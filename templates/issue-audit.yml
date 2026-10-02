@@ -1,0 +1,116 @@
+# The weekly issue tracker audit. A template: copy it to .github/workflows/ in
+# the host repository. Nothing in templates/ runs here.
+#
+# It runs `loop-issue --audit` over every active issue and project and compares
+# the P1 to P4 counts against the ratchet baseline, .issue-audit-baseline.json
+# at the repository root. The baseline only moves down, so a rising count fails
+# the run. Seed it once with `loop-issue --audit --update-baseline` and commit it.
+#
+# A separate workflow, not a job in the main CI: GitHub's failure email names
+# the workflow, so a red "issue audit" reads differently from a red build.
+#
+# It needs a secret. The audit reads the tracker, so set LINEAR_API_KEY as a
+# repository Actions secret. Until it exists the run exits 2 and goes red: an
+# audit that cannot read must not look green.
+#
+# For a `schedule:` trigger, GitHub mails a failure to whoever last edited the
+# cron line below, so editing that line moves the alert.
+name: issue audit
+
+on:
+  schedule:
+    # 06:17 UTC every Monday. An off-round minute, because the top of the hour
+    # is the busiest slot for scheduled runs.
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          python-version: "3.13"
+
+      - name: Install loop-issue
+        # The plugin's commands install as one tool; it needs no other package.
+        run: uv tool install git+https://github.com/crblabs/delivery-loop
+
+      - name: Run the audit
+        id: audit
+        # `|| code=$?` keeps the step going so the verdict below explains the
+        # result; `set -e` does not fire on a failure `||` consumes.
+        env:
+          LINEAR_API_KEY: ${{ secrets.LINEAR_API_KEY }}
+        run: |
+          set -uo pipefail
+          code=0
+          loop-issue --audit \
+            > "${RUNNER_TEMP}/audit.txt" 2> "${RUNNER_TEMP}/audit.err" || code=$?
+          echo "code=${code}" >> "$GITHUB_OUTPUT"
+
+      - name: Publish the summary
+        if: always()
+        run: |
+          set -uo pipefail
+          {
+            echo "## Issue audit"
+            echo
+            echo '```text'
+            if [ -s "${RUNNER_TEMP}/audit.txt" ]; then
+              cat "${RUNNER_TEMP}/audit.txt"
+            else
+              echo "The audit produced no output. See the diagnostics below."
+            fi
+            echo '```'
+            if [ -s "${RUNNER_TEMP}/audit.err" ]; then
+              echo
+              echo "### Diagnostics"
+              echo
+              echo '```text'
+              cat "${RUNNER_TEMP}/audit.err"
+              echo '```'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Verdict
+        if: always()
+        # The 0/1/2 contract maps to the job result. A rising count (1) and an
+        # unreadable tracker (2) both go red, because both need a person.
+        env:
+          CODE: ${{ steps.audit.outputs.code }}
+        run: |
+          set -uo pipefail
+          case "$CODE" in
+            0)
+              echo "Audit green: no rule rose above baseline."
+              ;;
+            1)
+              echo "::error title=An issue audit rule rose above baseline::an issue lost a project or a milestone, a project went a month without an update, or a body grew."
+              exit 1
+              ;;
+            2)
+              echo "::error title=The audit could not read the tracker::set the LINEAR_API_KEY secret, or check the tracker's API."
+              exit 1
+              ;;
+            *)
+              echo "::error title=Harness failure::loop-issue exited ${CODE}, which is not part of its contract."
+              exit 1
+              ;;
+          esac
