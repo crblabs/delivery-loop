@@ -361,3 +361,12 @@ def test_every_stage_that_commits_or_ships_runs_the_rule(stage: str) -> None:
     text = (PLUGIN / "skills" / "pipeline" / "stages" / f"{stage}.md").read_text("utf-8")
     assert "loop-no-dash --base" in text
     assert "loop-no-dash --stdin-text" in text
+
+
+def test_gate_reads_the_diff_and_every_commit_message(repo: Path, git: Callable[..., str]) -> None:
+    _commit(git, repo, "a.md", f"x {EN_DASH} y\n")
+    git(repo, "commit", "-q", "--allow-empty", "-m", f"subject\n\nbody {EM_DASH}")
+    found = nd.gate(repo, "main")
+    assert ("a.md", 1) in [(v.path, v.line) for v in found]
+    sha = git(repo, "rev-parse", "--short", "HEAD").strip()
+    assert (f"commit {sha} message", 3) in [(v.path, v.line) for v in found]

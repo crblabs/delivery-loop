@@ -467,3 +467,58 @@ def test_another_plugin_in_the_user_settings_does_not_pause_the_run(start_run) -
     settings.parent.mkdir(parents=True, exist_ok=True)
     settings.write_text('{"enabledPlugins": {"other@x": true}}', encoding="utf-8")
     assert _end(run, "x").pause_reason is None
+
+
+EM_DASH = chr(0x2014)
+
+
+def test_a_clean_tree_stage_is_not_done_while_the_branch_adds_a_dash(
+    make_repo, tmp_path: Path, git
+) -> None:
+    # Value: protects=a run cannot finish a stage with an em dash in its work;
+    # fails_when=the hook advances over a dash; why_new=the stages only asked; seam=none
+    worktree = make_repo(tmp_path / "host")
+    run, _ = rs.start(worktree, "CRB-1", _two_stages(), "s1")
+    (worktree / "notes.md").write_text(f"one {EM_DASH} two\n", encoding="utf-8")
+    git(worktree, "add", "notes.md")
+    git(worktree, "commit", "-q", "-m", "notes")
+    verdict = _end(run, DONE)
+    assert verdict.block and "banned dash" in verdict.reinject
+    assert "notes.md:1:5" in verdict.reinject
+    assert _state(run)["current_stage"] == "implement"
+    (worktree / "notes.md").write_text("one, two\n", encoding="utf-8")
+    git(worktree, "commit", "-q", "-am", "fix the dash")
+    verdict = _end(run, DONE)
+    assert verdict.block and verdict.reinject.startswith("Stage 2/2: ship")
+
+
+def test_a_dash_in_a_commit_message_blocks_the_stage(make_repo, tmp_path: Path, git) -> None:
+    worktree = make_repo(tmp_path / "host")
+    run, _ = rs.start(worktree, "CRB-1", _two_stages(), "s1")
+    (worktree / "a.md").write_text("fine\n", encoding="utf-8")
+    git(worktree, "add", "a.md")
+    git(worktree, "commit", "-q", "-m", f"add a {EM_DASH} file")
+    verdict = _end(run, DONE)
+    assert verdict.block and "message:1:7" in verdict.reinject
+
+
+def test_a_dash_from_before_the_run_is_not_the_run_s_to_fix(make_repo, tmp_path: Path, git) -> None:
+    worktree = make_repo(tmp_path / "host")
+    (worktree / "old.md").write_text(f"legacy {EM_DASH}\n", encoding="utf-8")
+    git(worktree, "add", "old.md")
+    git(worktree, "commit", "-q", "-m", f"legacy {EM_DASH}")
+    run, _ = rs.start(worktree, "CRB-1", _two_stages(), "s1")
+    assert _state(run)["start_head"] == git(worktree, "rev-parse", "HEAD").strip()
+    verdict = _end(run, DONE)
+    assert verdict.block and verdict.reinject.startswith("Stage 2/2: ship")
+
+
+def test_the_dash_base_is_origin_head_when_the_repository_has_one(
+    make_repo, tmp_path: Path, git
+) -> None:
+    origin = make_repo(tmp_path / "origin")
+    clone = tmp_path / "clone"
+    git(tmp_path, "clone", "-q", str(origin), str(clone))
+    assert te._dash_base(clone, {"start_head": "abc"}) == "origin/HEAD"
+    assert te._dash_base(origin, {"start_head": "abc"}) == "abc"
+    assert te._dash_base(origin, {}) is None

@@ -9,8 +9,9 @@ A stage ends on a token in the last line of the agent's message:
 
   * ``<promise>STAGE DONE</promise>``: the stage is done. Its ``emits`` value
     (``PLAN: <path>``, ``PR: <url>``) must come before it, and a ``clean_tree``
-    stage needs a committed worktree. The run moves to the next stage, or ends.
-    A stage with a gate stops for a person after it.
+    stage needs a committed worktree that passes the no-unicode-dash rule. The
+    run moves to the next stage, or ends. A stage with a gate stops for a person
+    after it.
   * ``<promise>NEEDS HUMAN</promise>``: the stage stops for a person. The
     decision card above it is kept as the pending question.
 
@@ -30,7 +31,7 @@ That catches a shell edit, which the edit guard never sees.
     turn end ── another session? ─────────────────────────────> let it end
         │ guard map changed off the declared edits? ─────────> pause guard_changed
         │ NEEDS HUMAN ────────────────────────────────────────> pause needs_human
-        │ STAGE DONE ── emits missing / tree dirty ─> block, reinject the stage
+        │ STAGE DONE ── emits missing / tree dirty / dash ─> block, reinject
         │            └─ last stage ─> done   gate ─> pause gate   else ─> block, next stage
         └ no token ── attempts < cap ─> block, reinject   at cap ─> pause no_message
 """
@@ -42,6 +43,7 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
+from core import no_unicode_dash as nd
 from core import run_index as ri
 from core import run_state as rs
 from core.config import LoopConfig, git_env
@@ -132,6 +134,50 @@ def _unclean(worktree: Path) -> str | None:
     return None
 
 
+# How many dashes the reinjected text names; the command lists them all.
+_DASHES_SHOWN = 5
+
+
+def _dash_base(worktree: Path, state: dict) -> str | None:
+    """What the branch is measured against: origin/HEAD when the repository has
+    one, else the commit the run started on. None for a run started before the
+    loop recorded that commit, in a repository with no origin/HEAD."""
+    try:
+        done = subprocess.run(
+            ["git", "rev-parse", "--verify", "--quiet", "origin/HEAD"],
+            cwd=worktree,
+            env=git_env(),
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=STATUS_TIMEOUT_S,
+        )
+    except (OSError, subprocess.SubprocessError):
+        done = None
+    if done is not None and done.returncode == 0 and done.stdout.strip():
+        return "origin/HEAD"
+    return state.get("start_head")
+
+
+def _dashes(worktree: Path, state: dict) -> str | None:
+    """Why the branch fails the no-unicode-dash rule, or None when it passes."""
+    base = _dash_base(worktree, state)
+    if base is None:
+        return None
+    try:
+        found = nd.gate(worktree, base)
+    except nd.DashError as exc:
+        return f"the no-unicode-dash check could not run ({exc}); fix it first"
+    if not found:
+        return None
+    shown = "\n".join(f"  {v.message()}" for v in found[:_DASHES_SHOWN])
+    more = f"\n  ... and {len(found) - _DASHES_SHOWN} more" if len(found) > _DASHES_SHOWN else ""
+    return (
+        f"the branch adds {len(found)} banned dash(es); run loop-no-dash --base {base} "
+        f"and fix each one, then commit (reword a commit message that holds one)\n{shown}{more}"
+    )
+
+
 _URL_RE = re.compile(r"^https?://\S+$")
 
 
@@ -215,6 +261,9 @@ def _advance(run: rs.Run, state: dict, message: str) -> TurnEndVerdict:
     unclean = _unclean(run.worktree) if stage.clean_tree else None
     if unclean:
         return _no_token(run, state, unclean)
+    dashes = _dashes(run.worktree, state) if stage.clean_tree else None
+    if dashes:
+        return _no_token(run, state, dashes)
     state["history"].append({"at": ri.now_iso(), "event": "done", "stage": stage.name})
     if state["current"] + 1 >= len(config.stages):
         state["status"] = "done"
