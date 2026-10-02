@@ -114,3 +114,27 @@ def start_run(make_repo: Callable[[Path], Path], tmp_path: Path):
         return run, worktree
 
     return start
+
+
+@pytest.fixture
+def github_origin(tmp_path: Path) -> Callable[[Path, str], Path]:
+    """Give ``repo`` the origin ``url`` and serve github.com over HTTPS from disk.
+
+    ``url.<mirror>.insteadOf`` in the repository's own config sends every
+    ``https://github.com/`` fetch to a bare repository under ``tmp_path``, so a
+    test reads origin over "HTTPS" without the network. The SSH form is left as
+    written. Returns the mirror directory.
+    """
+
+    def wire(repo: Path, url: str) -> Path:
+        mirror = tmp_path / "github"
+        bare = mirror / "owner" / "repo.git"
+        if not bare.exists():
+            bare.mkdir(parents=True)
+            _git(bare, "init", "-q", "--bare")
+            _git(repo, "push", "-q", str(bare), "HEAD:refs/heads/main")
+        _git(repo, "config", f"url.{mirror.as_uri()}/.insteadOf", "https://github.com/")
+        _git(repo, "remote", "add", "origin", url)
+        return mirror
+
+    return wire
