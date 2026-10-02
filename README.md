@@ -258,10 +258,15 @@ than the engine. Capability 4 is the only one that degrades.
 ## Commands
 
 The supervisor's tools ship as console entry points, so a runbook calls them by
-name and not by file path. They are operator tools: install them from a checkout
-of this repository. The plugin does not ship them. A path can move; a name is stable. `uv sync` installs them into
-the project environment, and `uv run <name>` runs one. The names share the
-`loop-` prefix so they group together in a shell.
+name and not by file path. A path can move; a name is stable. The plugin puts
+the ones the supervisor skill calls (`loop-scan`, `loop-transcript`,
+`loop-decide`, `loop-card`, `loop-pause-stats` and `loop-prune`) in `bin/`, on
+the agent's `PATH`, so a session runs them by name. From a checkout of this
+repository, `uv sync` installs them all into the project environment, and
+`uv run <name>` runs one. The names share the `loop-` prefix so they group
+together in a shell. The `supervisor` skill in `skills/supervisor/` is the
+routine that drives them: start it with `/loop /delivery-loop:supervisor` in a
+checkout with no active run.
 
 | Command | Does |
 |---|---|
@@ -295,7 +300,8 @@ fails if a name does not resolve to a callable `main`.
 | `hooks/` | The plugin's hook declarations and their one entry point, `pipeline_hook.py`. |
 | `commands/` | The `/delivery-loop:pipeline` slash command. |
 | `skills/pipeline/` | The stage skill and the default stage prompts. |
-| `bin/` | `delivery-loop` and `loop-no-dash`, which the plugin puts on the agent's `PATH`. |
+| `skills/supervisor/` | The supervisor skill and the routine it follows. |
+| `bin/` | `delivery-loop`, `loop-no-dash` and the supervisor's `loop-*` commands, which the plugin puts on the agent's `PATH`. |
 | `templates/` | `loop.toml`, the per-repo configuration a host repo fills in. |
 | `docs/` | The contract and the operator runbooks. |
 | `scripts/` | Developer checks: the steps CI runs and the edit-time ruff hook. |
