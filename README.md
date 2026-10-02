@@ -260,10 +260,15 @@ than the engine. Capability 4 is the only one that degrades.
 ## Commands
 
 The supervisor's tools ship as console entry points, so a runbook calls them by
-name and not by file path. They are operator tools: install them from a checkout
-of this repository. The plugin does not ship them. A path can move; a name is stable. `uv sync` installs them into
-the project environment, and `uv run <name>` runs one. The names share the
-`loop-` prefix so they group together in a shell.
+name and not by file path. A path can move; a name is stable. The plugin puts
+the ones the supervisor skill calls (`loop-scan`, `loop-transcript`,
+`loop-decide`, `loop-card`, `loop-ledger`, `loop-pause-stats` and `loop-prune`) in `bin/`, on
+the agent's `PATH`, so a session runs them by name. From a checkout of this
+repository, `uv sync` installs them all into the project environment, and
+`uv run <name>` runs one. The names share the `loop-` prefix so they group
+together in a shell. The `supervisor` skill in `skills/supervisor/` is the
+routine that drives them: start it with `/loop /delivery-loop:supervisor` in a
+checkout with no active run.
 
 | Command | Does |
 |---|---|
@@ -271,6 +276,7 @@ the project environment, and `uv run <name>` runs one. The names share the
 | `loop-decide` | Reads one scan record and prints the decision for that run. |
 | `loop-card` | Renders one run's pause as the decision card a person reads. |
 | `loop-card-check` | Checks that a pause question carries the required card shape. |
+| `loop-ledger` | The supervisor's lock and notification ledger: `lock` and `unlock` one supervisor per repository, `check` whether a pause was already notified, `record` a notification. |
 | `loop-pause-stats` | Counts the pauses in a scan by category. |
 | `loop-prune` | Lists the runs whose worktree is gone, and deletes them and their index entries with `--yes`. |
 | `loop-transcript` | Reads the pending question out of one harness session. |
@@ -304,6 +310,8 @@ fails if a name does not resolve to a callable `main`.
 | `bin/` | `delivery-loop`, `loop-no-dash` and `loop-comments`, which the plugin puts on the agent's `PATH`. |
 | `bin/` | `delivery-loop`, `loop-no-dash` and `loop-complexity`, which the plugin puts on the agent's `PATH`. |
 | `bin/` | `delivery-loop`, `loop-no-dash`, `loop-pr-body` and `loop-pr-decisions`, which the plugin puts on the agent's `PATH`. |
+| `skills/supervisor/` | The supervisor skill and the routine it follows. |
+| `bin/` | `delivery-loop`, `loop-no-dash` and the supervisor's `loop-*` commands, which the plugin puts on the agent's `PATH`. |
 | `templates/` | `loop.toml`, the per-repo configuration a host repo fills in. |
 | `docs/` | The contract and the operator runbooks. |
 | `scripts/` | Developer checks: the steps CI runs and the edit-time ruff hook. |
