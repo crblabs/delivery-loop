@@ -285,6 +285,7 @@ checkout with no active run.
 | `loop-complexity` | Fails when a function the diff adds or changes is over the cyclomatic bar (10) or the length bar (60 statements, tests exempt), or grew past its recorded number. A ratchet: existing code is listed, with its numbers, in `.complexity-baseline.json` in the host repository, and that list may only shrink. The file also holds the bars, the directories to scan and which files are tests. The plugin also ships it in `bin/`. |
 | `loop-pr-body` | Fails when a pull request body lacks a required level-2 section. The host repository names the sections in `.pr-sections` at its root, one per line, or with `--sections`. With neither, it passes. A heading inside a code block or an HTML comment does not count. The plugin also ships it in `bin/`, and the ship stage runs it. |
 | `loop-pr-decisions` | Reads a JSON array of decisions on stdin and prints the pull request's `## Decisions` section, one line per decision, or `None`. The plugin also ships it in `bin/`, and the ship stage runs it. |
+| `loop-pre-push` | The git pre-push hook. It runs the rules the Stop hook enforces on every pushed branch: `loop-no-dash` on the added lines and the pushed commit messages, and `loop-comments` and `loop-complexity` when their policy files are in the pushed commit. Install it as `.git/hooks/pre-push` with `exec loop-pre-push "$@"`, after `uv tool install` of this repository puts the commands on your `PATH`. |
 
 Every run's state lives outside the repository, under `~/.delivery-loop`, in
 `runs/<owner>-<repo>/<worktree>-<hash>/`, and the run index the hooks find a run
@@ -308,7 +309,7 @@ fails if a name does not resolve to a callable `main`.
 | `commands/` | The `/delivery-loop:pipeline` slash command. |
 | `skills/pipeline/` | The stage skill and the default stage prompts. |
 | `skills/supervisor/` | The supervisor skill and the routine it follows. |
-| `bin/` | `delivery-loop`, the check commands (`loop-no-dash`, `loop-comments`, `loop-complexity`, `loop-pr-body`, `loop-pr-decisions`) and the supervisor's `loop-*` commands, which the plugin puts on the agent's `PATH`. |
+| `bin/` | `delivery-loop`, the check commands (`loop-no-dash`, `loop-comments`, `loop-complexity`, `loop-pr-body`, `loop-pr-decisions`, `loop-pre-push`) and the supervisor's `loop-*` commands, which the plugin puts on the agent's `PATH`. |
 | `templates/` | `loop.toml`, the per-repo configuration a host repo fills in. |
 | `docs/` | The contract and the operator runbooks. |
 | `scripts/` | Developer checks: the steps CI runs and the edit-time ruff hook. |

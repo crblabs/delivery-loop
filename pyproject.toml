@@ -19,6 +19,7 @@ loop-comments = "core.comments_gate:main"
 loop-complexity = "core.complexity_gate:main"
 loop-pr-body = "core.pr_body:main"
 loop-pr-decisions = "core.pr_decisions:main"
+loop-pre-push = "core.pre_push:main"
 
 [dependency-groups]
 dev = [
