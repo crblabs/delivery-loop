@@ -308,7 +308,7 @@ def _origin(git, worktree: Path) -> str:
 
 
 def test_start_leaves_origin_alone_by_default(
-    make_repo, git, github_origin, tmp_path: Path, monkeypatch
+    make_repo, stage_skills, git, github_origin, tmp_path: Path, monkeypatch
 ) -> None:
     # Value: protects=a host whose SSH works keeps its origin; fails_when=start rewrites
     # origin without push_transport set; why_new=push_transport is opt-in; seam=none
@@ -320,7 +320,7 @@ def test_start_leaves_origin_alone_by_default(
 
 
 def test_start_reroutes_origin_to_https_when_opted_in(
-    make_repo, git, github_origin, tmp_path: Path, monkeypatch
+    make_repo, stage_skills, git, github_origin, tmp_path: Path, monkeypatch
 ) -> None:
     # Value: protects=the last stage's push goes over HTTPS; fails_when=start ignores
     # push_transport or rewrites after the guard baseline; why_new=ported preflight; seam=none
@@ -337,7 +337,7 @@ def test_start_reroutes_origin_to_https_when_opted_in(
 
 
 def test_start_refuses_when_origin_cannot_be_rerouted(
-    make_repo, git, tmp_path: Path, monkeypatch, capsys
+    make_repo, stage_skills, git, tmp_path: Path, monkeypatch, capsys
 ) -> None:
     worktree = make_repo(tmp_path / "host")
     git(worktree, "remote", "add", "origin", "git@gitlab.com:owner/repo.git")

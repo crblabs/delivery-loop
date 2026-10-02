@@ -307,11 +307,8 @@ fails if a name does not resolve to a callable `main`.
 | `hooks/` | The plugin's hook declarations and their one entry point, `pipeline_hook.py`. |
 | `commands/` | The `/delivery-loop:pipeline` slash command. |
 | `skills/pipeline/` | The stage skill and the default stage prompts. |
-| `bin/` | `delivery-loop`, `loop-no-dash` and `loop-comments`, which the plugin puts on the agent's `PATH`. |
-| `bin/` | `delivery-loop`, `loop-no-dash` and `loop-complexity`, which the plugin puts on the agent's `PATH`. |
-| `bin/` | `delivery-loop`, `loop-no-dash`, `loop-pr-body` and `loop-pr-decisions`, which the plugin puts on the agent's `PATH`. |
 | `skills/supervisor/` | The supervisor skill and the routine it follows. |
-| `bin/` | `delivery-loop`, `loop-no-dash` and the supervisor's `loop-*` commands, which the plugin puts on the agent's `PATH`. |
+| `bin/` | `delivery-loop`, the check commands (`loop-no-dash`, `loop-comments`, `loop-complexity`, `loop-pr-body`, `loop-pr-decisions`) and the supervisor's `loop-*` commands, which the plugin puts on the agent's `PATH`. |
 | `templates/` | `loop.toml`, the per-repo configuration a host repo fills in. |
 | `docs/` | The contract and the operator runbooks. |
 | `scripts/` | Developer checks: the steps CI runs and the edit-time ruff hook. |
