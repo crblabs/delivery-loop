@@ -152,6 +152,12 @@ def _refuse_empty(name: str, value: object) -> None:
         raise ConfigError(f"{name} may not be empty")
 
 
+def _refuse_multiline(name: str, value: object) -> None:
+    # A draft's front matter holds one value per line, so a name must fit on one.
+    if not isinstance(value, str) or "\n" in value or "\r" in value:
+        raise ConfigError(f"{name} takes a one-line string, got {value!r}")
+
+
 def _refuse_unsafe(name: str, value: str) -> None:
     """Refuse an absolute path and one that climbs out of the repository root."""
     if value.startswith("/") or value.startswith("~"):
@@ -246,6 +252,10 @@ DEFAULT_STAGES = (
 )
 
 
+# The tracker names an issue draft inherits when it names none.
+_TRACKER_NAMES = ("tracker_team", "tracker_project", "tracker_milestone")
+
+
 @dataclass(frozen=True)
 class LoopConfig:
     """Every value the loop takes from its host, with neutral defaults.
@@ -263,7 +273,10 @@ class LoopConfig:
     ``resume_command`` and ``abort_command`` are the operator commands a card
     quotes, and ``tracker_prefix`` with ``tracker_pattern`` recognise an issue
     identifier in a worktree name. ``tracker_prefix`` is a regular expression
-    fragment; the default matches any run of letters. ``push_transport`` is one
+    fragment; the default matches any run of letters. ``tracker_team``,
+    ``tracker_project`` and ``tracker_milestone`` are the names an issue draft
+    inherits when it names none; empty means the draft must name its own.
+    ``push_transport`` is one
     of ``PUSH_TRANSPORTS``: empty leaves ``origin`` as it is, ``https`` makes
     start reroute a GitHub SSH origin to HTTPS before the run.
     ``check_comments`` and ``check_complexity`` say whether a ``clean_tree``
@@ -301,6 +314,9 @@ class LoopConfig:
     abort_command: str = "/delivery-loop:pipeline abort"
     tracker_prefix: str = "[A-Za-z]+"
     tracker_pattern: str = r"({tracker_prefix}-\d+)"
+    tracker_team: str = ""
+    tracker_project: str = ""
+    tracker_milestone: str = ""
     push_transport: str = ""
     check_comments: bool = True
     check_complexity: bool = True
@@ -323,6 +339,8 @@ class LoopConfig:
             raise ConfigError(f"state_file names one file, not a path: {self.state_file!r}")
         self._expand()
         self._validate()
+        for name in _TRACKER_NAMES:
+            _refuse_multiline(name, getattr(self, name))
 
     def _expand(self) -> None:
         stem = PurePosixPath(self.state_file).stem
@@ -472,6 +490,9 @@ _STRING_KEYS = (
     ("abort_command", "commands", "abort"),
     ("tracker_prefix", "tracker", "prefix"),
     ("tracker_pattern", "tracker", "pattern"),
+    ("tracker_team", "tracker", "team"),
+    ("tracker_project", "tracker", "project"),
+    ("tracker_milestone", "tracker", "milestone"),
     ("push_transport", "repo", "push_transport"),
 )
 _BOOL_KEYS = (

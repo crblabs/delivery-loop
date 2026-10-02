@@ -64,6 +64,14 @@ _REPO_OBJECTS = (
     "contents",
     "tree",
 )
+# A Linear MCP tool that writes to the tracker: an issue, a comment, a project,
+# a label, a document. Its reads (get, list, search) pass. During a run every
+# write is denied: loop-issue is the one write path, and only outside a run.
+_MCP_TRACKER_WRITE_RE = re.compile(
+    r"^mcp__.*linear.*__(save|create|delete|update|share|unshare|merge|retire|restore|submit"
+    r"|resolve|mark|prepare|archive|unarchive|add|remove|set|move|assign|link|unlink)_",
+    re.I,
+)
 # The input fields that name the branch a code host's write goes to.
 _BRANCH_FIELDS = ("branch", "head")
 # An MCP tool whose name says it writes, and the input fields that name a path.
@@ -111,17 +119,22 @@ def context_json(text: str) -> str:
 
 
 def kind_of(tool_name: object) -> str:
-    """``edit`` for a tool that writes a file, ``shell`` for Bash, else ``other``."""
+    """``edit`` for a tool that writes a file, ``shell`` for Bash, ``tracker`` for
+    an issue tracker's write, ``publish`` for a code host's write, else ``other``."""
     if tool_name in EDIT_TOOLS:
         return "edit"
     if tool_name == "Bash":
         return "shell"
-    if isinstance(tool_name, str) and _MCP_HOST_RE.match(tool_name):
+    if not isinstance(tool_name, str):
+        return "other"
+    if _MCP_TRACKER_WRITE_RE.match(tool_name):
+        return "tracker"
+    if _MCP_HOST_RE.match(tool_name):
         words = [w.lower() for w in _WORD_RE.findall(tool_name.rsplit("__", 1)[-1])]
         read = bool(words) and (words[0] in _READ_VERBS or words[-1] in _READ_VERBS)
         if not read and any(w in _REPO_OBJECTS for w in words):
             return "publish"
-    if isinstance(tool_name, str) and _MCP_WRITE_RE.match(tool_name):
+    if _MCP_WRITE_RE.match(tool_name):
         return "edit"
     return "other"
 
@@ -251,7 +264,7 @@ def old_python_hook(kind: str, payload: dict) -> dict | None:
             any(a[:1] == ["push"] for a in ri.git_calls(command))
             or any(a[:2] == ["pr", "merge"] or a[:1] == ["api"] for a in ri.gh_calls(command))
         )
-        if kind_of(tool) in ("edit", "publish") or publishes:
+        if kind_of(tool) in ("edit", "publish", "tracker") or publishes:
             return {"deny": ri.old_python_message()}
         return None
     if payload.get("stop_hook_active") is True:

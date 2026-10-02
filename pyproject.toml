@@ -20,6 +20,8 @@ loop-complexity = "core.complexity_gate:main"
 loop-pr-body = "core.pr_body:main"
 loop-pr-decisions = "core.pr_decisions:main"
 loop-pre-push = "core.pre_push:main"
+loop-impact = "core.impact:main"
+loop-issue = "core.issue_writer:main"
 
 [dependency-groups]
 dev = [
