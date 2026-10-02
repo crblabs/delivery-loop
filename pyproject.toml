@@ -16,6 +16,8 @@ loop-transcript = "adapters.claude_code.supervisor_transcript:main"
 loop-no-dash = "core.no_unicode_dash:main"
 loop-comments = "core.comments_gate:main"
 loop-complexity = "core.complexity_gate:main"
+loop-pr-body = "core.pr_body:main"
+loop-pr-decisions = "core.pr_decisions:main"
 
 [dependency-groups]
 dev = [
