@@ -59,6 +59,8 @@ import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 
+from core.config import git_env
+
 RULE_ID = "no-unicode-dash"
 EXCEPTIONS_PATH = ".dash-exceptions.json"
 
@@ -218,7 +220,7 @@ def _git(root: Path, *args: str) -> str:
     # leading '+', letting a dash after the CR escape the parser. surrogateescape
     # keeps a non-UTF-8 byte rather than crashing; core.quotepath=false keeps a
     # non-ASCII path literal.
-    proc = subprocess.run(["git", *args], cwd=root, capture_output=True, check=False)
+    proc = subprocess.run(["git", *args], cwd=root, env=git_env(), capture_output=True, check=False)
     if proc.returncode != 0:
         raise DashError(
             f"git {' '.join(args)} failed: {proc.stderr.decode('utf-8', 'replace').strip()}"
@@ -236,12 +238,21 @@ def _show(root: Path, rev: str, relpath: str) -> tuple[bool, str]:
     failure that is not 'path missing' raises, so an unreadable object is a
     fault rather than a false 'absent'."""
     proc = subprocess.run(
-        ["git", "cat-file", "-e", f"{rev}:{relpath}"], cwd=root, capture_output=True, text=True
+        ["git", "cat-file", "-e", f"{rev}:{relpath}"],
+        cwd=root,
+        env=git_env(),
+        capture_output=True,
+        text=True,
     )
     if proc.returncode != 0:
         return (False, "")
     got = subprocess.run(
-        ["git", "show", f"{rev}:{relpath}"], cwd=root, capture_output=True, text=True, check=False
+        ["git", "show", f"{rev}:{relpath}"],
+        cwd=root,
+        env=git_env(),
+        capture_output=True,
+        text=True,
+        check=False,
     )
     if got.returncode != 0:
         raise DashError(f"{rev}:{relpath}: exists but is unreadable ({got.stderr.strip()})")
@@ -254,6 +265,7 @@ def base_revision(root: Path, base_ref: str, head: str | None) -> str:
     proc = subprocess.run(
         ["git", "merge-base", base_ref, head or "HEAD"],
         cwd=root,
+        env=git_env(),
         capture_output=True,
         text=True,
     )
@@ -421,6 +433,27 @@ def check_text(text: str, path: str | None = None) -> list[Violation]:
         for col, cp in dashes_in_text(line):
             out.append(Violation(path or "<input>", i, col, cp))
     return out
+
+
+def commit_messages(root: Path, base_rev: str, head: str) -> list[Violation]:
+    """Banned dashes in the message of every commit after `base_rev` up to
+    `head`. A merge commit is skipped: git writes its message, not the author.
+    Each violation is labeled with the commit's short hash."""
+    out = _git(root, "log", "--no-merges", "-z", "--format=%h%n%B", f"{base_rev}..{head}")
+    found: list[Violation] = []
+    for record in (r for r in out.split("\0") if r.strip()):
+        sha, _, body = record.lstrip("\n").partition("\n")
+        found.extend(check_text(body, f"commit {sha} message"))
+    return found
+
+
+def gate(root: Path, base_ref: str, exceptions: str = EXCEPTIONS_PATH) -> list[Violation]:
+    """What the loop checks before it lets a stage end: every line the branch
+    adds up to HEAD, and every commit message since the base. A fault raises
+    `DashError`, so the caller fails closed."""
+    head = "HEAD"
+    found = scan_range(root, base_ref, head, exceptions)
+    return found + commit_messages(root, base_revision(root, base_ref, head), head)
 
 
 # ------------------------------------------------------------- audit

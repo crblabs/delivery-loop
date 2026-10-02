@@ -182,6 +182,9 @@ def _initial_state(
         "task": task,
         "repo": repo,
         "branch": detect_branch(worktree),
+        # The commit the run started on: the base of the dash check when the
+        # repository has no origin/HEAD to measure the branch against.
+        "start_head": _git(worktree, "rev-parse", "HEAD"),
         "worktree": str(worktree),
         "stages": names,
         "current": 0,
