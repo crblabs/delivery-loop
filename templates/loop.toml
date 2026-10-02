@@ -149,7 +149,8 @@ abort = "/delivery-loop:pipeline abort"
 #                 phrase. Empty means it leaves nothing the next stage reads.
 #   clean_tree    false. True when the stage's finishing token is only accepted
 #                 over a committed worktree whose branch adds no en dash or em
-#                 dash (see loop-no-dash).
+#                 dash (see loop-no-dash), and passes loop-comments and
+#                 loop-complexity when their policy files are committed.
 #   gate          "none". Whether the stage stops for a person: "none" never,
 #                 "approval" at an approval question, "review_batch" at a batch
 #                 of review questions. Nothing else is accepted.

@@ -9,5 +9,11 @@ a new sentence, then run it again. Check each commit message the same way before
 you commit:
 `loop-no-dash --stdin-text --label "commit message" < <message file>`.
 
+If the repository has `.comments-policy.json` at its root, also run
+`loop-comments --base origin/<base branch>` before each commit. If it has
+`.complexity-baseline.json`, also run
+`loop-complexity --base origin/<base branch>`. Fix what each one names. The
+stage cannot end while one of them fails.
+
 The stage ends over a clean worktree. If a bug needs a product decision, stop
 for a person with a decision card.

@@ -522,3 +522,45 @@ def test_the_dash_base_is_origin_head_when_the_repository_has_one(
     assert te._dash_base(clone, {"start_head": "abc"}) == "origin/HEAD"
     assert te._dash_base(origin, {"start_head": "abc"}) == "abc"
     assert te._dash_base(origin, {}) is None
+
+
+LONG_COMMENT = "# one\n# two\n# three\n# four\nx = 1\n"
+BRANCHY = "def f(a):\n" + "".join(f"    if a == {i}:\n        return {i}\n" for i in range(11))
+
+
+def _commit_file(git, worktree: Path, name: str, text: str) -> None:
+    (worktree / name).write_text(text, encoding="utf-8")
+    git(worktree, "add", name)
+    git(worktree, "commit", "-q", "-m", f"add {name}")
+
+
+def test_the_comment_rule_binds_only_a_host_that_opted_in(make_repo, tmp_path: Path, git) -> None:
+    # Value: protects=a host keeps its own comment style unless it asks for the rule;
+    # fails_when=the hook gates every host, or ignores one that opted in; why_new=port; seam=none
+    worktree = make_repo(tmp_path / "plain")
+    run, _ = rs.start(worktree, "CRB-1", _two_stages(), "s1")
+    _commit_file(git, worktree, "a.py", LONG_COMMENT)
+    assert _end(run, DONE).reinject.startswith("Stage 2/2: ship")
+
+    worktree = make_repo(tmp_path / "strict")
+    _commit_file(git, worktree, ".comments-policy.json", "{}\n")
+    run, _ = rs.start(worktree, "CRB-1", _two_stages(), "s2")
+    _commit_file(git, worktree, "a.py", LONG_COMMENT)
+    verdict = _end(run, DONE, session="s2")
+    assert verdict.block and "loop-comments found" in verdict.reinject
+    assert "a.py:1" in verdict.reinject
+    assert _state(run)["current_stage"] == "implement"
+
+
+def test_the_complexity_rule_binds_a_host_with_a_baseline(make_repo, tmp_path: Path, git) -> None:
+    from core import complexity_gate as cx
+
+    worktree = make_repo(tmp_path / "host")
+    assert cx.update_baseline(worktree) == 0
+    git(worktree, "add", cx.BASELINE_PATH)
+    git(worktree, "commit", "-q", "-m", "baseline")
+    run, _ = rs.start(worktree, "CRB-1", _two_stages(), "s1")
+    _commit_file(git, worktree, "b.py", BRANCHY)
+    verdict = _end(run, DONE)
+    assert verdict.block and "loop-complexity found" in verdict.reinject
+    assert "b.py" in verdict.reinject
