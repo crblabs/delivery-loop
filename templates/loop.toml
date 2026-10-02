@@ -220,8 +220,12 @@ gate = "none"
 # prefix = "[A-Za-z]+"
 # pattern = "({tracker_prefix}-\\d+)"
 
-# Not read yet. The tracker team, project and milestone the loop files and
-# updates work against, named as the tracker itself shows them.
+# The team, project and milestone an issue draft inherits when it names none,
+# written as the tracker itself shows them. `loop-issue` reads them; empty
+# means every draft names its own. A draft's own `team:`, `project:` or
+# `milestone:` line wins over these. The reference rule also reads `prefix`
+# and `pattern` above: a token that starts like an issue id must match the
+# pattern whole.
 # team = ""
 # project = ""
 # milestone = ""

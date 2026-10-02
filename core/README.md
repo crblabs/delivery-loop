@@ -24,7 +24,10 @@ against the loop's own vocabulary, never a harness's.
 - **The ledger.** The append-only record of what the loop and the supervisor
   did, for audit and for replay.
 - **The tracker write path.** The single place that writes to the issue
-  tracker, so tracker access is one seam and not scattered.
+  tracker, so tracker access is one seam and not scattered: `issue_draft.py`
+  holds the draft rules, the audit and the `Tracker` protocol, and
+  `issue_writer.py` is `loop-issue`. One adapter per tracker implements the
+  protocol, under `adapters/`.
 - **The configuration seam.** `config.py`: one frozen `LoopConfig` holding
   every value that names the harness or the tracker, and the loader that merges
   the repository `loop.toml` and the user file over it.

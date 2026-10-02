@@ -453,6 +453,27 @@ def test_a_tracker_pattern_that_does_not_compile_is_refused(tmp_path: Path) -> N
         cfg.load_config(write(tmp_path, '[tracker]\npattern = "(unclosed"\n'))
 
 
+def test_the_tracker_names_a_draft_inherits_are_read(tmp_path: Path) -> None:
+    # Value: protects=loop-issue fills a draft's team, project and milestone from loop.toml;
+    # fails_when=the keys stay unread and every draft must repeat them; why_new=issue writer
+    d = cfg.DEFAULTS
+    assert (d.tracker_team, d.tracker_project, d.tracker_milestone) == ("", "", "")
+    text = '[tracker]\nteam = "Platform"\nproject = "Q4 work"\nmilestone = "Beta"\n'
+    config = cfg.load_config(write(tmp_path, text))
+    assert (config.tracker_team, config.tracker_project, config.tracker_milestone) == (
+        "Platform",
+        "Q4 work",
+        "Beta",
+    )
+    assert cfg.from_dict(cfg.to_dict(config)) == config
+
+
+@pytest.mark.parametrize("value", ["3", '"two\\nlines"'])
+def test_a_tracker_name_that_is_not_one_line_of_text_is_refused(tmp_path: Path, value: str) -> None:
+    with pytest.raises(cfg.ConfigError):
+        cfg.load_config(write(tmp_path, f"[tracker]\nteam = {value}\n"))
+
+
 def test_a_state_file_that_is_a_path_is_refused(tmp_path: Path) -> None:
     with pytest.raises(cfg.ConfigError):
         cfg.load_config(write(tmp_path, '[harness]\nstate_file = "a/b.json"\n'))

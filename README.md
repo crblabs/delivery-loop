@@ -148,7 +148,13 @@ tool that writes to the remote (a GitHub, GitLab, Bitbucket or Gitea server's
 tools that name files, branches, commits, releases or pull requests, other
 than its `get`, `list`, `search` and `read` tools) is allowed only in the stage
 that opens the pull request, only for the run's own branch, and a `merge` tool
-never.
+never. A Linear MCP tool that writes (it saves, creates, updates or deletes an
+issue, a comment, a project or a label) is denied in every stage: a run writes
+only to its worktree and its pull request. The agent writes the issue as a
+draft, checks it with `loop-issue DRAFT.md` and puts it in the pull request
+body, and a person files it after the run. Linear's reads pass. Outside a run
+the plugin leaves Linear alone, because it is installed per developer and a
+person's own tracker writes are not the loop's to judge.
 An MCP tool that writes under another name is not checked.
 
 A shell command is not checked before it runs, with three exceptions, and all
@@ -285,6 +291,7 @@ checkout with no active run.
 | `loop-complexity` | Fails when a function the diff adds or changes is over the cyclomatic bar (10) or the length bar (60 statements, tests exempt), or grew past its recorded number. A ratchet: existing code is listed, with its numbers, in `.complexity-baseline.json` in the host repository, and that list may only shrink. The file also holds the bars, the directories to scan and which files are tests. The plugin also ships it in `bin/`. |
 | `loop-pr-body` | Fails when a pull request body lacks a required level-2 section. The host repository names the sections in `.pr-sections` at its root, one per line, or with `--sections`. With neither, it passes. A heading inside a code block or an HTML comment does not count. The plugin also ships it in `bin/`, and the ship stage runs it. |
 | `loop-pr-decisions` | Reads a JSON array of decisions on stdin and prints the pull request's `## Decisions` section, one line per decision, or `None`. The plugin also ships it in `bin/`, and the ship stage runs it. |
+| `loop-issue` | Lints an issue draft and writes it to the tracker: `loop-issue DRAFT.md` lints (rules I1 to I8: title, blocks, 120 words, no long dash, project, milestone, priority, team and well-formed issue ids), `--apply` creates the issue, `--update` updates the one its `issue:` line names. `--audit` counts the gaps in every active issue and project (P1 to P4) against a ratchet in `.issue-audit-baseline.json`, and `--update-baseline` seeds or lowers it. A draft inherits `[tracker] team`, `project` and `milestone` from `loop.toml`. `--tracker linear` is the default and the only adapter; it reads `LINEAR_API_KEY`. A write is refused during a run. `templates/issue-audit.yml` runs the audit weekly. The plugin also ships it in `bin/`. |
 | `loop-pre-push` | The git pre-push hook. It runs the rules the Stop hook enforces on every pushed branch: `loop-no-dash` on the added lines and the pushed commit messages, and `loop-comments` and `loop-complexity` unless `[checks]` turns them off. Install it as `.git/hooks/pre-push` with `exec loop-pre-push "$@"`, after `uv tool install` of this repository puts the commands on your `PATH`. |
 
 Every run's state lives outside the repository, under `~/.delivery-loop`, in
@@ -304,13 +311,14 @@ fails if a name does not resolve to a callable `main`.
 |---|---|
 | `core/` | The stage machine and everything harness-neutral. |
 | `adapters/claude_code/` | The adapter for one harness: its hooks, CLI and transcript reader. |
+| `adapters/linear/` | The adapter for one issue tracker: the Linear client `loop-issue` writes and audits through. |
 | `.claude-plugin/` | The plugin manifest and the `crblabs` marketplace that lists it. |
 | `hooks/` | The plugin's hook declarations and their one entry point, `pipeline_hook.py`. |
 | `commands/` | The `/delivery-loop:pipeline` slash command. |
 | `skills/pipeline/` | The stage skill and the default stage prompts. |
 | `skills/supervisor/` | The supervisor skill and the routine it follows. |
-| `bin/` | `delivery-loop`, the check commands (`loop-no-dash`, `loop-comments`, `loop-complexity`, `loop-pr-body`, `loop-pr-decisions`, `loop-pre-push`) and the supervisor's `loop-*` commands, which the plugin puts on the agent's `PATH`. |
-| `templates/` | `loop.toml`, the per-repo configuration a host repo fills in. |
+| `bin/` | `delivery-loop`, the check commands (`loop-no-dash`, `loop-comments`, `loop-complexity`, `loop-pr-body`, `loop-pr-decisions`, `loop-pre-push`), the issue writer `loop-issue` and the supervisor's `loop-*` commands, which the plugin puts on the agent's `PATH`. |
+| `templates/` | `loop.toml`, the per-repo configuration a host repo fills in, and `issue-audit.yml`, the weekly tracker audit a host copies into `.github/workflows/`. |
 | `docs/` | The contract and the operator runbooks. |
 | `scripts/` | Developer checks: the steps CI runs and the edit-time ruff hook. |
 
