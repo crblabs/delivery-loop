@@ -93,6 +93,7 @@ def test_the_guard_sees_every_tool_that_can_edit_or_resume() -> None:
 def test_the_cli_and_the_hooks_are_executable() -> None:
     for rel in (
         "bin/delivery-loop",
+        "bin/loop-no-dash",
         "hooks/pipeline_hook.py",
     ):
         assert os.access(ROOT / rel, os.X_OK), rel
