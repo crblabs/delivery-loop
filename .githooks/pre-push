@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# Run CI's checks before a push, so a lint or test failure is caught here, not
+# on the pull request. Install it as the README says.
+exec "$(git rev-parse --show-toplevel)/scripts/check.sh"

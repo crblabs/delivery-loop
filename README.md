@@ -297,15 +297,28 @@ fails if a name does not resolve to a callable `main`.
 | `bin/` | `delivery-loop`, which the plugin puts on the agent's `PATH`. |
 | `templates/` | `loop.toml`, the per-repo configuration a host repo fills in. |
 | `docs/` | The contract and the operator runbooks. |
+| `scripts/` | Developer checks: the steps CI runs and the edit-time ruff hook. |
 
 Each directory carries a `README.md` or a docstring saying what belongs in it
 and what does not.
 
 ## Developing this repository
 
-`uv sync` installs the dev tools; `uv run pytest -q`, `uv run ruff check .` and
-`uv run ruff format --check .` are the checks CI runs, on Python 3.11, 3.12 and
-3.13.
+`uv sync` installs the dev tools. `scripts/check.sh` runs the checks CI runs
+(tests, lint, format and the house rules), the same script CI calls on Python
+3.11, 3.12 and 3.13; name steps to run only those (`scripts/check.sh lint
+format`).
+
+To run it before every push, install the hook once per clone:
+
+```
+git config core.hooksPath .githooks
+```
+
+If you already have a pre-push hook, call `.githooks/pre-push` from it instead.
+A Claude Code session in this repository also formats and lints each Python
+file an edit tool writes (`.claude/settings.json`, `scripts/ruff-on-edit.sh`),
+so ruff's findings come back in the same turn.
 
 To try the plugin from a checkout without installing it, start Claude Code with
 `claude --plugin-dir .`. A local marketplace works too:
