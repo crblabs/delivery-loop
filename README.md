@@ -318,10 +318,8 @@ fails if a name does not resolve to a callable `main`.
 | `commands/` | The `/delivery-loop:pipeline` slash command. |
 | `skills/pipeline/` | The stage skill and the default stage prompts. |
 | `skills/supervisor/` | The supervisor skill and the routine it follows. |
-| `bin/` | `delivery-loop`, the check commands (`loop-no-dash`, `loop-comments`, `loop-complexity`, `loop-pr-body`, `loop-pr-decisions`, `loop-pre-push`, `loop-impact`) and the supervisor's `loop-*` commands, which the plugin puts on the agent's `PATH`. |
-| `templates/` | `loop.toml`, the per-repo configuration a host repo fills in, and `zones.toml`, an example zone map for `loop-impact`. |
-| `bin/` | `delivery-loop`, the check commands (`loop-no-dash`, `loop-comments`, `loop-complexity`, `loop-pr-body`, `loop-pr-decisions`, `loop-pre-push`), the issue writer `loop-issue` and the supervisor's `loop-*` commands, which the plugin puts on the agent's `PATH`. |
-| `templates/` | `loop.toml`, the per-repo configuration a host repo fills in, and `issue-audit.yml`, the weekly tracker audit a host copies into `.github/workflows/`. |
+| `bin/` | `delivery-loop`, the check commands (`loop-no-dash`, `loop-comments`, `loop-complexity`, `loop-pr-body`, `loop-pr-decisions`, `loop-pre-push`, `loop-impact`), the issue writer `loop-issue` and the supervisor's `loop-*` commands, which the plugin puts on the agent's `PATH`. |
+| `templates/` | `loop.toml`, the per-repo configuration a host repo fills in, `zones.toml`, an example zone map for `loop-impact`, and `issue-audit.yml`, the weekly tracker audit a host copies into `.github/workflows/`. |
 | `docs/` | The contract and the operator runbooks. |
 | `scripts/` | Developer checks: the steps CI runs and the edit-time ruff hook. |
 
