@@ -18,15 +18,13 @@ stops fixing after three cycles, so they are listed here.
 - **Bitbucket's `bb_add_pr` is not seen as a write.** `pr`, `prs`, `mr`, `mrs`
   are not repository objects. Add them once the read fix above is in, so
   `bb_get_pr` stays a read.
-- **Self-resume forms the early refusal misses.** `delivery-loop --sess abc
-  resume` (argparse accepts the abbreviation), `eval "delivery-loop resume"`,
-  `bash <<<"delivery-loop resume"`, `printf ... | sh`. The same abbreviation
-  hides a start from the intent. Fix: `allow_abbrev=False` in
-  `adapters/claude_code/cli.py`'s parser, and scan quoted words of `eval`,
-  `sh`, `bash` segments. The CLI's terminal check still refuses both.
-- **A heredoc commit message that mentions `delivery-loop resume` is refused.**
-  `git commit -m "$(cat <<'EOF' ... EOF)"`: `_nested` scans the heredoc body as
-  commands. Fix: drop heredoc bodies before scanning `$(...)` text.
+- **Text that mentions `delivery-loop resume` is refused when it holds `$(`,
+  a backtick or a quoted heredoc.** `git commit -m "$(cat <<'EOF' ... EOF)"`,
+  `git commit -m 'use \`delivery-loop resume\` in a terminal'`,
+  `gh pr create --body '...'` with the same text, and `cat > f <<'EOF'` with
+  the call in its body: `_nested` scans `$(...)` and backtick text inside
+  single quotes, and heredoc bodies, as commands. Fix: track quote state when
+  finding `$(`/backtick bodies, and drop quoted heredoc bodies before scanning.
   File: `core/run_index.py`.
 
 ## Guard what a shell command can reach outside the worktree
