@@ -15,6 +15,7 @@ loop-prune = "core.supervisor_prune:main"
 loop-transcript = "adapters.claude_code.supervisor_transcript:main"
 loop-no-dash = "core.no_unicode_dash:main"
 loop-comments = "core.comments_gate:main"
+loop-complexity = "core.complexity_gate:main"
 
 [dependency-groups]
 dev = [

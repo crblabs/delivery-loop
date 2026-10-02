@@ -95,6 +95,7 @@ def test_the_cli_and_the_hooks_are_executable() -> None:
         "bin/delivery-loop",
         "bin/loop-no-dash",
         "bin/loop-comments",
+        "bin/loop-complexity",
         "hooks/pipeline_hook.py",
     ):
         assert os.access(ROOT / rel, os.X_OK), rel

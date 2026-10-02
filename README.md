@@ -274,6 +274,7 @@ the project environment, and `uv run <name>` runs one. The names share the
 | `loop-transcript` | Reads the pending question out of one harness session. |
 | `loop-no-dash` | Fails when a line the diff adds, a commit message or a PR body holds an en dash, an em dash, a figure dash or a horizontal bar. Exceptions and excluded directories live in `.dash-exceptions.json` in the host repository. The plugin also ships it in `bin/`, and the implement, qa, review and ship stages run it. |
 | `loop-comments` | Fails when a line the diff adds to a Python file breaks comment hygiene: a comment block or a private docstring over three lines, a ticket or PR id in a comment or docstring, commented-out code (when `ruff` is on `PATH`), or more than one comment line per four code lines. Which files it reads and which ids it bans live in `.comments-policy.json` in the host repository. The plugin also ships it in `bin/`. |
+| `loop-complexity` | Fails when a function the diff adds or changes is over the cyclomatic bar (10) or the length bar (60 statements, tests exempt), or grew past its recorded number. A ratchet: existing code is listed, with its numbers, in `.complexity-baseline.json` in the host repository, and that list may only shrink. The file also holds the bars, the directories to scan and which files are tests. The plugin also ships it in `bin/`. |
 
 Every run's state lives outside the repository, under `~/.delivery-loop`, in
 `runs/<owner>-<repo>/<worktree>-<hash>/`, and the run index the hooks find a run
@@ -297,6 +298,7 @@ fails if a name does not resolve to a callable `main`.
 | `commands/` | The `/delivery-loop:pipeline` slash command. |
 | `skills/pipeline/` | The stage skill and the default stage prompts. |
 | `bin/` | `delivery-loop`, `loop-no-dash` and `loop-comments`, which the plugin puts on the agent's `PATH`. |
+| `bin/` | `delivery-loop`, `loop-no-dash` and `loop-complexity`, which the plugin puts on the agent's `PATH`. |
 | `templates/` | `loop.toml`, the per-repo configuration a host repo fills in. |
 | `docs/` | The contract and the operator runbooks. |
 | `scripts/` | Developer checks: the steps CI runs and the edit-time ruff hook. |
