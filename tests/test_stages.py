@@ -265,3 +265,27 @@ def test_a_stage_list_of_something_other_than_specs_is_refused() -> None:
 def test_a_stage_spec_is_frozen() -> None:
     with pytest.raises(AttributeError):
         cfg.DEFAULTS.stages[0].name = "other"
+
+
+PROMPTS = Path(__file__).resolve().parent.parent / "skills" / "pipeline" / "stages"
+
+
+@pytest.mark.parametrize("stage", ["qa", "review"])
+def test_a_gstack_stage_runs_spawned_so_it_does_not_stop_to_ask(stage: str) -> None:
+    # Value: protects=an unattended run is not stopped by gstack's own two-way questions;
+    # fails_when=a prompt drops the spawned prefix; why_new=the thin prompts lost it; seam=prompt
+    text = (PROMPTS / f"{stage}.md").read_text(encoding="utf-8")
+    assert "the stage's command with `GSTACK_SESSION_KIND=spawned`" in text
+    assert "every preamble line" in text
+
+
+@pytest.mark.parametrize("stage", ["implement", "qa", "review"])
+def test_a_stage_records_the_choices_it_settles(stage: str) -> None:
+    text = (PROMPTS / f"{stage}.md").read_text(encoding="utf-8")
+    assert "gstack-decision-log" in text and "Decide, do not ask" in text
+
+
+def test_autoplan_keeps_the_task_and_ship_never_pushes_twice() -> None:
+    assert "Never pick another task" in (PROMPTS / "autoplan.md").read_text(encoding="utf-8")
+    ship = (PROMPTS / "ship.md").read_text(encoding="utf-8")
+    assert "gh pr list --head" in ship and "never rebase" in ship
