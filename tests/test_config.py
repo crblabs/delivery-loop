@@ -498,6 +498,29 @@ def test_the_user_file_can_opt_in_for_one_operator(tmp_path: Path) -> None:
     assert config.push_transport == "https"
 
 
+# Value: protects=installing the plugin opts in, and a developer or a repository
+#   opts out; fails_when=a rule is off by default, a switch is read from the wrong
+#   table, or accepts a non-boolean; why_new=the checks were ported; seam=none
+def test_the_check_switches_are_on_and_turn_off(tmp_path: Path) -> None:
+    assert cfg.DEFAULTS.check_comments and cfg.DEFAULTS.check_complexity
+    off = cfg.load_config(write(tmp_path, "[checks]\ncomments = false\ncomplexity = false\n"))
+    assert not off.check_comments and not off.check_complexity
+    assert cfg.from_dict(cfg.to_dict(off)) == off
+    with pytest.raises(cfg.ConfigError, match="comments"):
+        cfg.load_config(write(tmp_path, '[checks]\ncomments = "no"\n'))
+
+
+def test_a_developer_turns_a_check_off_for_themselves(tmp_path: Path) -> None:
+    user = tmp_path / "home" / cfg.USER_CONFIG_DIR / "host.toml"
+    user.parent.mkdir(parents=True)
+    user.write_text("[checks]\ncomplexity = false\n", encoding="utf-8")
+    config = cfg.load_config(tmp_path / "absent.toml", slug="host", home=tmp_path / "home")
+    assert not config.check_complexity and config.check_comments
+    # The repository file wins over the developer's file.
+    repo = write(tmp_path, "[checks]\ncomplexity = true\n")
+    assert cfg.load_config(repo, slug="host", home=tmp_path / "home").check_complexity
+
+
 def test_the_config_is_frozen() -> None:
     with pytest.raises(AttributeError):
         cfg.DEFAULTS.state_dir = ".other"

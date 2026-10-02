@@ -534,33 +534,40 @@ def _commit_file(git, worktree: Path, name: str, text: str) -> None:
     git(worktree, "commit", "-q", "-m", f"add {name}")
 
 
-def test_the_comment_rule_binds_only_a_host_that_opted_in(make_repo, tmp_path: Path, git) -> None:
-    # Value: protects=a host keeps its own comment style unless it asks for the rule;
-    # fails_when=the hook gates every host, or ignores one that opted in; why_new=port; seam=none
-    worktree = make_repo(tmp_path / "plain")
+def _stages_with(**checks) -> LoopConfig:
+    return LoopConfig(stages=_two_stages().stages, **checks)
+
+
+def test_the_comment_rule_binds_unless_the_config_turns_it_off(
+    make_repo, tmp_path: Path, git
+) -> None:
+    # Value: protects=installing the plugin opts in, and a developer can opt out;
+    # fails_when=the rule is skipped by default, or ignores its switch; why_new=port; seam=none
+    worktree = make_repo(tmp_path / "on")
     run, _ = rs.start(worktree, "CRB-1", _two_stages(), "s1")
     _commit_file(git, worktree, "a.py", LONG_COMMENT)
-    assert _end(run, DONE).reinject.startswith("Stage 2/2: ship")
-
-    worktree = make_repo(tmp_path / "strict")
-    _commit_file(git, worktree, ".comments-policy.json", "{}\n")
-    run, _ = rs.start(worktree, "CRB-1", _two_stages(), "s2")
-    _commit_file(git, worktree, "a.py", LONG_COMMENT)
-    verdict = _end(run, DONE, session="s2")
+    verdict = _end(run, DONE)
     assert verdict.block and "loop-comments found" in verdict.reinject
     assert "a.py:1" in verdict.reinject
     assert _state(run)["current_stage"] == "implement"
 
+    worktree = make_repo(tmp_path / "off")
+    run, _ = rs.start(worktree, "CRB-1", _stages_with(check_comments=False), "s2")
+    _commit_file(git, worktree, "a.py", LONG_COMMENT)
+    assert _end(run, DONE, session="s2").reinject.startswith("Stage 2/2: ship")
 
-def test_the_complexity_rule_binds_a_host_with_a_baseline(make_repo, tmp_path: Path, git) -> None:
-    from core import complexity_gate as cx
 
-    worktree = make_repo(tmp_path / "host")
-    assert cx.update_baseline(worktree) == 0
-    git(worktree, "add", cx.BASELINE_PATH)
-    git(worktree, "commit", "-q", "-m", "baseline")
+def test_the_complexity_rule_binds_unless_the_config_turns_it_off(
+    make_repo, tmp_path: Path, git
+) -> None:
+    worktree = make_repo(tmp_path / "on")
     run, _ = rs.start(worktree, "CRB-1", _two_stages(), "s1")
     _commit_file(git, worktree, "b.py", BRANCHY)
     verdict = _end(run, DONE)
     assert verdict.block and "loop-complexity found" in verdict.reinject
     assert "b.py" in verdict.reinject
+
+    worktree = make_repo(tmp_path / "off")
+    run, _ = rs.start(worktree, "CRB-1", _stages_with(check_complexity=False), "s2")
+    _commit_file(git, worktree, "b.py", BRANCHY)
+    assert _end(run, DONE, session="s2").reinject.startswith("Stage 2/2: ship")

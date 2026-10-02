@@ -266,6 +266,9 @@ class LoopConfig:
     fragment; the default matches any run of letters. ``push_transport`` is one
     of ``PUSH_TRANSPORTS``: empty leaves ``origin`` as it is, ``https`` makes
     start reroute a GitHub SSH origin to HTTPS before the run.
+    ``check_comments`` and ``check_complexity`` say whether a ``clean_tree``
+    stage must also pass ``loop-comments`` and ``loop-complexity``. Both are on:
+    installing the plugin opts in, and a developer or a repository turns one off.
     """
 
     state_dir: str = ".claude"
@@ -299,6 +302,8 @@ class LoopConfig:
     tracker_prefix: str = "[A-Za-z]+"
     tracker_pattern: str = r"({tracker_prefix}-\d+)"
     push_transport: str = ""
+    check_comments: bool = True
+    check_complexity: bool = True
 
     def __post_init__(self) -> None:
         _refuse_empty("state_dir", self.state_dir)
@@ -366,6 +371,9 @@ class LoopConfig:
             raise ConfigError(
                 f'push_transport must be empty or "https", got {self.push_transport!r}'
             )
+        for name in ("check_comments", "check_complexity"):
+            if not isinstance(getattr(self, name), bool):
+                raise ConfigError(f"{name} takes true or false, got {getattr(self, name)!r}")
         self._validate_stages()
 
     def _validate_stages(self) -> None:
@@ -462,6 +470,10 @@ _STRING_KEYS = (
     ("tracker_prefix", "tracker", "prefix"),
     ("tracker_pattern", "tracker", "pattern"),
     ("push_transport", "repo", "push_transport"),
+)
+_BOOL_KEYS = (
+    ("check_comments", "checks", "comments"),
+    ("check_complexity", "checks", "complexity"),
 )
 _ADDITIVE = ("carve_outs", "carve_out_prefixes", "guard_watch")
 _LIST_KEYS = (
@@ -562,6 +574,10 @@ def from_mapping(data: dict) -> LoopConfig:
         table = _table(data, table_name)
         if key in table:
             values[field_name] = _strs(table, key)
+    for field_name, table_name, key in _BOOL_KEYS:
+        table = _table(data, table_name)
+        if key in table:
+            values[field_name] = _bool(table, key, f"[{table_name}]")
     if "stages" in data:
         values["stages"] = _stages(data["stages"])
     # A file may add carve-outs but never remove one: the carve-outs guard the

@@ -12,8 +12,8 @@ installs it as `.git/hooks/pre-push`:
 For every pushed ref it runs:
   * the no-unicode-dash rule on the lines the branch adds, and on the message
     of every commit the push sends;
-  * the comment rule, when `.comments-policy.json` is in the pushed commit;
-  * the complexity ratchet, when `.complexity-baseline.json` is in it.
+  * the comment rule and the complexity ratchet, unless `[checks]` in the
+    loop configuration turns one off, as it does for the Stop hook.
 
 THE BASE. A branch is measured from where it left `origin/HEAD`, never from the
 remote's old tip: after a rebase, `remote..local` holds the base branch's own
@@ -37,7 +37,7 @@ from pathlib import Path
 from core import comments_gate as cg
 from core import complexity_gate as cx
 from core import no_unicode_dash as nd
-from core.config import git_env
+from core.config import ConfigError, LoopConfig, git_env, load_config
 
 ZERO = "0" * 40
 
@@ -99,17 +99,6 @@ def _message_base(root: Path, push: Push, base: str) -> str:
     return push.remote_sha if done.returncode == 0 else base
 
 
-def _has_file(root: Path, sha: str, relpath: str) -> bool:
-    done = subprocess.run(
-        ["git", "cat-file", "-e", f"{sha}:{relpath}"],
-        cwd=root,
-        env=git_env(),
-        capture_output=True,
-        check=False,
-    )
-    return done.returncode == 0
-
-
 _Check = Callable[[Path, str, str], list]
 
 
@@ -118,24 +107,24 @@ def _dash_findings(root: Path, push: Push, base: str) -> list:
     return found + nd.commit_messages(root, _message_base(root, push, base), push.local_sha)
 
 
-# The rules a host opts in to: its policy file, its label, and the check.
-_OPT_IN: tuple[tuple[str, str, _Check], ...] = (
-    (cg.POLICY_PATH, cg.RULE_ID, lambda root, base, sha: cg.scan_range(root, base, sha)),
-    (cx.BASELINE_PATH, "complexity", lambda root, base, sha: cx.check(root, base, sha)),
+# The rules beside the dash rule, each with the config switch that turns it off.
+_SWITCHED: tuple[tuple[str, _Check], ...] = (
+    ("check_comments", lambda root, base, sha: cg.scan_range(root, base, sha)),
+    ("check_complexity", lambda root, base, sha: cx.check(root, base, sha)),
 )
 
 
-def check_push(root: Path, push: Push) -> list[str]:
+def check_push(root: Path, push: Push, config: LoopConfig) -> list[str]:
     """Every refusal for one pushed ref, as the lines to print."""
     base = base_ref(root, push.local_sha)
     lines = [f"  {v.message()}" for v in _dash_findings(root, push, base)]
-    for policy, _label, check in _OPT_IN:
-        if _has_file(root, push.local_sha, policy):
+    for switch, check in _SWITCHED:
+        if getattr(config, switch):
             lines.extend(f"  {f.message()}" for f in check(root, base, push.local_sha))
     return lines
 
 
-_FAULTS = (nd.DashError, cg.CommentsError, cx.GateError)
+_FAULTS = (nd.DashError, cg.CommentsError, cx.GateError, ConfigError)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -143,9 +132,10 @@ def main(argv: list[str] | None = None) -> int:
     del argv
     try:
         root = nd.repo_root(Path.cwd())
+        config = load_config(root)
         refused: list[str] = []
         for push in parse_pushes(sys.stdin.read()):
-            lines = check_push(root, push)
+            lines = check_push(root, push, config)
             if lines:
                 refused.append(f"pre-push: {push.local_ref} is refused:")
                 refused.extend(lines)

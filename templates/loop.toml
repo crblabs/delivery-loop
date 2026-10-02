@@ -150,7 +150,7 @@ abort = "/delivery-loop:pipeline abort"
 #   clean_tree    false. True when the stage's finishing token is only accepted
 #                 over a committed worktree whose branch adds no en dash or em
 #                 dash (see loop-no-dash), and passes loop-comments and
-#                 loop-complexity when their policy files are committed.
+#                 loop-complexity unless [checks] turns them off.
 #   gate          "none". Whether the stage stops for a person: "none" never,
 #                 "approval" at an approval question, "review_batch" at a batch
 #                 of review questions. Nothing else is accepted.
@@ -254,6 +254,19 @@ check = ""
 # tool = ""
 # docs = ""
 
+
+
+[checks]
+# The rules a clean_tree stage must pass besides the dash rule, which is always
+# on. Installing the plugin opts in to both. Set one to false to turn it off for
+# this repository, here, or for yourself alone in
+# ~/.config/delivery-loop/<repository directory name>.toml; this file wins over
+# that one. A run reads the switches when it starts.
+#
+# comments:   loop-comments, configured in .comments-policy.json.
+# complexity: loop-complexity, with its baseline in .complexity-baseline.json.
+comments = true
+complexity = true
 
 [repo]
 # How `start` treats the `origin` remote. Empty, the default, leaves origin

@@ -6,11 +6,10 @@ Before you push, run `loop-no-dash --base origin/<base branch>` and fix every
 dash it names. Before you open the pull request, check its body with
 `loop-no-dash --stdin-text --label "PR body" < <body file>` and fix it too.
 
-If the repository has `.comments-policy.json` at its root, also run
-`loop-comments --base origin/<base branch>` before each commit. If it has
-`.complexity-baseline.json`, also run
-`loop-complexity --base origin/<base branch>`. Fix what each one names. The
-stage cannot end while one of them fails.
+Also run `loop-comments --base origin/<base branch>` and
+`loop-complexity --base origin/<base branch>` before each commit, unless
+`[checks]` in the loop configuration turns one off. Fix what each one names.
+The stage cannot end while one of them fails.
 
 If gstack's decision log is available, write the body's `## Decisions` section
 with `gstack-decision-search --scope branch --json | loop-pr-decisions`. Paste

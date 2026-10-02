@@ -9,11 +9,10 @@ a new sentence, then run it again. Check each commit message the same way before
 you commit:
 `loop-no-dash --stdin-text --label "commit message" < <message file>`.
 
-If the repository has `.comments-policy.json` at its root, also run
-`loop-comments --base origin/<base branch>` before each commit. If it has
-`.complexity-baseline.json`, also run
-`loop-complexity --base origin/<base branch>`. Fix what each one names. The
-stage cannot end while one of them fails.
+Also run `loop-comments --base origin/<base branch>` and
+`loop-complexity --base origin/<base branch>` before each commit, unless
+`[checks]` in the loop configuration turns one off. Fix what each one names.
+The stage cannot end while one of them fails.
 
 When the review raises questions only a person can answer, collect them and
 stop once with a decision card that asks them together. The stage ends over a

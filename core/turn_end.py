@@ -10,7 +10,7 @@ A stage ends on a token in the last line of the agent's message:
   * ``<promise>STAGE DONE</promise>``: the stage is done. Its ``emits`` value
     (``PLAN: <path>``, ``PR: <url>``) must come before it, and a ``clean_tree``
     stage needs a committed worktree that passes the no-unicode-dash rule, and
-    the comment and complexity rules when the host opted in to them. The run
+    the comment and complexity rules unless the config turns them off. The run
     moves to the next stage, or ends. A stage with a gate stops for a person
     after it.
   * ``<promise>NEEDS HUMAN</promise>``: the stage stops for a person. The
@@ -181,24 +181,24 @@ def _dashes(worktree: Path, state: dict) -> str | None:
     )
 
 
-# The rules a host opts in to by committing the rule's policy file at its root:
-# the file's name, the command a person reruns, the gate and its fault type.
-_OPT_IN_RULES = (
-    (cg.POLICY_PATH, "loop-comments", cg.gate, cg.CommentsError),
-    (cx.BASELINE_PATH, "loop-complexity", cx.gate, cx.GateError),
+# The rules beside the dash rule, each with the config switch that turns it off:
+# the switch, the command a person reruns, the gate and its fault type.
+_SWITCHED_RULES = (
+    ("check_comments", "loop-comments", cg.gate, cg.CommentsError),
+    ("check_complexity", "loop-complexity", cx.gate, cx.GateError),
 )
 
 
-def _opted_in(worktree: Path, state: dict) -> str | None:
-    """Why the branch fails a rule the host opted in to, or None when it passes."""
-    base = _dash_base(worktree, state)
+def _switched(run: rs.Run, state: dict) -> str | None:
+    """Why the branch fails a rule the config leaves on, or None when it passes."""
+    base = _dash_base(run.worktree, state)
     if base is None:
         return None
-    for policy, command, gate, fault in _OPT_IN_RULES:
-        if not (worktree / policy).is_file():
+    for switch, command, gate, fault in _SWITCHED_RULES:
+        if not getattr(run.config, switch):
             continue
         try:
-            found = gate(worktree, base)
+            found = gate(run.worktree, base)
         except fault as exc:
             return f"the {command} check could not run ({exc}); fix it first"
         if found:
@@ -296,7 +296,7 @@ def _advance(run: rs.Run, state: dict, message: str) -> TurnEndVerdict:
     if unclean:
         return _no_token(run, state, unclean)
     if stage.clean_tree:
-        failed = _dashes(run.worktree, state) or _opted_in(run.worktree, state)
+        failed = _dashes(run.worktree, state) or _switched(run, state)
         if failed:
             return _no_token(run, state, failed)
     state["history"].append({"at": ri.now_iso(), "event": "done", "stage": stage.name})

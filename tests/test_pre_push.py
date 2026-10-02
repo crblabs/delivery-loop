@@ -70,15 +70,13 @@ def test_a_message_already_on_the_remote_is_not_refused_again(repo: Path, git, m
     assert _push(monkeypatch, head, remote=old) == 0
 
 
-def test_the_comment_rule_binds_only_when_the_pushed_commit_opts_in(
-    repo: Path, git, monkeypatch
-) -> None:
+def test_the_comment_rule_binds_unless_loop_toml_turns_it_off(repo: Path, git, monkeypatch) -> None:
     long_comment = "# one\n# two\n# three\n# four\nx = 1\n"
     head = _commit(git, repo, "a.py", long_comment)
-    assert _push(monkeypatch, head) == 0
-    _commit(git, repo, ".comments-policy.json", "{}\n")
-    head = _commit(git, repo, "b.py", long_comment)
     assert _push(monkeypatch, head) == 1
+    _commit(git, repo, "loop.toml", "[checks]\ncomments = false\n")
+    head = _commit(git, repo, "b.py", long_comment)
+    assert _push(monkeypatch, head) == 0
 
 
 def test_a_real_push_runs_the_installed_hook(
