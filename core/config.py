@@ -161,6 +161,9 @@ def _refuse_unsafe(name: str, value: str) -> None:
 
 
 GATES = ("none", "approval", "review_batch")
+# How start treats origin: "" leaves it alone, "https" reroutes a GitHub SSH
+# origin to HTTPS first, for a host whose SSH key cannot push.
+PUSH_TRANSPORTS = ("", "https")
 
 # A stage name is a dict key, a file name component and a token in a message, so
 # it may hold no separator and may not read as a relative path.
@@ -260,7 +263,9 @@ class LoopConfig:
     ``resume_command`` and ``abort_command`` are the operator commands a card
     quotes, and ``tracker_prefix`` with ``tracker_pattern`` recognise an issue
     identifier in a worktree name. ``tracker_prefix`` is a regular expression
-    fragment; the default matches any run of letters.
+    fragment; the default matches any run of letters. ``push_transport`` is one
+    of ``PUSH_TRANSPORTS``: empty leaves ``origin`` as it is, ``https`` makes
+    start reroute a GitHub SSH origin to HTTPS before the run.
     """
 
     state_dir: str = ".claude"
@@ -293,6 +298,7 @@ class LoopConfig:
     abort_command: str = "/delivery-loop:pipeline abort"
     tracker_prefix: str = "[A-Za-z]+"
     tracker_pattern: str = r"({tracker_prefix}-\d+)"
+    push_transport: str = ""
 
     def __post_init__(self) -> None:
         _refuse_empty("state_dir", self.state_dir)
@@ -355,6 +361,10 @@ class LoopConfig:
         if _NESTED_QUANTIFIER.search(self.tracker_pattern):
             raise ConfigError(
                 f"tracker_pattern may not repeat a group that repeats: {self.tracker_pattern!r}"
+            )
+        if self.push_transport not in PUSH_TRANSPORTS:
+            raise ConfigError(
+                f'push_transport must be empty or "https", got {self.push_transport!r}'
             )
         self._validate_stages()
 
@@ -451,6 +461,7 @@ _STRING_KEYS = (
     ("abort_command", "commands", "abort"),
     ("tracker_prefix", "tracker", "prefix"),
     ("tracker_pattern", "tracker", "pattern"),
+    ("push_transport", "repo", "push_transport"),
 )
 _ADDITIVE = ("carve_outs", "carve_out_prefixes", "guard_watch")
 _LIST_KEYS = (

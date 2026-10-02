@@ -97,6 +97,7 @@ def test_the_defaults_are_pinned() -> None:
     assert d.abort_command == "/delivery-loop:pipeline abort"
     assert d.tracker_prefix == "[A-Za-z]+"
     assert d.tracker_pattern == r"([A-Za-z]+-\d+)"
+    assert d.push_transport == ""
 
 
 def test_defaults_still_classify_the_paths_they_used_to() -> None:
@@ -467,6 +468,34 @@ def test_a_wrong_type_is_refused(tmp_path: Path) -> None:
 def test_broken_toml_is_refused(tmp_path: Path) -> None:
     with pytest.raises(cfg.ConfigError):
         cfg.load_config(write(tmp_path, "[harness\n"))
+
+
+# Value: protects=origin is rewritten only for a host that opted in;
+#   fails_when=the key is ignored, read from the wrong table, or accepts a typo;
+#   why_new=push_transport is a new key; seam=none
+def test_push_transport_is_opt_in_and_only_takes_https(tmp_path: Path) -> None:
+    assert cfg.load_config(write(tmp_path, '[repo]\nslug = "o/r"\n')).push_transport == ""
+    opted = cfg.load_config(write(tmp_path, '[repo]\npush_transport = "https"\n'))
+    assert opted.push_transport == "https"
+    assert cfg.from_dict(cfg.to_dict(opted)) == opted
+    for bad in ('"ssh"', '"HTTPS"', "true"):
+        with pytest.raises(cfg.ConfigError, match="push_transport"):
+            cfg.load_config(write(tmp_path, f"[repo]\npush_transport = {bad}\n"))
+
+
+def test_a_snapshot_from_before_push_transport_still_loads() -> None:
+    # A run started before the key existed recorded no push_transport.
+    old = cfg.to_dict(cfg.DEFAULTS)
+    del old["push_transport"]
+    assert cfg.from_dict(old) == cfg.DEFAULTS
+
+
+def test_the_user_file_can_opt_in_for_one_operator(tmp_path: Path) -> None:
+    user = tmp_path / "home" / cfg.USER_CONFIG_DIR / "host.toml"
+    user.parent.mkdir(parents=True)
+    user.write_text('[repo]\npush_transport = "https"\n', encoding="utf-8")
+    config = cfg.load_config(tmp_path / "absent.toml", slug="host", home=tmp_path / "home")
+    assert config.push_transport == "https"
 
 
 def test_the_config_is_frozen() -> None:

@@ -32,6 +32,7 @@ from adapters.claude_code import bootstrap as boot
 from core import run_index as ri
 from core import run_state as rs
 from core.config import HARNESS_HOME, HARNESS_HOME_ENV, ConfigError, LoopConfig, load_config
+from core.push_preflight import describe_origin
 
 PLUGIN_BIN = rs.PLUGIN_ROOT / "bin" / ri.CLI_NAME
 _CONFIG_TAIL_RE = re.compile(r"\s--config(?:=|\s+)(\S+)\s*$")
@@ -285,6 +286,10 @@ def doctor_checks(cwd: Path) -> list[tuple[str, str, str]]:
                         "the skill or declare other stages in loop.toml",
                     )
                 )
+        if worktree is not None and config.push_transport:
+            # Read only: doctor shows what start would do and changes nothing.
+            level, detail = describe_origin(worktree)
+            checks.append((level, "push transport", detail))
         if worktree is not None:
             legacy = rs.legacy_install(worktree, config)
             if legacy:

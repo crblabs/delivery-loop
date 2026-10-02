@@ -255,6 +255,19 @@ check = ""
 
 
 [repo]
+# How `start` treats the `origin` remote. Empty, the default, leaves origin
+# alone. "https" is for a worktree whose `origin` is a GitHub SSH URL that
+# cannot push, while HTTPS to the same repository works through a credential
+# helper. Before the run, `start` then sets origin to the HTTPS URL of the same
+# repository (`git@github.com:owner/repo.git` becomes
+# `https://github.com/owner/repo.git`), removes every `remote.origin.pushurl`,
+# and checks that origin can be read. The change is in the repository's shared
+# git config, so it reaches every worktree, and it is made once: a second start
+# finds it done. If origin is not a GitHub repository, or cannot be read over
+# HTTPS, `start` refuses and says why. `delivery-loop doctor` shows the origin
+# transport when this key is set. Nothing else is accepted.
+push_transport = ""
+
 # Not read yet. The repository slug, in owner/name form. The supervisor takes
 # it on the command line today.
 slug = ""

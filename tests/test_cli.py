@@ -224,6 +224,74 @@ def test_doctor_checks_the_python3_hooks_run_with(
     assert f"{level:4}  hook python3" in capsys.readouterr().out
 
 
+SSH_ORIGIN = "git@github.com:owner/repo.git"
+HTTPS_ORIGIN = "https://github.com/owner/repo.git"
+OPT_IN = '[repo]\npush_transport = "https"\n'
+
+
+def _origin(git, worktree: Path) -> str:
+    return git(worktree, "config", "--get", "remote.origin.url").strip()
+
+
+def test_start_leaves_origin_alone_by_default(
+    make_repo, git, github_origin, tmp_path: Path, monkeypatch
+) -> None:
+    # Value: protects=a host whose SSH works keeps its origin; fails_when=start rewrites
+    # origin without push_transport set; why_new=push_transport is opt-in; seam=none
+    worktree = make_repo(tmp_path / "host")
+    github_origin(worktree, SSH_ORIGIN)
+    monkeypatch.chdir(worktree)
+    assert cli.main(["--session", "s1", "start", "CRB-1"]) == 0
+    assert _origin(git, worktree) == SSH_ORIGIN
+
+
+def test_start_reroutes_origin_to_https_when_opted_in(
+    make_repo, git, github_origin, tmp_path: Path, monkeypatch
+) -> None:
+    # Value: protects=the last stage's push goes over HTTPS; fails_when=start ignores
+    # push_transport or rewrites after the guard baseline; why_new=ported preflight; seam=none
+    worktree = make_repo(tmp_path / "host")
+    github_origin(worktree, SSH_ORIGIN)
+    (worktree / "loop.toml").write_text(OPT_IN, encoding="utf-8")
+    monkeypatch.chdir(worktree)
+    assert cli.main(["--session", "s1", "start", "CRB-1"]) == 0
+    assert _origin(git, worktree) == HTTPS_ORIGIN
+    run = rs.find(str(worktree))
+    assert run is not None and run.config.push_transport == "https"
+    events = ri.read_events(str(run.run_dir), 5)
+    assert "set by this start" in events[-1]["push_transport"]
+
+
+def test_start_refuses_when_origin_cannot_be_rerouted(
+    make_repo, git, tmp_path: Path, monkeypatch, capsys
+) -> None:
+    worktree = make_repo(tmp_path / "host")
+    git(worktree, "remote", "add", "origin", "git@gitlab.com:owner/repo.git")
+    (worktree / "loop.toml").write_text(OPT_IN, encoding="utf-8")
+    monkeypatch.chdir(worktree)
+    assert cli.main(["--session", "s1", "start", "CRB-1"]) == 2
+    err = capsys.readouterr().err
+    assert "PREFLIGHT_PUSH_ORIGIN" in err and "push_transport" in err
+    assert rs.find(str(worktree)) is None
+    assert _origin(git, worktree) == "git@gitlab.com:owner/repo.git"
+
+
+def test_doctor_shows_the_push_transport_only_when_it_is_set(
+    make_repo, git, tmp_path: Path, monkeypatch, capsys, hook_python
+) -> None:
+    worktree = make_repo(tmp_path / "host")
+    git(worktree, "remote", "add", "origin", SSH_ORIGIN)
+    monkeypatch.chdir(worktree)
+    cli.main(["doctor"])
+    assert "push transport" not in capsys.readouterr().out
+    (worktree / "loop.toml").write_text(OPT_IN, encoding="utf-8")
+    cli.main(["doctor"])
+    out = capsys.readouterr().out
+    assert f"WARN  push transport: origin is {SSH_ORIGIN}; start will reroute it" in out
+    # doctor only reads.
+    assert _origin(git, worktree) == SSH_ORIGIN
+
+
 def test_a_terminal_start_ignores_an_agents_leftover_intent(
     make_repo, tmp_path, monkeypatch
 ) -> None:
