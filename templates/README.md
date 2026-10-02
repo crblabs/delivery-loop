@@ -12,6 +12,11 @@ live configuration: nothing in this directory is read at run time.
   `docs/architecture.zones.toml` in the host repository and replace the zones
   with your own. Without that file, `loop-impact` draws nothing and the ship
   stage leaves the `## Picture` section out of the pull request.
+- `issue-audit.yml`: a GitHub Actions workflow that runs `loop-issue --audit`
+  every Monday and fails when a P1 to P4 count rises above the baseline in
+  `.issue-audit-baseline.json`. Copy it to `.github/workflows/`, set the
+  `LINEAR_API_KEY` repository secret, then run `loop-issue --audit
+  --update-baseline` once and commit the baseline it writes.
 - Any further template a host repository would copy, if one is added later.
 
 ## What does not belong here

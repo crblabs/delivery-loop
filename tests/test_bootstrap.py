@@ -76,6 +76,13 @@ def test_every_route_to_resume_or_abort_is_recognised(tool, tool_input, sub) -> 
         ("mcp__github__get_commit", "other"),
         ("mcp__github__list_forks", "other"),
         ("Read", "other"),
+        ("mcp__linear-server__save_issue", "tracker"),
+        ("mcp__linear-server__create_comment", "tracker"),
+        ("mcp__claude_ai_Linear__update_project", "tracker"),
+        ("mcp__linear__delete_issue", "tracker"),
+        ("mcp__linear-server__get_issue", "other"),
+        ("mcp__linear-server__list_issues", "other"),
+        ("mcp__linear-server__search_documentation", "other"),
     ],
 )
 def test_an_mcp_tool_that_writes_is_an_edit(tool: str, kind: str) -> None:
