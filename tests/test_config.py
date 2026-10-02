@@ -92,6 +92,10 @@ def test_the_defaults_are_pinned() -> None:
     assert d.guard_watch == (".claude/hooks/pipeline_stop.py", ".claude/hooks/pipeline_guard.py")
     assert d.stage_shorthand == "stages/"
     assert d.stage_target == ".claude/skills/pipeline/stages/"
+
+
+def test_the_command_tracker_and_repo_defaults_are_pinned() -> None:
+    d = cfg.DEFAULTS
     assert d.session_label == "Session"
     assert d.resume_command == "/delivery-loop:pipeline resume"
     assert d.abort_command == "/delivery-loop:pipeline abort"

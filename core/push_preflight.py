@@ -150,19 +150,37 @@ def ensure_https_origin(worktree: Path) -> PreflightResult:
     url = fetch.stdout.strip()
     canonical = https_url(url) if url else None
     if canonical is None:
-        shown = repr(url) if url else "not set"
-        return PreflightResult(
-            "unexpected_remote",
-            f"PREFLIGHT_PUSH_ORIGIN: origin is {shown}, not a GitHub repository over SSH "
-            'or HTTPS, so push_transport = "https" cannot reroute it. Fix: set origin by '
-            "hand (git remote set-url origin https://github.com/owner/repo.git), or remove "
-            "push_transport from loop.toml.",
-        )
+        return _unexpected_remote(url)
+    changed, failure = _reroute(worktree, url, canonical)
+    if failure is not None:
+        return failure
+    failure = _unreachable(worktree)
+    if failure is not None:
+        return failure
+    how = "set by this start" if changed else "already set"
+    return PreflightResult(
+        "fixed" if changed else "ok", f"origin publishes over HTTPS ({canonical}; {how})."
+    )
+
+
+def _unexpected_remote(url: str) -> PreflightResult:
+    shown = repr(url) if url else "not set"
+    return PreflightResult(
+        "unexpected_remote",
+        f"PREFLIGHT_PUSH_ORIGIN: origin is {shown}, not a GitHub repository over SSH "
+        'or HTTPS, so push_transport = "https" cannot reroute it. Fix: set origin by '
+        "hand (git remote set-url origin https://github.com/owner/repo.git), or remove "
+        "push_transport from loop.toml.",
+    )
+
+
+def _reroute(worktree: Path, url: str, canonical: str) -> tuple[bool, PreflightResult | None]:
+    """Whether origin's URLs changed, and the failure that stopped the change."""
     changed = False
     if not _is_https(url, canonical):
         done = _git_config_write(["remote", "set-url", "origin", canonical], worktree)
         if done.returncode != 0:
-            return _write_failure(done)
+            return changed, _write_failure(done)
         changed = True
     # --unset-all, not --unset: --unset refuses a key with several values and
     # would leave an extra push destination behind.
@@ -170,23 +188,24 @@ def ensure_https_origin(worktree: Path) -> PreflightResult:
     if pushurls.stdout.strip():
         done = _git_config_write(["config", "--unset-all", "remote.origin.pushurl"], worktree)
         if done.returncode not in (0, _UNSET_ABSENT_RC):
-            return _write_failure(done)
+            return changed, _write_failure(done)
         changed = True
+    return changed, None
+
+
+def _unreachable(worktree: Path) -> PreflightResult | None:
     listed = _git(["ls-remote", "--heads", "origin"], worktree, timeout=_NET_TIMEOUT_S)
-    if listed.returncode != 0:
-        detail = (
-            "it did not answer in time"
-            if listed.returncode == _TIMEOUT_RC
-            else listed.stderr.strip() or f"git exited {listed.returncode}"
-        )
-        return PreflightResult(
-            "unreachable",
-            f"PREFLIGHT_PUSH_UNREACHABLE: cannot read origin over HTTPS ({detail}). "
-            "Fix: check the network and the HTTPS credential helper, then start again.",
-        )
-    how = "set by this start" if changed else "already set"
+    if listed.returncode == 0:
+        return None
+    detail = (
+        "it did not answer in time"
+        if listed.returncode == _TIMEOUT_RC
+        else listed.stderr.strip() or f"git exited {listed.returncode}"
+    )
     return PreflightResult(
-        "fixed" if changed else "ok", f"origin publishes over HTTPS ({canonical}; {how})."
+        "unreachable",
+        f"PREFLIGHT_PUSH_UNREACHABLE: cannot read origin over HTTPS ({detail}). "
+        "Fix: check the network and the HTTPS credential helper, then start again.",
     )
 
 

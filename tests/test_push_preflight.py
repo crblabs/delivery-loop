@@ -40,26 +40,38 @@ class FakeGit:
 
     def __call__(self, args, cwd, timeout=10):
         self.calls.append(args)
-        if args[:2] == ["config", "--get"] and args[2] == "remote.origin.url":
-            return _cp(0 if self.url else 1, self.url or "")
-        if args[:2] == ["config", "--get-all"] and args[2] == "remote.origin.pushurl":
-            return _cp(0 if self.pushurls else 1, "\n".join(self.pushurls))
-        if args[:3] == ["remote", "set-url", "origin"]:
-            if self.lock_fails > 0:
-                self.lock_fails -= 1
-                return _cp(1, "error: could not lock config file .git/config: File exists")
-            self.url = args[3]
-            return _cp(0, "")
-        if args[:2] == ["config", "--unset-all"] and args[2] == "remote.origin.pushurl":
-            if not self.pushurls:
-                return _cp(5, "")
-            self.pushurls = []
-            return _cp(0, "")
         if args[:1] == ["ls-remote"]:
-            if self.ls_timeout:
-                return _cp(pf._TIMEOUT_RC, "TIMEOUT")
-            return _cp(0, "abc\trefs/heads/main") if self.ls_ok else _cp(128, "not found")
+            return self._ls_remote()
+        if args[:3] == ["remote", "set-url", "origin"]:
+            return self._set_url(args[3])
+        return self._config(args)
+
+    def _config(self, args):
+        if args[:3] == ["config", "--get", "remote.origin.url"]:
+            return _cp(0 if self.url else 1, self.url or "")
+        if args[:3] == ["config", "--get-all", "remote.origin.pushurl"]:
+            return _cp(0 if self.pushurls else 1, "\n".join(self.pushurls))
+        if args[:3] == ["config", "--unset-all", "remote.origin.pushurl"]:
+            return self._unset_pushurls()
         raise AssertionError(f"unexpected git call: {args}")
+
+    def _set_url(self, url):
+        if self.lock_fails > 0:
+            self.lock_fails -= 1
+            return _cp(1, "error: could not lock config file .git/config: File exists")
+        self.url = url
+        return _cp(0, "")
+
+    def _unset_pushurls(self):
+        if not self.pushurls:
+            return _cp(5, "")
+        self.pushurls = []
+        return _cp(0, "")
+
+    def _ls_remote(self):
+        if self.ls_timeout:
+            return _cp(pf._TIMEOUT_RC, "TIMEOUT")
+        return _cp(0, "abc\trefs/heads/main") if self.ls_ok else _cp(128, "not found")
 
 
 def _cp(code, out):

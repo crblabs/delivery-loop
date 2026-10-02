@@ -367,6 +367,10 @@ class LoopConfig:
             raise ConfigError(
                 f"tracker_pattern may not repeat a group that repeats: {self.tracker_pattern!r}"
             )
+        self._validate_switches()
+        self._validate_stages()
+
+    def _validate_switches(self) -> None:
         if self.push_transport not in PUSH_TRANSPORTS:
             raise ConfigError(
                 f'push_transport must be empty or "https", got {self.push_transport!r}'
@@ -374,7 +378,6 @@ class LoopConfig:
         for name in ("check_comments", "check_complexity"):
             if not isinstance(getattr(self, name), bool):
                 raise ConfigError(f"{name} takes true or false, got {getattr(self, name)!r}")
-        self._validate_stages()
 
     def _validate_stages(self) -> None:
         _set(self, "stages", _as_tuple("stages", self.stages))
@@ -547,6 +550,24 @@ _REMOVED_KEYS = (
 )
 
 
+def _keyed_values(data: dict) -> dict[str, object]:
+    """The string, list and boolean fields a file sets, by field name."""
+    values: dict[str, object] = {}
+    for field_name, table_name, key in _STRING_KEYS:
+        table = _table(data, table_name)
+        if key in table:
+            values[field_name] = _str(table, key)
+    for field_name, table_name, key in _LIST_KEYS:
+        table = _table(data, table_name)
+        if key in table:
+            values[field_name] = _strs(table, key)
+    for field_name, table_name, key in _BOOL_KEYS:
+        table = _table(data, table_name)
+        if key in table:
+            values[field_name] = _bool(table, key, f"[{table_name}]")
+    return values
+
+
 def from_mapping(data: dict) -> LoopConfig:
     """One config from a parsed loop.toml, defaulting every key the file omits.
 
@@ -565,19 +586,7 @@ def from_mapping(data: dict) -> LoopConfig:
     for table_name, key, replacement in _REMOVED_KEYS:
         if key in _table(data, table_name):
             raise ConfigError(f"[{table_name}] {key} is no longer read: {replacement}")
-    values: dict[str, object] = {}
-    for field_name, table_name, key in _STRING_KEYS:
-        table = _table(data, table_name)
-        if key in table:
-            values[field_name] = _str(table, key)
-    for field_name, table_name, key in _LIST_KEYS:
-        table = _table(data, table_name)
-        if key in table:
-            values[field_name] = _strs(table, key)
-    for field_name, table_name, key in _BOOL_KEYS:
-        table = _table(data, table_name)
-        if key in table:
-            values[field_name] = _bool(table, key, f"[{table_name}]")
+    values = _keyed_values(data)
     if "stages" in data:
         values["stages"] = _stages(data["stages"])
     # A file may add carve-outs but never remove one: the carve-outs guard the

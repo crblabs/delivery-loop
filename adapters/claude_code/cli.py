@@ -102,18 +102,10 @@ def cmd_start(args: argparse.Namespace) -> int:
     except ConfigError as exc:
         return _fail(f"CONFIG_INVALID: {exc}")
     # Before the intent is taken, so a refused start leaves it for the next one.
-    worktree = Path(root) if root else None
-    missing = [stage for stage, sure in missing_commands(config, worktree) if sure]
-    if missing:
-        return _fail(_missing_text(missing))
-    # The intent the guard recorded from the harness's own payload outranks a
-    # session given as an argument, which any caller can type.
-    intent = ri.take_intent(ri.worktree_key(root)) if root is not None else None
-    if ri.in_terminal():
-        # A person's own start: an intent left by an agent call that was then
-        # declined or never ran is not theirs.
-        intent = None
-    session = intent or _session(args)
+    refusal = _missing_refusal(config, root)
+    if refusal:
+        return _fail(refusal)
+    session = _start_session(args, root)
     # The slash command names its session through ${CLAUDE_SESSION_ID}; if a
     # harness leaves that empty, the run still starts and binds at the first turn
     # end, as before.
@@ -131,6 +123,23 @@ def cmd_start(args: argparse.Namespace) -> int:
         return _fail(str(exc))
     print(text)
     return 0
+
+
+def _missing_refusal(config: LoopConfig, root: str | None) -> str | None:
+    worktree = Path(root) if root else None
+    missing = [stage for stage, sure in missing_commands(config, worktree) if sure]
+    return _missing_text(missing) if missing else None
+
+
+def _start_session(args: argparse.Namespace, root: str | None) -> str | None:
+    # The intent the guard recorded from the harness's own payload outranks a
+    # session given as an argument, which any caller can type.
+    intent = ri.take_intent(ri.worktree_key(root)) if root is not None else None
+    if ri.in_terminal():
+        # A person's own start: an intent left by an agent call that was then
+        # declined or never ran is not theirs.
+        intent = None
+    return intent or _session(args)
 
 
 def cmd_status(args: argparse.Namespace) -> int:
@@ -276,6 +285,25 @@ def _hook_python() -> tuple[str, tuple[int, ...] | None]:
         return found, None
 
 
+def _stage_checks(config: LoopConfig, worktree: Path | None) -> list[tuple[str, str, str]]:
+    checks: list[tuple[str, str, str]] = []
+    for stage in config.stages:
+        if worktree is not None and rs.resolve_prompt(stage, worktree, config) is None:
+            checks.append(("fail", f"stage {stage.name}", f"no prompt file {stage.prompt}"))
+    searched = ", ".join(str(p) for p in _skill_dirs(worktree)[:4])
+    # A certain miss fails because start refuses on it, through the same lookup.
+    for stage, sure in missing_commands(config, worktree):
+        checks.append(
+            (
+                "fail" if sure else "warn",
+                f"stage {stage.name}",
+                f"{stage.command} not found in {searched} or the plugin cache; install "
+                "the skill or declare other stages in loop.toml",
+            )
+        )
+    return checks
+
+
 def doctor_checks(cwd: Path) -> list[tuple[str, str, str]]:
     """Each check as (level, name, detail); level is ok, warn or fail."""
     checks: list[tuple[str, str, str]] = []
@@ -320,20 +348,7 @@ def doctor_checks(cwd: Path) -> list[tuple[str, str, str]]:
                 checks.append(
                     ("warn", "commands", f"config still names {old}; use /delivery-loop:pipeline")
                 )
-        for stage in config.stages:
-            if worktree is not None and rs.resolve_prompt(stage, worktree, config) is None:
-                checks.append(("fail", f"stage {stage.name}", f"no prompt file {stage.prompt}"))
-        searched = ", ".join(str(p) for p in _skill_dirs(worktree)[:4])
-        # A certain miss fails because start refuses on it, through the same lookup.
-        for stage, sure in missing_commands(config, worktree):
-            checks.append(
-                (
-                    "fail" if sure else "warn",
-                    f"stage {stage.name}",
-                    f"{stage.command} not found in {searched} or the plugin cache; install "
-                    "the skill or declare other stages in loop.toml",
-                )
-            )
+        checks.extend(_stage_checks(config, worktree))
         if worktree is not None and config.push_transport:
             # Read only: doctor shows what start would do and changes nothing.
             level, detail = describe_origin(worktree)

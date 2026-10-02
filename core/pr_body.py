@@ -80,21 +80,13 @@ def present_headings(body: str) -> set[str]:
             in_comment = False
 
         if fence is not None:
-            close = _FENCE_CLOSE_RE.match(line)
-            if close and close.group(1)[0] == fence[0] and len(close.group(1)) >= len(fence):
+            if _closes(line, fence):
                 fence = None
             continue  # every line inside a fence is code, never a heading
 
         # Outside a fence: drop inline comments, and open a multi-line one if it
         # has no closer on this line. The text before `<!--` is still live.
-        while "<!--" in line:
-            start = line.index("<!--")
-            end = line.find("-->", start + 4)
-            if end == -1:
-                line = line[:start]
-                in_comment = True
-                break
-            line = line[:start] + line[end + 3 :]
+        line, in_comment = _strip_comments(line)
 
         opener = _FENCE_OPEN_RE.match(line)
         if opener:
@@ -105,6 +97,23 @@ def present_headings(body: str) -> set[str]:
         if heading:
             present.add(heading.group(1).strip().lower())
     return present
+
+
+def _closes(line: str, fence: str) -> bool:
+    """True when ``line`` is a bare fence of the same character, at least as long."""
+    close = _FENCE_CLOSE_RE.match(line)
+    return bool(close) and close.group(1)[0] == fence[0] and len(close.group(1)) >= len(fence)
+
+
+def _strip_comments(line: str) -> tuple[str, bool]:
+    """The line without its comments, and whether the last one is still open."""
+    while "<!--" in line:
+        start = line.index("<!--")
+        end = line.find("-->", start + 4)
+        if end == -1:
+            return line[:start], True
+        line = line[:start] + line[end + 3 :]
+    return line, False
 
 
 def missing_sections(body: str, sections: list[str]) -> list[str]:

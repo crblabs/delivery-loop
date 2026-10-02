@@ -320,7 +320,8 @@ and what does not.
 ## Developing this repository
 
 `uv sync` installs the dev tools. `scripts/check.sh` runs the checks CI runs
-(tests, lint, format and the house rules), the same script CI calls on Python
+(tests, lint, format, the house rules, and the dash, comment and complexity
+rules over the branch's diff against `origin/main`), the same script CI calls on Python
 3.11, 3.12 and 3.13; name steps to run only those (`scripts/check.sh lint
 format`).
 

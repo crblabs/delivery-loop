@@ -17,6 +17,9 @@ jobs:
     steps:
       - name: Check out the repository
         uses: actions/checkout@v7
+        with:
+          # The full history, so the branch rules find the merge base with the base branch.
+          fetch-depth: 0
 
       - name: Install uv and Python ${{ matrix.python-version }}
         uses: astral-sh/setup-uv@v7
@@ -42,3 +45,12 @@ jobs:
           # The patterns live in the repository variable, never in a file.
           FORBIDDEN: ${{ vars.FORBIDDEN_NAMES }}
         run: scripts/check.sh rules
+
+      # loop-no-dash, loop-comments and loop-complexity over the pull request's
+      # diff, the rules a delivery-loop stage enforces, so this repository passes
+      # its own rules.
+      - name: Check the branch against its base
+        if: github.event_name == 'pull_request'
+        env:
+          CHECK_BASE: origin/${{ github.base_ref }}
+        run: scripts/check.sh branch

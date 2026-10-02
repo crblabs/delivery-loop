@@ -234,17 +234,20 @@ def _session_run(session_id: str | None, worktree: Path) -> str | None:
 
 
 def _push_preflight(worktree: Path, config: LoopConfig) -> str | None:
-    """Reroute origin to HTTPS when the config asks; None when it does not.
-
-    Returns the outcome line for the run's events, or raises ``RunError`` so a
-    run that could not push at its end never starts.
-    """
+    """Reroute origin to HTTPS when asked; a run that could not push never starts."""
     if config.push_transport != "https":
         return None
     result = ensure_https_origin(worktree)
     if not result.passed:
         raise RunError(f'loop.toml sets [repo] push_transport = "https". {result.message}')
     return result.message
+
+
+def _start_event(task: str, session_id: str | None, pushed: str | None) -> dict:
+    event = {"hook": "cli", "decision": "start", "task": task, "session": session_id}
+    if pushed is not None:
+        event["push_transport"] = pushed
+    return event
 
 
 def start(
@@ -325,10 +328,7 @@ def start(
                 raise RunError("internal error: the initial state does not validate")
             ri.write_json_atomic(str(path), state)
             ri.write_entry(key, str(run_dir), str(worktree), session_id)
-            event = {"hook": "cli", "decision": "start", "task": task, "session": session_id}
-            if pushed is not None:
-                event["push_transport"] = pushed
-            ri.append_event(str(run_dir), event)
+            ri.append_event(str(run_dir), _start_event(task, session_id, pushed))
     run = Run(key, ri.read_entry(ri.index_path(key)) or {}, run_dir, config)
     return run, stage_text(config, worktree, 0, task)
 

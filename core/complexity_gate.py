@@ -663,10 +663,9 @@ def scan(tree: Tree, scope: Scope, settings: Settings, listed: dict) -> list[Vio
 
 
 def _is_forward_migration(base_version: object, current_version: object) -> bool:
-    """True only for the one authorised re-baseline: the reviewed file carries the
-    tool's own policy version, and the base is at a strictly older version. Every
-    other version change is refused, so the exemption cannot be rearmed across
-    commits. `type(...) is int` rejects a bool or a float that compares equal."""
+    """True only for the one authorised re-baseline: base strictly older than the
+    tool, reviewed file at the tool's version. Any other version change is refused,
+    so the exemption cannot be rearmed. `type(...) is int` rejects bool and float."""
     return (
         type(current_version) is int
         and current_version == POLICY_VERSION
@@ -796,10 +795,9 @@ def _is_current(data: dict) -> bool:
 
 
 def _regen_existing(prior: dict) -> dict | None:
-    """The entries a regen must not exceed. Empty means a wholesale re-baseline:
-    the file is absent, or older than the tool. None means refuse: the file is
-    ahead of the tool, which would be a downgrade. An empty file at the tool's
-    own version is not a re-baseline: `_is_current` keeps the regen strict."""
+    """The entries a regen must not exceed. Empty means a wholesale re-baseline
+    (file absent or older than the tool); None means refuse (file ahead of the
+    tool). An empty file at the tool's version stays strict via `_is_current`."""
     version = prior.get("policy_version")
     if type(version) is int and version == POLICY_VERSION:
         return baseline_functions(prior, "baseline")

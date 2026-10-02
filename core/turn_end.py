@@ -49,7 +49,7 @@ from core import complexity_gate as cx
 from core import no_unicode_dash as nd
 from core import run_index as ri
 from core import run_state as rs
-from core.config import LoopConfig, git_env
+from core.config import LoopConfig, StageSpec, git_env
 from core.guard_evidence import declared, guard_map
 from core.pipeline_loop_paths import is_carveout, parse_loop_edits_block
 
@@ -265,6 +265,13 @@ def _gate_card(name: str, gate: str, state: dict, config: LoopConfig) -> str:
     return "\n".join(lines)
 
 
+def _tree_failure(run: rs.Run, state: dict, stage: StageSpec) -> str | None:
+    """Why a ``clean_tree`` stage's worktree cannot end the stage, or None."""
+    if not stage.clean_tree:
+        return None
+    return _unclean(run.worktree) or _dashes(run.worktree, state) or _switched(run, state)
+
+
 def _advance(run: rs.Run, state: dict, message: str) -> TurnEndVerdict:
     config = run.config
     stage = config.stages[state["current"]]
@@ -292,13 +299,9 @@ def _advance(run: rs.Run, state: dict, message: str) -> TurnEndVerdict:
             if not _URL_RE.match(value):
                 return _no_token(run, state, f"PR: {value} is not the pull request's url")
             state["pr_url"] = value
-    unclean = _unclean(run.worktree) if stage.clean_tree else None
-    if unclean:
-        return _no_token(run, state, unclean)
-    if stage.clean_tree:
-        failed = _dashes(run.worktree, state) or _switched(run, state)
-        if failed:
-            return _no_token(run, state, failed)
+    failed = _tree_failure(run, state, stage)
+    if failed:
+        return _no_token(run, state, failed)
     state["history"].append({"at": ri.now_iso(), "event": "done", "stage": stage.name})
     if state["current"] + 1 >= len(config.stages):
         state["status"] = "done"

@@ -270,13 +270,21 @@ def main(argv: list[str] | None = None) -> int:
         print(path)
         return 0
     if args.verb == "lock":
-        handle = acquire_lock(slug, config=config)
-        if handle is None:
-            print(f"LOCK_HELD: another supervisor holds {path.with_suffix('.lock')}")
-            return 1
-        return _hold(handle)
+        return _lock(slug, config, path)
     if args.verb == "unlock":
         return _unlock(slug, config)
+    return _check_or_record(args, path)
+
+
+def _lock(repo_slug: str, config: LoopConfig, path: Path) -> int:
+    handle = acquire_lock(repo_slug, config=config)
+    if handle is None:
+        print(f"LOCK_HELD: another supervisor holds {path.with_suffix('.lock')}")
+        return 1
+    return _hold(handle)
+
+
+def _check_or_record(args: argparse.Namespace, path: Path) -> int:
     ok_record, record = _read_json(args.record_file)
     ok_question, question = _read_json(args.question_file)
     if not ok_record or not isinstance(record, dict) or not ok_question:
