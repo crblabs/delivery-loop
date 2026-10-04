@@ -435,9 +435,44 @@ def join_lines(command: str) -> str:
     return "".join(out)
 
 
+# The longest quoted text the lexer reads whole. shlex builds a word one
+# character at a time, so its time grows with the square of the word: 64 KB
+# takes a tenth of a second, 1 MB forty seconds, past the guard's timeout.
+LEX_WORD_MAX = 64 * 1024
+_LONG_WORD = "<long quoted text>"
+
+
+def _shorten_quoted(command: str) -> str:
+    """The line with each quoted span over ``LEX_WORD_MAX`` replaced by a short
+    stand-in, quotes kept, so a megabyte PR body is one cheap word. No rule
+    reads inside one: a command is found by its first words."""
+    if len(command) <= LEX_WORD_MAX:
+        return command
+    out, i, n = [], 0, len(command)
+    while i < n:
+        c = command[i]
+        if c == "\\":
+            out.append(command[i : i + 2])
+            i += 2
+            continue
+        if c not in "'\"":
+            out.append(c)
+            i += 1
+            continue
+        j = i + 1
+        while j < n and command[j] != c:
+            j += 2 if c == '"' and command[j] == "\\" else 1
+        if j - i - 1 > LEX_WORD_MAX:
+            out.append(c + _LONG_WORD + c)
+        else:
+            out.append(command[i : j + 1])
+        i = j + 1
+    return "".join(out)
+
+
 @functools.lru_cache(maxsize=8)
 def _lex(command: str) -> tuple[tuple[str, ...], ...]:
-    command = join_lines(command)
+    command = _shorten_quoted(join_lines(command))
     try:
         lexer = shlex.shlex(command, posix=True, punctuation_chars=_PUNCTUATION)
         lexer.whitespace = lexer.whitespace.replace("\n", "")
