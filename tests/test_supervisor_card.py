@@ -296,3 +296,22 @@ def test_cli_renders_a_fixture_and_its_first_line(tmp_path: Path) -> None:
         [sys.executable, str(TOOL), "--record-file", str(bad)], capture_output=True, text=True
     )
     assert proc.returncode == 2
+
+
+def test_a_stuck_wait_gets_a_card_that_releases_or_aborts() -> None:
+    # Value: protects=the escalation carries the action that fixes it; fails_when=the card
+    # says "nothing to decide" for a stuck wait; why_new=CRB-28 spec review 2; seam=none
+    from core.config import DEFAULTS
+
+    record = _base(
+        status="running",
+        current_stage="autoplan",
+        is_stale=False,
+        is_wait_stale=True,
+        waiting_on=["a1", "b2"],
+        wait_age_s=5400.0,
+    )
+    card = sc.render(record)
+    assert "| waiting 2026" in card.split("\n")[0]
+    assert "has waited 1.5h on background tasks" in card and "(a1, b2)" in card
+    assert DEFAULTS.resume_command in card and DEFAULTS.abort_command in card

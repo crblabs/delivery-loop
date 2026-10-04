@@ -16,6 +16,12 @@ knows the payload fields and the output shapes:
   * ``UserPromptSubmit``: ``session_id``, ``cwd`` and ``prompt``. A typed resume
     or abort is applied here, and its result is ``additionalContext``.
 
+At a Stop, the background tasks the agent started and that have not reported
+are read from the session transcript by ``transcript_tasks`` and handed to the
+turn end, which lets the turn end while one runs. The guard is told whether the
+harness runs a shell command in the background (the config's
+``background_flag``, ``run_in_background`` by default).
+
 The error path the adapter contract left open is settled here. A payload that
 does not parse fails open: there is no run to protect. Any error once a run is
 found fails closed: the guard denies, and the Stop hook blocks once per turn
@@ -213,14 +219,21 @@ def run_stop(raw: str) -> HookResult:
     try:
         from core import turn_end as te
 
-        run, _, early = _open(payload, *found)
+        run, state, early = _open(payload, *found)
         if run is None:
             return early or PASS
         prompt_id = payload.get("prompt_id")
+        pending, scan = _pending(payload, state)
         event = te.TurnEnd(
             session_id=_session(payload),
             message=last_message(payload),
             prompt_id=prompt_id if isinstance(prompt_id, str) else None,
+            pending_tasks=pending.tasks,
+            shell_tasks=pending.shell,
+            tasks_unknown=scan is not None,
+            activity_path=payload.get("transcript_path")
+            if isinstance(payload.get("transcript_path"), str)
+            else None,
         )
         verdict = te.handle_turn_end(event, run, STOP_LOCK_S)
     except Exception as exc:  # noqa: BLE001 - any failure on a run fails closed, once
@@ -228,17 +241,17 @@ def run_stop(raw: str) -> HookResult:
         return _closed(
             payload, f"delivery-loop could not record this turn: {exc!r}. " + _abort_hint()
         )
-    ri.append_event(
-        run_dir,
-        {
-            "hook": "stop",
-            "session": event.session_id,
-            "decision": "block"
-            if verdict.block
-            else ("pause" if verdict.pause_reason else ("note" if verdict.note else "pass")),
-            "reason": verdict.pause_reason,
-        },
-    )
+    record = {
+        "hook": "stop",
+        "session": event.session_id,
+        "decision": _decision(verdict),
+        "reason": verdict.pause_reason,
+    }
+    if verdict.waiting:
+        record["tasks"] = list(verdict.tasks)
+    if scan is not None:
+        record["scan"] = scan
+    ri.append_event(run_dir, record)
     if verdict.block and verdict.reinject:
         return block(verdict.reinject)
     if verdict.pause_reason:
@@ -246,7 +259,56 @@ def run_stop(raw: str) -> HookResult:
         return HookResult(stdout=boot.system_message_json(_pause_note(run, verdict.pause_reason)))
     if verdict.note:
         return HookResult(stdout=boot.system_message_json(verdict.note))
+    if verdict.waiting:
+        # For the person watching; the agent reads nothing at a turn that ends.
+        return HookResult(
+            stdout=boot.system_message_json(
+                f"delivery-loop: waiting for background task(s) {', '.join(verdict.tasks)}; "
+                "the stage continues when they report."
+            )
+        )
     return PASS
+
+
+def _decision(verdict) -> str:
+    if verdict.block:
+        return "block"
+    if verdict.pause_reason:
+        return "pause"
+    if verdict.waiting:
+        return "wait"
+    return "note" if verdict.note else "pass"
+
+
+def _pending(payload: dict, state: dict):
+    """The run's running background tasks (a ``transcript_tasks.Pending``) and,
+    when the scan failed, why.
+
+    Only a running run's own session is scanned, before the run's lock is
+    taken: the transcript can be megabytes, and a turn of another session or
+    of a paused run is not judged by its tasks. The transcript can lag the Stop
+    event, so a scan that finds a task running is read once more: a delivery
+    not yet written would make the turn wait on a notification already spent.
+    """
+    from adapters.claude_code import transcript_tasks as tt
+
+    none = tt.Pending((), ())
+    path = payload.get("transcript_path")
+    bound = state.get("session_id")
+    if not isinstance(path, str) or state.get("status") != "running":
+        return none, None
+    if bound is not None and bound != _session(payload):
+        return none, None
+    try:
+        pending = tt.scan(Path(path), state.get("started_at"))
+        if pending.tasks:
+            time.sleep(_TRANSCRIPT_WAIT_S)
+            pending = tt.scan(Path(path), state.get("started_at"))
+        return pending, None
+    except tt.ScanTooSlow:
+        return none, "slow"
+    except OSError:
+        return none, "unreadable"
 
 
 def run_guard(raw: str) -> HookResult:
@@ -319,6 +381,8 @@ def _guard(payload: dict) -> HookResult:
                     command=command if isinstance(command, str) else None,
                     path=target if isinstance(target, str) else None,
                     branch=branch if isinstance(branch, str) else None,
+                    background=isinstance(tool_input, dict)
+                    and tool_input.get(run.config.background_flag) is True,
                 )
                 verdict = guard.handle_pre_tool(call, run, state)
                 if not verdict.allow:

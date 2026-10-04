@@ -16,6 +16,11 @@ escalates whatever the state file status is, ``done`` included. It is checked
 after the floors, so a floor keeps its own reason, and before the status
 branches, so no status can hide it.
 
+A running run whose wait on background tasks is older than the scan's wait
+threshold, with no turn end for as long (``is_wait_stale``), escalates as
+``waiting_stale``, unless a pending question outranks it: nothing else wakes a
+session whose task never reports.
+
 Auto-answer authorization rests only on the ``--allow-path`` allowlist and a
 structured, non-empty diff of the pending guard map against the last accepted
 map. Plan prose is never an input. On today's hook the qa-continue route has no
@@ -172,9 +177,20 @@ def _decide_guard(
 
 
 def _decide_running(record: dict, question: dict | None) -> dict:
+    outcome = question.get("outcome") if isinstance(question, dict) else None
+    if record.get("is_wait_stale"):
+        # Checked before is_stale: it names the tasks the run is stuck on.
+        # Nothing else wakes a session whose background task never reports.
+        if outcome == "pending":
+            return _escalate("hidden_gate", "an approval question is waiting")
+        tasks = ", ".join(record.get("waiting_on") or [])
+        minutes = int((record.get("wait_age_s") or 0) // 60)
+        return _escalate(
+            "waiting_stale",
+            f"waiting {minutes} min on background tasks that have not reported ({tasks})",
+        )
     if not record.get("is_stale"):
         return {"action": "noop", "reply": None, "reason": "running", "notify": None}
-    outcome = question.get("outcome") if isinstance(question, dict) else None
     if outcome == "pending":
         return _escalate("hidden_gate", "an approval question is waiting")
     if outcome in ("missing", "unreadable"):

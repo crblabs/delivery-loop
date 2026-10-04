@@ -350,3 +350,75 @@ def test_a_named_config_may_still_move_the_state(worktree, tmp_path, monkeypatch
     assert ss.main(["--now", NOW.isoformat(), "--config", str(named)]) == 0
     [record] = json.loads(capsys.readouterr().out)
     assert Path(record["worktree"]).name == "far"
+
+
+def test_a_long_wait_in_a_quiet_session_is_flagged(worktree, capsys):
+    # Value: protects=a stuck background wait reaches a person, and a turn a notification
+    # woke is not escalated while it works; fails_when=it is judged by updated_at alone, or
+    # by waiting_since alone; why_new=CRB-28 spec review 2, review red team; seam=none
+    waiting = {"waiting_on": ["a1"], "waiting_since": "2026-09-16T08:30:00+00:00"}
+    worktree("stuck", make_state(updated_at="2026-09-16T08:45:00+00:00", **waiting))
+    worktree("woken", make_state(**waiting))
+    worktree("recent", make_state(waiting_on=["a1"], waiting_since="2026-09-16T09:30:00+00:00"))
+    worktree("unset", make_state(waiting_on=["a1"]))
+    worktree("paused", make_state(status="awaiting_human", paused_reason="gate", **waiting))
+    records = records_by_name()
+    assert records["stuck"]["is_wait_stale"] is True
+    assert records["stuck"]["wait_age_s"] == 5400.0
+    assert records["stuck"]["waiting_on"] == ["a1"]
+    assert records["woken"]["is_wait_stale"] is False
+    assert records["recent"]["is_wait_stale"] is False
+    assert records["unset"]["is_wait_stale"] is False
+    assert records["paused"]["is_wait_stale"] is False
+    assert ss._needs_attention(records["stuck"])
+    assert not ss._needs_attention(records["recent"])
+
+
+def test_a_wait_on_shell_commands_alone_is_flagged_sooner(worktree, capsys):
+    # Value: protects=review D5: a dev server left running stalls a stage for 15 minutes,
+    # not an hour; fails_when=the shell-only flag is ignored; why_new=review; seam=none
+    quiet = {"updated_at": "2026-09-16T09:40:00+00:00", "waiting_on": ["b1"]}
+    since = {"waiting_since": "2026-09-16T09:40:00+00:00"}
+    worktree("shell", make_state(waiting_shell_only=True, **quiet, **since))
+    worktree("agent", make_state(**quiet, **since))
+    records = records_by_name()
+    assert records["shell"]["is_wait_stale"] is True
+    assert records["shell"]["waiting_shell_only"] is True
+    assert records["agent"]["is_wait_stale"] is False
+
+
+def test_a_session_that_writes_its_activity_file_is_not_a_stuck_wait(worktree, tmp_path, capsys):
+    # Value: protects=review D9: a long turn a notification woke is not escalated while the
+    # session works; fails_when=only updated_at decides quiet; why_new=review red team
+    import os
+
+    busy, idle = tmp_path / "busy.jsonl", tmp_path / "idle.jsonl"
+    for path, at in ((busy, NOW.timestamp() - 60), (idle, NOW.timestamp() - 7200)):
+        path.write_text("{}\n", encoding="utf-8")
+        os.utime(path, (at, at))
+    old = {
+        "updated_at": "2026-09-16T08:00:00+00:00",
+        "waiting_since": "2026-09-16T08:00:00+00:00",
+        "waiting_on": ["a1"],
+    }
+    worktree("busy", make_state(activity_path=str(busy), **old))
+    worktree("idle", make_state(activity_path=str(idle), **old))
+    worktree("gone", make_state(activity_path=str(tmp_path / "missing"), **old))
+    records = records_by_name()
+    assert records["busy"]["is_wait_stale"] is False
+    assert records["idle"]["is_wait_stale"] is True
+    assert records["gone"]["is_wait_stale"] is True
+
+
+def test_the_wait_limits_are_read_from_the_command_line(worktree, capsys):
+    # Value: protects=the two loop-scan flags reach the rule, at the >= boundary;
+    # fails_when=a flag is dropped or the two are swapped; why_new=review testing
+    at = "2026-09-16T09:50:00+00:00"
+    quiet = {"updated_at": at, "waiting_since": at}
+    worktree("agent", make_state(waiting_on=["a1"], **quiet))
+    worktree("shell", make_state(waiting_on=["b1"], waiting_shell_only=True, **quiet))
+    args = ["--wait-stale-after-seconds", "600", "--shell-wait-stale-after-seconds", "601"]
+    assert ss.main(["--now", NOW.isoformat(), *args]) in (0, 1)
+    records = {Path(r["worktree"]).name: r for r in json.loads(capsys.readouterr().out)}
+    assert records["agent"]["is_wait_stale"] is True
+    assert records["shell"]["is_wait_stale"] is False

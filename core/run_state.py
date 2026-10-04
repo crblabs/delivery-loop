@@ -54,6 +54,10 @@ STAGES_DIR = PLUGIN_ROOT / PLUGIN_STAGES_DIR
 CONFIG_SNAPSHOT = ri.SNAPSHOT_FILE
 # How many turns a stage may end without a token before the run pauses.
 MAX_ATTEMPTS = 3
+# Turn ends one wait on background tasks may last before a person is asked; a
+# turn end with nothing pending ends the wait and restarts the count. An
+# autoplan stage waits on about six to ten reviewers at a time.
+MAX_WAITS = 20
 DONE_TOKEN = "<promise>STAGE DONE</promise>"
 PAUSE_TOKEN = "<promise>NEEDS HUMAN</promise>"
 ACTIVE = ri.ACTIVE
@@ -192,7 +196,7 @@ def _initial_state(
         "status": "running",
         "attempts": dict.fromkeys(names, 0),
         "total_attempts": 0,
-        "caps": {"attempts": MAX_ATTEMPTS},
+        "caps": {"attempts": MAX_ATTEMPTS, "waits": MAX_WAITS},
         "revision": 1,
         "session_id": session_id,
         "history": [{"at": now, "event": "start", "stage": names[0]}],
@@ -207,6 +211,18 @@ def _initial_state(
         "guard_files_seen": [],
         "guard_pending": None,
         "declared_loop_edits": [],
+        # The background tasks the run waits on, since when, whether they are
+        # all shell commands, how many turn ends each stage spent waiting, and
+        # the tasks a person released.
+        "waiting_on": [],
+        "waiting_since": None,
+        "waiting_shell_only": False,
+        # A file the harness writes while the session works, so the supervisor
+        # can tell a stuck wait from a long turn a notification woke.
+        "activity_path": None,
+        "wait_turns": dict.fromkeys(names, 0),
+        "wait_capped": False,
+        "released_tasks": [],
         "plan_path": None,
         "pr_url": None,
         "last_block_revision": None,
@@ -422,15 +438,41 @@ def _approve_plan(state: dict) -> None:
     state["declared_loop_edits"] = state.pop("pending_loop_edits")
 
 
+def clear_wait(state: dict) -> None:
+    """End the run's wait: no task, no start time, not shell-only."""
+    state["waiting_on"] = []
+    state["waiting_since"] = None
+    state["waiting_shell_only"] = False
+
+
+def _release(state: dict) -> None:
+    """Stop waiting on the tasks the run waits on: a person says they will not report.
+
+    The list is never trimmed: a released id dropped from it would come back
+    as a wait, since its launch stays in the session's transcript.
+    """
+    state["released_tasks"] = list(state.get("released_tasks") or []) + [
+        t for t in state.get("waiting_on") or [] if t not in (state.get("released_tasks") or [])
+    ]
+    clear_wait(state)
+    state["wait_capped"] = False
+
+
 def resume(run: Run, by: str, session_id: str | None = None) -> str:
     """Resume a paused run for a person, and return the text the agent continues with.
 
     Only a person's own action reaches this: the harness's prompt hook, or the
     CLI in a terminal. A guard pause accepts the changed files as the new
-    baseline. Any other pause restarts the current stage's attempts.
+    baseline. Any other pause restarts the current stage's attempts and waits.
     ``session_id`` comes from the harness, never from an argument the agent can
     type: given from another session, it binds the run to that session, which is
     how a person adopts a run whose session ended, running or paused.
+
+    Background tasks the run waits on are released only when the wait is stuck:
+    a pause at the wait cap, or a resume that does not adopt the run while it
+    is running and waiting. Any other resume keeps waiting on them, since a
+    reviewer that still runs will report. Adopting a running run forgets its
+    wait without releasing it: the new session's transcript says what it runs.
     """
 
     def apply(state: dict) -> str:
@@ -440,8 +482,19 @@ def resume(run: Run, by: str, session_id: str | None = None) -> str:
                 {"at": ri.now_iso(), "event": "adopt", "from": state.get("session_id")}
             )
             state["session_id"] = session_id
+        stage = state["current_stage"]
         if state["status"] == "running" and adopting:
-            state["attempts"][state["current_stage"]] = 0
+            state["attempts"][stage] = 0
+            clear_wait(state)
+            return state_text(run, state)
+        if state["status"] == "running" and state.get("waiting_on"):
+            _release(state)
+            state["attempts"][stage] = 0
+            state.setdefault("wait_turns", {})[stage] = 0
+            state["resumed_by"] = by
+            state["history"].append(
+                {"at": ri.now_iso(), "event": "resume", "by": by, "reason": "waiting"}
+            )
             return state_text(run, state)
         if state["status"] != "awaiting_human":
             raise RunError(
@@ -454,9 +507,12 @@ def resume(run: Run, by: str, session_id: str | None = None) -> str:
             state["guard_files_seen"].append(state["guard_pending"])
         if state.get("paused_reason") == "gate" and "pending_loop_edits" in state:
             _approve_plan(state)
+        if state.get("wait_capped"):
+            _release(state)
         state["guard_pending"] = None
         state["status"] = "running"
-        state["attempts"][state["current_stage"]] = 0
+        state["attempts"][stage] = 0
+        state.setdefault("wait_turns", {})[stage] = 0
         state["resumed_by"] = by
         state["history"].append(
             {"at": ri.now_iso(), "event": "resume", "by": by, "reason": state["paused_reason"]}
@@ -492,6 +548,13 @@ def status_text(run: Run) -> str:
             lines.append(f"Resume accepts them: {run.config.resume_command}")
         elif state.get("pending_question"):
             lines.append(state["pending_question"].strip()[-500:])
+    if state.get("waiting_on"):
+        used = (state.get("wait_turns") or {}).get(state["current_stage"], 0)
+        cap = (state.get("caps") or {}).get("waits", MAX_WAITS)
+        lines.append(
+            f"Waiting on {', '.join(state['waiting_on'])} since {state.get('waiting_since')} "
+            f"(wait {used} of {cap})"
+        )
     if state.get("plan_path"):
         edits = state.get("declared_loop_edits") or []
         lines.append(f"Plan: {state['plan_path']}")

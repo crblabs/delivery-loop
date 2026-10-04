@@ -252,6 +252,18 @@ def _paused_card(record: dict, config: LoopConfig) -> dict[str, str]:
 
 
 def _liveness_card(record: dict, config: LoopConfig) -> dict[str, str]:
+    if record.get("is_wait_stale"):
+        age = record.get("wait_age_s")
+        waited = f"{float(age) / 3600:.1f}h" if isinstance(age, (int, float)) else "?"
+        tasks = ", ".join(record.get("waiting_on") or []) or "?"
+        return _card(
+            f"Stage {record.get('current_stage')} has waited {waited} on background tasks "
+            f"that have not reported ({tasks}). Release them?",
+            f"1. {config.resume_command} from the run's session releases them",
+            f"2. {config.abort_command}",
+            "1 goes on without their result. 2 ends the run.",
+            "resume | abort",
+        )
     if not record.get("is_stale"):
         return _card("Nothing to decide: the run is live.", "1. Wait", "", "", "wait")
     age = record.get("age_seconds")
@@ -332,7 +344,13 @@ def _state_word(record: dict) -> str:
         return "orphaned"
     if record.get("condition") not in (None, "ok"):
         return "unreadable"
-    live = "stale" if record.get("is_stale") else "running"
+    live = (
+        "waiting"
+        if record.get("is_wait_stale")
+        else "stale"
+        if record.get("is_stale")
+        else "running"
+    )
     return {"awaiting_human": "paused", "failed": "failed"}.get(str(record.get("status")), live)
 
 

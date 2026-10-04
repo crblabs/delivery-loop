@@ -32,6 +32,15 @@ def test_pause_key_hidden_gate_uses_tool_id():
     assert sl.pause_key(rec, q) == "R:gate:toolu_9"
 
 
+def test_pause_key_a_stale_wait_is_its_own_identity():
+    # Value: protects=a stuck wait is escalated once per wait, apart from a plain running
+    # escalation; fails_when=it shares "R:running" and is suppressed; why_new=review; seam=none
+    rec = {"run_id": "R", "status": "running", "is_wait_stale": True, "waiting_since": "t1"}
+    assert sl.pause_key(rec) == "R:waiting:t1"
+    assert sl.pause_key(rec | {"waiting_since": "t2"}) != sl.pause_key(rec)
+    assert sl.pause_key({"run_id": "R", "status": "running"}) == "R:running"
+
+
 def test_pause_key_permission_prompt_uses_tool_id():
     rec = {"run_id": "R", "status": "running"}
     q = {"outcome": "permission_prompt", "tool_use_id": "toolu_b"}

@@ -1,0 +1,1 @@
+{"type": "attachment", "isSidechain": false, "timestamp": "{T+65}", "sessionId": "s1", "attachment": {"type": "queued_command", "prompt": "Background agent \"/code-review\" was stopped by the user.", "commandMode": "task-notification"}}

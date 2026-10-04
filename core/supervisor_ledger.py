@@ -83,6 +83,10 @@ def pause_key(record: dict, question: dict | None = None) -> str:
         return f"{run}:pause:{record.get('paused_reason')}:{record.get('paused_prompt_id')}"
     if isinstance(question, dict) and question.get("outcome") == "pending":
         return f"{run}:gate:{question.get('tool_use_id')}"
+    if record.get("is_wait_stale"):
+        # Its own identity per wait, so a later stuck wait is escalated again
+        # and a plain "running" escalation does not hold it back.
+        return f"{run}:waiting:{record.get('waiting_since')}"
     return f"{run}:{status or record.get('condition')}"
 
 

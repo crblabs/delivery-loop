@@ -44,6 +44,20 @@ class TurnEnd(TypedDict):
     # from the event itself or the turn record, so core never parses a
     # transcript.
     message: str | None
+    # The background tasks the agent started that have neither reported nor
+    # been stopped, as ids: every agent, and the shell commands of the turn
+    # that is ending. Optional: a harness that cannot tell passes an empty
+    # list, and the loop then treats every turn end as it always did.
+    pending_tasks: list[str]
+    # Which of pending_tasks are shell commands rather than agents. Optional:
+    # a wait on shell commands alone is escalated sooner by the supervisor.
+    shell_tasks: list[str]
+    # True when the harness could not read the tasks: STAGE DONE is refused
+    # and the recorded wait is left as it was.
+    tasks_unknown: bool
+    # A file the harness writes while the session works (the transcript), so
+    # the supervisor can tell a stuck wait from a long working turn. Optional.
+    activity_path: str | None
 
 class TurnEndVerdict(TypedDict):
     # False lets the turn end. True holds the session open.
@@ -54,6 +68,11 @@ class TurnEndVerdict(TypedDict):
     # Set when the loop is pausing rather than advancing. Names the pause
     # reason from the taxonomy in core.
     pause_reason: str | None
+    # True when the turn ends while background tasks run: the agent waits for
+    # their notification, which the harness delivers into the session later.
+    waiting: bool
+    # The tasks it waits on, after a person's releases; empty otherwise.
+    tasks: list[str]
 ```
 
 What core exposes:
@@ -73,6 +92,16 @@ What the adapter must do with the verdict:
 - `pause_reason` set: the run is paused. The adapter does not act on this
   beyond returning the verdict. The supervisor reads the pause from the state
   file.
+- `waiting` True: let the turn end. The harness must wake the session when a
+  pending task reports; a harness that cannot (a headless run that exits at
+  the end of a turn) leaves the run waiting until a person resumes it.
+
+A turn end with pending tasks is never refused for a missing token and spends
+no attempt, up to `caps.waits` such turn ends in one wait (a turn end with
+nothing pending ends the wait and restarts the count); a done token is
+refused while a task runs, and while the adapter could not read the tasks
+(`tasks_unknown`). The Claude Code adapter reads the tasks from the
+session transcript (`adapters/claude_code/transcript_tasks.py`).
 
 ```python
 def emit_turn_end(self, verdict: TurnEndVerdict) -> int: ...
@@ -92,6 +121,9 @@ class PreToolCall(TypedDict):
     tool_name: str
     # The shell command, when the tool is a shell tool. None otherwise.
     command: str | None
+    # True when the harness runs the shell command in the background, so it
+    # holds no turn open. A foreground wait in a shell is denied.
+    background: bool
     arguments: dict[str, object]
 
 class PreToolVerdict(TypedDict):

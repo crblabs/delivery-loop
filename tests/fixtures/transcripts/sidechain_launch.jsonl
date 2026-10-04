@@ -1,0 +1,1 @@
+{"type": "user", "isSidechain": true, "timestamp": "{T+15}", "sessionId": "s1", "message": {"role": "user", "content": [{"tool_use_id": "toolu_x", "type": "tool_result", "content": "ok"}]}, "toolUseResult": {"stdout": "", "stderr": "", "backgroundTaskId": "bside0001"}}

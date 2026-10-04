@@ -1,0 +1,1 @@
+{"type": "user", "isSidechain": false, "timestamp": "{T+50}", "sessionId": "s1", "origin": {"kind": "task-notification", "producer": "session-task"}, "message": {"role": "user", "content": "<task-notification>\n<task-id>baa2q82i2</task-id>\n<tool-use-id>toolu_x</tool-use-id>\n<status>completed</status>\n<summary>done</summary>\n</task-notification>"}}

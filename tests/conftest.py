@@ -100,3 +100,38 @@ def start_run(make_repo: Callable[[Path], Path], tmp_path: Path):
         return run, worktree
 
     return start
+
+
+_FIXTURE_TRANSCRIPTS = Path(__file__).resolve().parent / "fixtures" / "transcripts"
+
+
+@pytest.fixture
+def transcript(tmp_path: Path) -> Callable[..., Path]:
+    """Write a session transcript from fixture files, in order, and return its path.
+
+    Each fixture line's ``{T+<seconds>}`` (or ``{T-<seconds>}``) is filled with
+    that offset from ``start``, an ISO-8601 time, so a test places the records
+    after (or before) the run it drives.
+    """
+    import re
+    from datetime import timedelta
+
+    from core.pipeline_state import parse_iso
+
+    def write(start: str, *names: str, path: Path | None = None) -> Path:
+        base = parse_iso(start)
+        assert base is not None, start
+
+        def fill(match: re.Match) -> str:
+            at = base + timedelta(seconds=int(match.group(1)))
+            return at.isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+        target = path or tmp_path / "session.jsonl"
+        lines = []
+        for name in names:
+            text = (_FIXTURE_TRANSCRIPTS / f"{name}.jsonl").read_text(encoding="utf-8")
+            lines.append(re.sub(r"\{T([+-]\d+)\}", fill, text))
+        target.write_text("".join(lines), encoding="utf-8")
+        return target
+
+    return write

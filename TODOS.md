@@ -106,3 +106,42 @@ stops fixing after three cycles, so they are listed here.
   python3 3.10 or older first on PATH.
 - **Context:** `adapters/claude_code/hooks.py` `_pause_note`;
   `adapters/claude_code/bootstrap.py` `old_python_hook`.
+
+## A time limit on a background wait (CRB-28 follow-up, with CRB-10)
+
+- **What:** end or escalate a wait that has lasted past a configured limit,
+  instead of relying on the 20-wait cap and the supervisor's `waiting_stale`.
+- **Why:** a task that never reports keeps a run `running` until a person acts.
+- **Pros:** an unattended run stops wasting a slot on a dead task.
+- **Cons:** needs a timer outside the session; a limit that is too short cuts
+  real long reviews.
+- **Context:** CRB-28 adds `waiting_on`/`waiting_since` and the supervisor's
+  `waiting_stale` escalation; CRB-10 is the place for the timer.
+- **Effort:** M (human) / S (CC). **Priority:** P2.
+- **Depends on:** CRB-28.
+
+## Monitor and SendMessage-continued agents as pending tasks (CRB-28 follow-up)
+
+- **What:** recognize a Monitor launch, and an agent woken again with
+  SendMessage, as background work the Stop hook waits for.
+- **Why:** today only Agent async launches, background Bash and their
+  notifications are read; a Monitor wait is refused like a missing token.
+- **Pros:** every harness wait tool works with the loop.
+- **Cons:** no record shape observed yet; guessing risks phantom waits.
+- **Context:** `adapters/claude_code/transcript_tasks.py`; capture the shapes
+  from a real transcript first.
+- **Effort:** S / S. **Priority:** P3.
+- **Depends on:** CRB-28.
+
+## Cache the transcript scan per session (CRB-28 follow-up)
+
+- **What:** keep the last scanned byte offset and the launch/delivery id sets
+  per transcript in the run directory, and scan only new bytes at each Stop.
+- **Why:** the Stop hook reads the whole transcript every turn end; very long
+  sessions make that slower.
+- **Pros:** constant work per Stop.
+- **Cons:** must notice a rewritten or truncated transcript and rescan.
+- **Context:** `adapters/claude_code/transcript_tasks.py`; today's budget is a
+  5 MB transcript under 1 s.
+- **Effort:** S / S. **Priority:** P3.
+- **Depends on:** CRB-28.

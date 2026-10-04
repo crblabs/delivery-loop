@@ -166,7 +166,7 @@ GATES = ("none", "approval", "review_batch")
 # it may hold no separator and may not read as a relative path.
 _STAGE_NAME_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9._-]*$")
 _STAGE_STRINGS = ("command", "prompt", "emits", "gate")
-_STAGE_BOOLS = ("clean_tree", "sandbox_off")
+_STAGE_BOOLS = ("clean_tree", "sandbox_off", "shell_waits")
 
 
 @dataclass(frozen=True)
@@ -184,6 +184,9 @@ class StageSpec:
     whether the stage stops for a person: ``none`` never, ``approval`` at an
     approval question, ``review_batch`` at a batch of review questions.
     ``sandbox_off`` says the stage cannot run under the agent sandbox.
+    ``shell_waits`` lets the stage wait in a foreground shell (``sleep``, a
+    polling loop), such as a QA stage that waits for a dev server; every other
+    stage is denied one, because a foreground wait holds the turn open.
     """
 
     name: str
@@ -193,6 +196,7 @@ class StageSpec:
     clean_tree: bool = False
     gate: str = "none"
     sandbox_off: bool = False
+    shell_waits: bool = False
 
     def __post_init__(self) -> None:
         if not isinstance(self.name, str) or not self.name.strip():
@@ -260,7 +264,9 @@ class LoopConfig:
     ``resume_command`` and ``abort_command`` are the operator commands a card
     quotes, and ``tracker_prefix`` with ``tracker_pattern`` recognise an issue
     identifier in a worktree name. ``tracker_prefix`` is a regular expression
-    fragment; the default matches any run of letters.
+    fragment; the default matches any run of letters. ``stop_task_tool`` and
+    ``background_flag`` are the harness's names for stopping a background task
+    and for running a command in the background, quoted to the agent.
     """
 
     state_dir: str = ".claude"
@@ -293,6 +299,10 @@ class LoopConfig:
     abort_command: str = "/delivery-loop:pipeline abort"
     tracker_prefix: str = "[A-Za-z]+"
     tracker_pattern: str = r"({tracker_prefix}-\d+)"
+    # The harness's names for stopping a background task and for starting a
+    # command in the background, quoted in what the agent is told.
+    stop_task_tool: str = "TaskStop"
+    background_flag: str = "run_in_background"
 
     def __post_init__(self) -> None:
         _refuse_empty("state_dir", self.state_dir)
@@ -343,7 +353,13 @@ class LoopConfig:
             for value in getattr(self, name):
                 _refuse_empty(name, value)
                 _refuse_unsafe(name, value)
-        for name in ("session_label", "resume_command", "abort_command"):
+        for name in (
+            "session_label",
+            "resume_command",
+            "abort_command",
+            "stop_task_tool",
+            "background_flag",
+        ):
             _refuse_empty(name, getattr(self, name))
         _refuse_empty("tracker_prefix", self.tracker_prefix)
         try:
@@ -443,6 +459,8 @@ _STRING_KEYS = (
     ("state_root", "harness", "state_root"),
     ("state_file", "harness", "state_file"),
     ("session_label", "harness", "session_label"),
+    ("stop_task_tool", "harness", "stop_task_tool"),
+    ("background_flag", "harness", "background_flag"),
     ("ledger_dir", "ledger", "dir"),
     ("ledger_name", "ledger", "name"),
     ("stage_shorthand", "loop_paths", "stage_shorthand"),

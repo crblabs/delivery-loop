@@ -522,3 +522,210 @@ def test_the_dash_base_is_origin_head_when_the_repository_has_one(
     assert te._dash_base(clone, {"start_head": "abc"}) == "origin/HEAD"
     assert te._dash_base(origin, {"start_head": "abc"}) == "abc"
     assert te._dash_base(origin, {}) is None
+
+
+# --- Waiting on background tasks ----------------------------------------------
+
+
+def _wait(run: rs.Run, message: str, tasks: tuple[str, ...], session: str = "s1"):
+    return te.handle_turn_end(te.TurnEnd(session, message, "p1", tasks), run)
+
+
+def test_a_turn_that_waits_on_a_background_task_ends_without_an_attempt(start_run) -> None:
+    # Value: protects=the CRB-28 acceptance: an obedient wait is neither refused nor
+    # counted; fails_when=a no-token turn with a running task is blocked or counted;
+    # why_new=CRB-28; seam=none
+    run, _ = start_run()
+    verdict = _wait(run, "Waiting for the spec reviewer.", ("a1",))
+    assert verdict == te.TurnEndVerdict(block=False, waiting=True, tasks=("a1",))
+    state = _state(run)
+    assert state["attempts"]["autoplan"] == 0 and state["total_attempts"] == 0
+    assert state["waiting_on"] == ["a1"] and state["waiting_since"] is not None
+    assert state["wait_turns"]["autoplan"] == 1
+    assert state["history"][-1] | {"at": None} == {
+        "at": None,
+        "event": "wait",
+        "stage": "autoplan",
+        "tasks": ["a1"],
+    }
+
+
+def test_the_wait_clears_when_the_task_reports(start_run) -> None:
+    run, _ = start_run()
+    _wait(run, "Waiting.", ("a1",))
+    verdict = _wait(run, "still thinking", ())
+    assert verdict.block and verdict.reinject.startswith("The stage is not finished")
+    state = _state(run)
+    assert state["waiting_on"] == [] and state["waiting_since"] is None
+
+
+def test_done_is_refused_while_a_background_task_runs(start_run, tmp_path) -> None:
+    # Value: protects=the next stage never starts beside a running reviewer; fails_when=
+    # STAGE DONE advances with a task pending; why_new=CRB-28; seam=none
+    run, _ = start_run()
+    plan = tmp_path / "plan.md"
+    plan.write_text("Plan.\n", encoding="utf-8")
+    verdict = _wait(run, f"PLAN: {plan}\n{DONE}", ("b1",))
+    assert verdict.block
+    assert "a background task is still running (b1)" in verdict.reinject
+    assert DEFAULTS.stop_task_tool in verdict.reinject
+    state = _state(run)
+    assert state["current_stage"] == "autoplan" and state["attempts"]["autoplan"] == 1
+
+
+def test_a_refused_stage_done_at_the_attempt_cap_never_releases_a_running_task(start_run) -> None:
+    # Value: protects=review red team: one early STAGE DONE after two misses must not let a
+    # resume release a reviewer that still works, so the stage advances beside it;
+    # fails_when=_no_token sets wait_capped; why_new=review; seam=none
+    run, _ = start_run()
+    for _ in range(2):
+        assert _end(run, "thinking").block
+    assert _wait(run, "Waiting.", ("a1", "a2")).waiting
+    verdict = _wait(run, DONE, ("a2",))
+    assert verdict.pause_reason == "no_message"
+    state = _state(run)
+    assert not state.get("wait_capped")
+    card = state["pending_question"]
+    assert "turns that were not accepted (last: a background task is still running" in card
+    rs.resume(run, "person")
+    state = _state(run)
+    assert state["released_tasks"] == [] and state["waiting_on"] == ["a2"]
+    assert _wait(run, DONE, ("a2",)).block
+
+
+def test_the_wait_cap_pauses_with_a_card_naming_the_tasks(start_run) -> None:
+    # Value: protects=the interim wait limit and its card; fails_when=waits never stop or
+    # stop early; why_new=CRB-28; seam=none
+    run, _ = start_run()
+    for _ in range(rs.MAX_WAITS):
+        assert _wait(run, "Waiting.", ("a1", "b2")).waiting
+    verdict = _wait(run, "Waiting.", ("a1", "b2"))
+    assert verdict.pause_reason == "no_message" and not verdict.waiting
+    state = _state(run)
+    assert state["wait_capped"] is True
+    assert state["attempts"]["autoplan"] == 0 and state["total_attempts"] == 0
+    card = state["pending_question"]
+    assert f"waited {rs.MAX_WAITS} turns" in card and "(a1, b2, since" in card
+    assert DEFAULTS.resume_command in card and DEFAULTS.abort_command in card
+
+
+def test_waiting_since_runs_from_the_start_of_a_wait_until_nothing_is_pending(start_run) -> None:
+    # Value: protects=a task that never reports cannot hide behind newer ones from the
+    # supervisor's stale wait; fails_when=a new task restarts the clock; why_new=review
+    # adversarial; seam=none
+    run, _ = start_run()
+    _wait(run, "Waiting.", ("a1", "b2"))
+    first = _state(run)["waiting_since"]
+    _wait(run, "Waiting.", ("a1", "c3"))
+    assert _state(run)["waiting_since"] == first
+    _end(run, "thinking")
+    assert _state(run)["waiting_since"] is None
+
+
+def test_the_wait_count_restarts_when_nothing_is_pending(start_run) -> None:
+    # Value: protects=review red team: the cap bounds one wait, so a stage with several review
+    # rounds is not paused while healthy; fails_when=wait_turns counts the whole stage;
+    # why_new=review; seam=none
+    run, _ = start_run()
+    for _ in range(rs.MAX_WAITS):
+        assert _wait(run, "Waiting.", ("a1",)).waiting
+    assert _end(run, "Reviewed; next round.").block
+    assert _state(run)["wait_turns"]["autoplan"] == 0
+    for _ in range(rs.MAX_WAITS):
+        assert _wait(run, "Waiting.", ("b1",)).waiting
+
+
+def test_a_guard_pause_records_what_the_run_waits_on(start_run) -> None:
+    # Value: protects=the waiting fields are current whatever the verdict; fails_when=the
+    # record moves after the guard check; why_new=review plan audit; seam=none
+    run, worktree = start_run()
+    _end(run, "thinking")
+    (worktree / "loop.toml").write_text("# changed\n", encoding="utf-8")
+    verdict = _wait(run, "Waiting.", ("a1",))
+    assert verdict.pause_reason == "guard_changed"
+    assert _state(run)["waiting_on"] == ["a1"]
+
+
+def test_a_pause_still_records_what_the_run_waits_on(start_run) -> None:
+    run, _ = start_run()
+    verdict = _wait(run, CARD, ("a1",))
+    assert verdict.pause_reason == "needs_human"
+    assert _state(run)["waiting_on"] == ["a1"]
+
+
+def test_released_tasks_are_not_waited_on_again(start_run) -> None:
+    run, _ = start_run()
+    _wait(run, "Waiting.", ("a1",))
+    rs.resume(run, "person", "s1")
+    assert _state(run)["released_tasks"] == ["a1"]
+    assert _wait(run, "still thinking", ("a1",)).block
+
+
+def test_the_wait_count_restarts_in_the_next_stage(start_run, tmp_path) -> None:
+    run, _ = start_run()
+    _wait(run, "Waiting.", ("a1",))
+    plan = tmp_path / "plan.md"
+    plan.write_text("Plan.\n", encoding="utf-8")
+    assert _wait(run, f"PLAN: {plan}\n{DONE}", ()).pause_reason == "gate"
+    assert _state(run)["wait_turns"]["implement"] == 0
+
+
+def test_a_run_started_before_the_wait_fields_can_still_wait(start_run) -> None:
+    # Value: protects=runs in flight when the plugin updates; fails_when=the rules index a
+    # field an old state lacks; why_new=CRB-28 CEO Sec 9; seam=none
+    run, _ = start_run()
+
+    def strip(state: dict) -> None:
+        for key in ("waiting_on", "waiting_since", "wait_turns", "wait_capped", "released_tasks"):
+            state.pop(key)
+        state["caps"] = {"attempts": rs.MAX_ATTEMPTS}
+
+    rs.update(run, strip)
+    assert _wait(run, "Waiting.", ("a1",)).waiting
+    assert _state(run)["wait_turns"] == {"autoplan": 1}
+
+
+def test_a_wait_on_shell_commands_alone_is_marked_for_the_faster_alarm(start_run) -> None:
+    # Value: protects=review D5: a dev server's wait reaches a person sooner; fails_when=
+    # the shell-only flag is lost or set beside an agent; why_new=review; seam=none
+    run, _ = start_run()
+    te.handle_turn_end(te.TurnEnd("s1", "Waiting.", "p1", ("b1",), ("b1",)), run)
+    assert _state(run)["waiting_shell_only"] is True
+    te.handle_turn_end(te.TurnEnd("s1", "Waiting.", "p1", ("a1", "b1"), ("b1",)), run)
+    assert _state(run)["waiting_shell_only"] is False
+    _end(run, "thinking")
+    assert _state(run)["waiting_shell_only"] is False
+
+
+def test_an_unread_task_list_refuses_stage_done_and_keeps_the_wait(start_run) -> None:
+    # Value: protects=review D11: a transcript the adapter could not read never lets the
+    # stage advance beside a reviewer, nor resets the wait clock; fails_when=a failed scan
+    # reads as no task; why_new=review red team; seam=none
+    run, _ = start_run()
+    assert _wait(run, "Waiting.", ("a1",)).waiting
+    since = _state(run)["waiting_since"]
+    unknown = te.TurnEnd("s1", DONE, "p1", (), (), tasks_unknown=True)
+    verdict = te.handle_turn_end(unknown, run)
+    assert verdict.block and "could not read which background tasks" in verdict.reinject
+    state = _state(run)
+    assert state["waiting_on"] == ["a1"] and state["waiting_since"] == since
+    assert state["attempts"]["autoplan"] == 1
+
+
+def test_the_attempts_pause_says_how_to_release_a_task_still_waited_on(start_run) -> None:
+    # Value: protects=review adversarial: a task whose notification was lost can still be
+    # released after an attempts pause; fails_when=the card hides the second resume;
+    # why_new=review; seam=none
+    run, _ = start_run()
+    for _ in range(3):
+        _wait(run, DONE, ("a1",))
+    assert "a1; if they will never report" in _state(run)["pending_question"]
+    rs.resume(run, "person")
+    rs.resume(run, "person")
+    assert _state(run)["released_tasks"] == ["a1"]
+
+
+def test_a_turn_end_records_the_session_s_activity_file(start_run) -> None:
+    run, _ = start_run()
+    te.handle_turn_end(te.TurnEnd("s1", "x", "p1", activity_path="/t.jsonl"), run)
+    assert _state(run)["activity_path"] == "/t.jsonl"

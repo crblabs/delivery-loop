@@ -1050,3 +1050,23 @@ def test_a_file_that_breaks_the_parser_is_refused(tmp_path: Path, text: str) -> 
     # why_new=the native adversarial pass crashed loop-scan this way; seam=none
     with pytest.raises(cfg.ConfigError):
         cfg.load_config(write(tmp_path, text))
+
+
+def test_a_stage_may_allow_shell_waits() -> None:
+    # Value: protects=the per-stage escape hatch for a dev server check; fails_when=the key
+    # is dropped or accepts a non-boolean; why_new=CRB-28 DX #57; seam=none
+    config = cfg.from_mapping({"stages": [{"name": "qa", "shell_waits": True}, {"name": "x"}]})
+    assert config.stage("qa").shell_waits is True
+    assert config.stage("x").shell_waits is False
+    assert cfg.from_dict(cfg.to_dict(config)) == config
+    with pytest.raises(cfg.ConfigError, match="shell_waits takes true or false"):
+        cfg.from_mapping({"stages": [{"name": "qa", "shell_waits": "yes"}]})
+
+
+def test_the_harness_tool_names_have_defaults_and_can_be_set() -> None:
+    assert cfg.DEFAULTS.stop_task_tool == "TaskStop"
+    assert cfg.DEFAULTS.background_flag == "run_in_background"
+    config = cfg.from_mapping({"harness": {"stop_task_tool": "KillTask"}})
+    assert config.stop_task_tool == "KillTask"
+    with pytest.raises(cfg.ConfigError):
+        cfg.from_mapping({"harness": {"background_flag": ""}})

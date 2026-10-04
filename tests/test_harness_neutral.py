@@ -10,7 +10,9 @@ import pytest
 CORE = Path(__file__).resolve().parent.parent / "core"
 # The harness, its tools, and its payload and environment names.
 HARNESS = re.compile(
-    r"claude|\bSkill\b|NotebookEdit|MultiEdit|hookSpecificOutput|stop_hook_active", re.I
+    r"claude|\bSkill\b|NotebookEdit|MultiEdit|hookSpecificOutput|stop_hook_active"
+    r"|TaskStop|run_in_background",
+    re.I,
 )
 
 

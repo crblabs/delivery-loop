@@ -69,6 +69,12 @@ state_dir = ".claude"
 # How a decision card names the session the run is in.
 # session_label = "Session"
 
+# The harness's names for stopping a background task and for running a command
+# in the background, quoted to the agent when it ends a stage while a task runs
+# or tries to wait in a shell. The defaults are Claude Code's.
+# stop_task_tool = "TaskStop"
+# background_flag = "run_in_background"
+
 
 [ledger]
 # The supervisor's own ledger: one file per repository slug, in this directory
@@ -154,6 +160,9 @@ abort = "/delivery-loop:pipeline abort"
 #                 "approval" at an approval question, "review_batch" at a batch
 #                 of review questions. Nothing else is accepted.
 #   sandbox_off   false. True when the stage cannot run under the agent sandbox.
+#   shell_waits   false. True when the stage may wait in a foreground shell
+#                 (sleep, a polling loop, tail -f), such as a QA stage that
+#                 waits for a dev server. Every other stage is denied one.
 #
 # The loader refuses an empty array, a table with no name, two stages of one
 # name, a gate outside the three above, and a prompt path that escapes the
@@ -188,6 +197,11 @@ clean_tree = true
 gate = "none"
 # The qa skill drives a browser, which the agent sandbox blocks.
 sandbox_off = true
+# A stage may not wait in a foreground shell (sleep, a polling loop, tail -f):
+# the agent starts work in the background and ends its turn instead. Set this
+# when the stage must, for example to wait for a dev server with
+# `until curl -s localhost:3000; do sleep 1; done`.
+# shell_waits = false
 
 [[stages]]
 name = "review"

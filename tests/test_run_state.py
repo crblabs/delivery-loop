@@ -264,3 +264,119 @@ def test_an_old_state_with_a_forged_run_id_is_kept_in_place(start_run) -> None:
     run.state_path.write_text(json.dumps({**state, "run_id": "../../escape"}), "utf-8")
     rs.start(worktree, "CRB-2", DEFAULTS)
     assert (run.run_dir / "state.old.json").is_file()
+
+
+# --- Waiting on background tasks ----------------------------------------------
+
+
+def _waiting(run: rs.Run, tasks: list[str], **more) -> None:
+    def apply(state: dict) -> None:
+        state["waiting_on"] = tasks
+        state["waiting_since"] = ri.now_iso()
+        state["wait_turns"][state["current_stage"]] = 3
+        state.update(more)
+
+    rs.update(run, apply)
+
+
+def test_a_resume_from_the_waiting_session_releases_its_tasks(start_run) -> None:
+    # Value: protects=a person's way out of a task that will never report, without a
+    # pause; fails_when=resume refuses a running run again; why_new=spec review 1; seam=none
+    run, _ = start_run()
+    _waiting(run, ["a1"])
+    text = rs.resume(run, "person", "s1")
+    assert text.startswith("Stage 1/5: autoplan")
+    state = _state(run)
+    assert state["status"] == "running"
+    assert state["released_tasks"] == ["a1"] and state["waiting_on"] == []
+    assert state["waiting_since"] is None and state["wait_turns"]["autoplan"] == 0
+    assert state["resumed_by"] == "person"
+    assert state["history"][-1]["reason"] == "waiting"
+    assert state["paused_reason"] is None and state["pending_question"] is None
+
+
+def test_adopting_a_waiting_run_forgets_the_wait_without_releasing(start_run) -> None:
+    # Value: protects=a new session's own transcript decides what it waits on, and the
+    # supervisor does not escalate the old session's wait; fails_when=adopt keeps
+    # waiting_on, or releases tasks; why_new=review red team; seam=none
+    run, _ = start_run()
+    _waiting(run, ["a1"])
+    rs.resume(run, "person", "s2")
+    state = _state(run)
+    assert state["session_id"] == "s2" and state["status"] == "running"
+    assert state["waiting_on"] == [] and state["waiting_since"] is None
+    assert state["released_tasks"] == []
+
+
+def test_a_wait_capped_pause_releases_even_from_a_new_session(start_run) -> None:
+    # Value: protects=the cap card's promise after /clear; fails_when=adoption keeps the
+    # dead tasks; why_new=spec review 2; seam=none
+    run, _ = start_run()
+    _waiting(run, ["a1", "b2"], wait_capped=True)
+    rs.update(run, lambda s: rs.pause(s, "no_message", "card"))
+    rs.resume(run, "person", "s2")
+    state = _state(run)
+    assert state["session_id"] == "s2"
+    assert state["released_tasks"] == ["a1", "b2"] and state["wait_capped"] is False
+
+
+@pytest.mark.parametrize("reason", ["gate", "guard_changed", "needs_human", "no_message"])
+def test_any_other_resume_keeps_waiting(start_run, reason) -> None:
+    # Value: protects=a reviewer that still runs is still waited for; fails_when=every
+    # resume drops live tasks; why_new=spec review 2; seam=none
+    run, _ = start_run()
+    _waiting(run, ["a1"])
+    rs.update(run, lambda s: rs.pause(s, reason, "card"))
+    rs.resume(run, "person")
+    state = _state(run)
+    assert state["waiting_on"] == ["a1"] and state["released_tasks"] == []
+
+
+def test_released_tasks_are_never_trimmed(start_run) -> None:
+    run, _ = start_run()
+    for n in range(60):
+        _waiting(run, [f"t{n}"])
+        rs.resume(run, "person", "s1")
+    assert _state(run)["released_tasks"][0] == "t0"
+
+
+def test_status_shows_what_the_run_waits_on(start_run) -> None:
+    run, _ = start_run()
+    _waiting(run, ["a1", "b2"])
+    text = rs.status_text(run)
+    assert "Waiting on a1, b2 since " in text
+    assert f"(wait 3 of {rs.MAX_WAITS})" in text
+
+
+def test_a_state_from_before_the_wait_fields_is_still_valid(start_run) -> None:
+    run, _ = start_run()
+    state = _state(run)
+    for key in ("waiting_on", "waiting_since", "wait_turns", "wait_capped", "released_tasks"):
+        state.pop(key)
+    state["caps"] = {"attempts": rs.MAX_ATTEMPTS}
+    assert ps.valid(state, DEFAULTS)
+    assert not ps.valid({**state, "waiting_on": "a1"}, DEFAULTS)
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        {"waiting_on": [1]},
+        {"released_tasks": "a1"},
+        {"released_tasks": [None]},
+        {"waiting_since": "yesterday"},
+        {"waiting_since": 5},
+        {"wait_turns": []},
+        {"wait_turns": {"autoplan": "1"}},
+        {"wait_turns": {"autoplan": -1}},
+        {"wait_capped": "yes"},
+        {"waiting_shell_only": 1},
+    ],
+)
+def test_a_malformed_wait_field_makes_the_state_invalid(start_run, bad: dict) -> None:
+    # Value: protects=the supervisor and hooks read only well-typed wait fields; fails_when=
+    # one of _waits_ok's checks is dropped; why_new=review testing; seam=none
+    run, _ = start_run()
+    state = _state(run)
+    assert ps.valid(state, DEFAULTS)
+    assert not ps.valid({**state, **bad}, DEFAULTS)

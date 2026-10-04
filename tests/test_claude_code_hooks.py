@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from adapters.claude_code import hooks as ch
 from core import run_index as ri
 from core import run_state as rs
@@ -342,3 +344,134 @@ def test_a_move_is_judged_by_its_source_too(start_run, tmp_path) -> None:
     tool_input = {"source": str(worktree / "loop.toml"), "destination": str(tmp_path / "x")}
     out = _decision(ch.run_guard(_pre(tmp_path, "mcp__filesystem__move_file", tool_input)))
     assert out["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+
+# --- Waiting on background tasks ----------------------------------------------
+
+
+def _events(run: rs.Run) -> list[dict]:
+    return ri.read_events(str(run.run_dir), 20)
+
+
+def test_a_stop_while_a_background_task_runs_waits(start_run, transcript) -> None:
+    # Value: protects=the adapter feeds the transcript's tasks to the turn end, logs the wait
+    # and tells the person; fails_when=run_stop drops pending_tasks; why_new=CRB-28; seam=none
+    run, worktree = start_run()
+    _, state = rs.read(run)
+    path = transcript(state["started_at"], "agent_launch")
+    out = _decision(ch.run_stop(_stop(worktree, "Waiting.", transcript_path=str(path))))
+    assert "decision" not in out
+    assert "waiting for background task(s) a6187e5a074a90e2d" in out["systemMessage"]
+    last = _events(run)[-1]
+    assert last["decision"] == "wait" and last["tasks"] == ["a6187e5a074a90e2d"]
+    assert rs.read(run)[1]["attempts"]["autoplan"] == 0
+
+
+def test_a_stop_after_the_task_reports_is_judged_as_usual(start_run, transcript) -> None:
+    run, worktree = start_run()
+    _, state = rs.read(run)
+    path = transcript(state["started_at"], "agent_launch", "agent_delivered_mid_turn")
+    out = _decision(ch.run_stop(_stop(worktree, "Waiting.", transcript_path=str(path))))
+    assert out["decision"] == "block"
+
+
+def test_an_unreadable_transcript_is_logged_and_judged_as_usual(start_run, tmp_path) -> None:
+    run, worktree = start_run()
+    missing = str(tmp_path / "gone.jsonl")
+    out = _decision(ch.run_stop(_stop(worktree, "Waiting.", transcript_path=missing)))
+    assert out["decision"] == "block"
+    assert _events(run)[-1]["scan"] == "unreadable"
+
+
+def test_the_transcript_is_not_read_for_a_paused_run_or_another_session(
+    start_run, monkeypatch
+) -> None:
+    # Value: protects=the scan cost is paid only for the run's own session while it runs;
+    # fails_when=every Stop in the worktree streams the transcript; why_new=spec review 2
+    from adapters.claude_code import transcript_tasks as tt
+
+    calls: list[object] = []
+    monkeypatch.setattr(tt, "scan", lambda *a, **k: calls.append(a) or tt.Pending((), ()))
+    run, worktree = start_run()
+    other = ch.run_stop(_stop(worktree, "x", transcript_path="/t.jsonl", session_id="other"))
+    assert "decision" not in (other.stdout or "")
+    rs.update(run, lambda s: rs.pause(s, "gate", "card"))
+    ch.run_stop(_stop(worktree, "x", transcript_path="/t.jsonl"))
+    assert calls == []
+    ch.run_stop(_stop(worktree, "x", transcript_path="/t.jsonl", session_id="s2"))
+    assert calls == []
+
+
+def test_a_scan_that_finds_a_task_is_read_once_more(start_run, monkeypatch) -> None:
+    # Value: protects=review D3: a delivery the transcript has not written yet does not turn
+    # the turn end into a wait nothing wakes; fails_when=the first scan is trusted;
+    # why_new=review adversarial; seam=monkeypatch the scanner
+    from adapters.claude_code import transcript_tasks as tt
+
+    results = [tt.Pending(("a1",), ()), tt.Pending((), ())]
+    monkeypatch.setattr(tt, "scan", lambda *a, **k: results.pop(0))
+    _, worktree = start_run()
+    done = ch.run_stop(_stop(worktree, "thinking", transcript_path="/t.jsonl"))
+    assert results == []
+    assert json.loads(done.stdout)["decision"] == "block"
+
+
+def test_a_scan_of_a_large_transcript_parses_only_marked_lines(tmp_path, monkeypatch) -> None:
+    # Value: protects=the Stop hook's budget on long sessions; fails_when=the prefilter is
+    # dropped and every line is parsed; why_new=Eng Sec 4; seam=count json.loads, not time
+    from adapters.claude_code import transcript_tasks as tt
+
+    parsed: list[str] = []
+    real = json.loads
+    monkeypatch.setattr(tt.json, "loads", lambda text, *a, **k: parsed.append(text) or real(text))
+    path = tmp_path / "big.jsonl"
+    line = json.dumps({"type": "assistant", "message": {"content": "x" * 400}}) + "\n"
+    launch = json.dumps({"type": "user", "toolUseResult": {"backgroundTaskId": "b1"}}) + "\n"
+    path.write_text(line * 12000 + launch, encoding="utf-8")
+    assert tt.scan(path).tasks == ("b1",)
+    assert len(parsed) == 1
+
+
+def test_the_guard_passes_a_background_command(start_run) -> None:
+    _, worktree = start_run()
+    wait = {"command": "sleep 30"}
+    denied = _decision(ch.run_guard(_pre(worktree, "Bash", wait)))
+    assert denied["hookSpecificOutput"]["permissionDecision"] == "deny"
+    background = {"command": "sleep 30", "run_in_background": True}
+    assert ch.run_guard(_pre(worktree, "Bash", background)).stdout == ""
+
+
+def test_the_guard_reads_the_background_flag_the_config_names(start_run) -> None:
+    # Value: protects=[harness] background_flag is the one source of truth; fails_when=the
+    # adapter reads a hardcoded run_in_background; why_new=review maintainability; seam=none
+    from dataclasses import replace
+
+    from core.config import DEFAULTS
+
+    _, worktree = start_run(config=replace(DEFAULTS, background_flag="in_background"))
+    renamed = {"command": "sleep 30", "in_background": True}
+    assert ch.run_guard(_pre(worktree, "Bash", renamed)).stdout == ""
+    default = {"command": "sleep 30", "run_in_background": True}
+    denied = _decision(ch.run_guard(_pre(worktree, "Bash", default)))
+    assert denied["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+
+@pytest.mark.parametrize(("error", "logged"), [("ScanTooSlow", "slow"), ("OSError", "unreadable")])
+def test_a_failed_scan_refuses_stage_done_and_is_logged(
+    start_run, monkeypatch, error: str, logged: str
+) -> None:
+    # Value: protects=review D11 through the adapter: a slow or unreadable transcript is
+    # logged and STAGE DONE is refused, not taken as "no task"; fails_when=the except order
+    # or the tasks_unknown wiring breaks; why_new=review testing; seam=monkeypatch the scanner
+    from adapters.claude_code import transcript_tasks as tt
+
+    exc = getattr(tt, error, None) or OSError
+
+    def fail(*_a, **_k):
+        raise exc("x")
+
+    monkeypatch.setattr(tt, "scan", fail)
+    run, worktree = start_run()
+    done = ch.run_stop(_stop(worktree, "<promise>STAGE DONE</promise>", transcript_path="/t.jsonl"))
+    assert "could not read which background tasks" in json.loads(done.stdout)["reason"]
+    assert _events(run)[-1]["scan"] == logged

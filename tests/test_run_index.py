@@ -156,7 +156,7 @@ def test_resume_or_abort_is_found_in_any_shell_form(command: str, sub) -> None:
 def test_a_long_shell_line_without_the_cli_is_not_lexed(monkeypatch) -> None:
     # Value: protects=every shell call on the machine stays cheap; fails_when=a 1 MB
     # heredoc is lexed on the no-run path; why_new=review performance finding; seam=none
-    monkeypatch.setattr(ri, "_segments", lambda command: pytest.fail("lexed"))
+    monkeypatch.setattr(ri, "segments", lambda command: pytest.fail("lexed"))
     assert ri.cli_calls("cat <<'EOF'\n" + "x" * 1_000_000 + "\nEOF") == []
     assert ri.git_calls("echo " + "y" * 1_000_000) == []
     assert ri.human_only_command("z" * 1_000_000) is None
@@ -179,7 +179,7 @@ def test_a_path_that_only_names_the_project_is_not_lexed(monkeypatch) -> None:
     # Value: protects=shell calls inside a checkout named delivery-loop stay cheap;
     # fails_when=any mention of the name lexes the whole line; why_new=performance review;
     # seam=none
-    monkeypatch.setattr(ri, "_segments", lambda command: pytest.fail("lexed"))
+    monkeypatch.setattr(ri, "segments", lambda command: pytest.fail("lexed"))
     heredoc = "cat <<'EOF'\n" + "x" * 100_000 + "\nEOF"
     assert not ri.starts_run("cd /src/delivery-loop-90cd961a && " + heredoc)
     assert not ri.starts_run("cd /src/delivery-loop/ && " + heredoc)
@@ -366,3 +366,85 @@ def test_old_python_cli_can_abort_and_show_status(
     monkeypatch.setattr(ri, "in_terminal", lambda: True)
     assert boot.old_python_cli(["--session", "s1", "abort"]) == 0
     assert json.loads((run_dir / "state.json").read_text())["status"] == "failed"
+
+
+def test_each_unquoted_line_is_its_own_command() -> None:
+    # Value: protects=the newline separator that never fired; fails_when=a multi-line script
+    # reads as one command again; why_new=CRB-28 Eng #69; seam=none
+    assert ri.segments("while ! grep -q x f\ndo\n  sleep 30\ndone") == [
+        ["while", "!", "grep", "-q", "x", "f"],
+        ["do"],
+        ["sleep", "30"],
+        ["done"],
+    ]
+    assert ri.segments('git commit -m "a\nb"') == [["git", "commit", "-m", "a\nb"]]
+    assert ri.segments("git push \\\n  --force origin") == [["git", "push", "--force", "origin"]]
+
+
+def test_a_command_on_a_later_line_is_seen() -> None:
+    # Value: protects=the intended differences of the newline split; fails_when=a push or a
+    # start on line 2 is hidden again; why_new=CRB-28 Eng #69; seam=none
+    assert ri.git_calls("cd x\ngit push --force") == [["push", "--force"]]
+    assert ri.starts_run(f"cd x\n{ri.CLI_NAME} start CRB-1")
+
+
+def test_a_heredoc_body_is_data_not_a_command() -> None:
+    # Value: protects=review adversarial: a commit message with a "git push" line is not a
+    # push, now that each line is a command; fails_when=_calls lexes heredoc bodies;
+    # why_new=review regression; seam=none
+    message = "git commit -F - <<EOF\nfix\n\ngit push --force origin main\nEOF\ngit push"
+    assert ri.git_calls(message) == [["commit", "-F", "-", "<<EOF"], ["push"]]
+    assert not ri.starts_run(f"git commit -F - <<'EOF'\n{ri.CLI_NAME} start CRB-1\nEOF")
+    # A command that runs its body is still read whole by the human-only check.
+    assert ri.human_only_command(f"bash <<EOF\n{ri.CLI_NAME} abort\nEOF") == "abort"
+
+
+@pytest.mark.parametrize(
+    ("text", "kept"),
+    [
+        ('cat <<< "x"\nnext', 'cat <<< "x"\nnext'),
+        ("echo $((1<<2))\nnext", "echo $((1<<2))\nnext"),
+        ('echo "<<EOF"\nnext\nEOF', 'echo "<<EOF"\nnext\nEOF'),
+        (": # <<X\nnext", ": # <<X\nnext"),
+        ("cat <<-'E'\n\tbody\n\tE\nnext", "cat <<-'E'\nnext"),
+        ("cat <<A <<B\na\nA\nb\nB\nnext", "cat <<A <<B\nnext"),
+        ("cat <<\\EOF\nbody\nEOF\nnext", "cat <<\\EOF\nnext"),
+        ("cat <<EOF\nnever closed", "cat <<EOF\nnever closed"),
+    ],
+)
+def test_only_a_real_heredoc_body_is_stripped(text: str, kept: str) -> None:
+    assert ri.strip_heredocs(text) == kept
+
+
+def test_a_backslash_newline_is_text_inside_single_quotes() -> None:
+    # Value: protects=the lexer reads words as the shell does; fails_when=a quoted
+    # backslash-newline is joined; why_new=review adversarial; seam=none
+    assert ri.segments("echo 'a\\\nb'; x") == [["echo", "a\\\nb"], ["x"]]
+    assert ri.segments('echo "a\\\nb"') == [["echo", "ab"]]
+
+
+def test_a_shell_line_is_lexed_once_for_every_rule_that_reads_it() -> None:
+    # Value: protects=the guard's cost on a long line read by the gh, wait and push rules;
+    # fails_when=each rule lexes it again, or one caller's lists leak into another's;
+    # why_new=review performance; seam=lru cache counters
+    line = "gh pr view 1 && git push origin x && sleep 1 # " + "y" * 50_000
+    ri._lex.cache_clear()
+    ri.gh_calls(line)
+    ri.git_calls(line)
+    first = ri.segments(line)
+    first[0].append("mutated")
+    assert ri.segments(line)[0][-1] != "mutated"
+    assert ri._lex.cache_info().misses == 1
+
+
+@pytest.mark.parametrize(
+    "first",
+    [": ${x#<<}", "echo $[1<<2]", "echo $'a\\'b' '<<EOF'", "cat <<EOF"],
+)
+def test_a_misread_heredoc_cannot_hide_the_next_line(first: str) -> None:
+    # Value: protects=review security and adversarial: a "<<" bash does not read as a
+    # here-document (an expansion, $[..], ANSI-C quoting, an unclosed body) never hides a
+    # push on a later line; fails_when=an unclosed body is dropped; why_new=review; seam=none
+    assert ri.git_calls(f"{first}\ngit push --force origin main") == [
+        ["push", "--force", "origin", "main"]
+    ]

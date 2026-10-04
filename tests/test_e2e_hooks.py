@@ -140,3 +140,32 @@ def test_a_hook_that_runs_out_of_time_fails_closed(kind: str, payload: dict, key
         assert done.stdout == ""
     else:
         assert key in json.loads(done.stdout)
+
+
+def test_a_background_wait_ends_the_turn_and_its_report_resumes_the_stage(
+    make_repo, tmp_path: Path, transcript
+) -> None:
+    # Value: protects=CRB-28 end to end: the shim, the adapter's transcript scan and the
+    # turn end let a waiting turn end with no attempt, then judge the next turn as usual;
+    # fails_when=any link drops the pending tasks; why_new=CRB-28; seam=subprocess
+    worktree = make_repo(tmp_path / "host")
+    started = _run(
+        [str(ROOT / "bin/delivery-loop"), "--session", "s1", "start", "CRB-1"], None, worktree
+    )
+    assert started.returncode == 0, started.stderr
+    status = _run([str(ROOT / "bin/delivery-loop"), "status"], None, worktree)
+    run_dir = Path(status.stdout.split("Run directory: ")[1].split("\n")[0])
+    state = json.loads((run_dir / "state.json").read_text(encoding="utf-8"))
+    path = transcript(state["started_at"], "agent_launch")
+    payload = {**_stop(worktree, "Waiting for the spec reviewer."), "transcript_path": str(path)}
+    wait = _run([str(ROOT / "hooks/pipeline_hook.py"), "stop"], payload, worktree)
+    assert wait.returncode == 0, wait.stderr
+    assert "decision" not in json.loads(wait.stdout)
+    state = json.loads((run_dir / "state.json").read_text(encoding="utf-8"))
+    assert state["attempts"]["autoplan"] == 0
+    assert state["waiting_on"] == ["a6187e5a074a90e2d"]
+    transcript(state["started_at"], "agent_launch", "agent_delivered_mid_turn", path=path)
+    after = _run([str(ROOT / "hooks/pipeline_hook.py"), "stop"], payload, worktree)
+    assert json.loads(after.stdout)["decision"] == "block"
+    state = json.loads((run_dir / "state.json").read_text(encoding="utf-8"))
+    assert state["waiting_on"] == [] and state["attempts"]["autoplan"] == 1
