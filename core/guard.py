@@ -417,9 +417,6 @@ _WAIT_WRAPPERS = {
     "chrt": (("-p",), 1),
     "taskset": (("-p",), 1),
 }
-# The longest shell line the wait rule reads: the lexer's time grows with the
-# square of a word's length, and the guard answers every call under a timeout.
-WAIT_LEX_MAX = 64 * 1024
 # Quotes and backslashes the shell removes, so ``s\leep`` and ``sl''eep`` run sleep.
 _UNQUOTE_RE = re.compile(r"[\\'\"]")
 
@@ -489,10 +486,9 @@ def wait_command(command: object, depth: int = 0) -> str | None:
     ...), and from nested shells (``bash -c``, ``$(...)``). Here-document bodies
     are skipped: they are text fed to a command, such as a commit message that
     says "wait for CI". Advisory, like every shell rule: a wait the text does not
-    show (a script, ``python -c``) passes, and so does a line over
-    ``WAIT_LEX_MAX``, which the lexer would take seconds to read.
+    show (a script, ``python -c``) passes.
     """
-    if not isinstance(command, str) or depth > ri.NEST_MAX or len(command) > WAIT_LEX_MAX:
+    if not isinstance(command, str) or depth > ri.NEST_MAX:
         return None
     if not _WAIT_TRIGGER_RE.search(_UNQUOTE_RE.sub("", command.replace("\\\n", ""))):
         return None

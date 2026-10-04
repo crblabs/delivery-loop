@@ -162,25 +162,6 @@ stops fixing after three cycles, so they are listed here.
 - **Effort:** S / S. **Priority:** P3.
 - **Depends on:** CRB-28.
 
-## A megabyte-long shell word stalls the guard past its timeout
-
-- **What:** make the shell lexer linear in a word's length, so a guarded shell
-  call with a 1 MB word (a large `gh pr create --body`, a base64 argument) is
-  read in well under a second.
-- **Why:** shlex builds a word one character at a time, so its time grows with
-  the square of the word: 1 MB takes about 40 s and the PreToolUse guard times
-  out on that call. Found by /qa on 2026-10-04 (ISSUE-001), present on main.
-- **Pros:** no timeout on large PR bodies or generated scripts.
-- **Cons:** the first fix (shortening quoted spans) dropped text the guard
-  reads and was reverted. A fix must keep every word whole: swap a long word for
-  a placeholder before shlex and restore it after, mirroring shlex's quoting
-  exactly, and send an unclosed quote straight to the per-line fallback.
-- **Context:** `core/run_index.py` `_lex`; the regression cases are in the
-  CRB-28 ship review (a slash-command resume in a long quoted prompt, a stray
-  apostrophe on a long line, `$'...'` quoting).
-- **Effort:** S / M. **Priority:** P2.
-- **Depends on:** CRB-28.
-
 ## Background work started by a foreground subagent is not waited on (CRB-28 follow-up)
 
 - **What:** wait on background tasks a foreground subagent launches, or treat

@@ -448,3 +448,72 @@ def test_a_misread_heredoc_cannot_hide_the_next_line(first: str) -> None:
     assert ri.git_calls(f"{first}\ngit push --force origin main") == [
         ["push", "--force", "origin", "main"]
     ]
+
+
+def test_a_megabyte_word_is_lexed_quickly_and_whole(monkeypatch) -> None:
+    # Value: protects=the guard answers a call with a megabyte word inside its timeout and
+    # still reads every command on the line; fails_when=shlex reads the whole word (40 s)
+    # or the word is dropped; why_new=ISSUE-001 and its reverted fix; seam=spy on shlex
+    import shlex
+
+    seen: list[int] = []
+    real = shlex.shlex
+    monkeypatch.setattr(
+        ri.shlex, "shlex", lambda text, *a, **k: seen.append(len(text)) or real(text, *a, **k)
+    )
+    ri._lex.cache_clear()
+    body = "wait " * 200_000
+    calls = ri.gh_calls(f'gh pr create --body "{body}"\ngh pr merge 3')
+    assert calls[0][:3] == ["pr", "create", "--body"] and calls[0][3] == body
+    assert calls[1] == ["pr", "merge", "3"]
+    assert ri.git_calls("echo " + "a" * 1_000_000 + "\ngit push --force origin main")[-1] == [
+        "push",
+        "--force",
+        "origin",
+        "main",
+    ]
+    assert max(seen) < 10 * ri.LEX_WORD_MAX
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        'claude -p "/delivery-loop:pipeline resume ' + "x " * 35_000 + '"',
+        "# don't panic\n" + "echo x\n" * 20_000 + "delivery-loop resume",
+        "echo $'a\\'' ; delivery-loop resume ; echo \"" + "a" * 70_000 + '"',
+    ],
+)
+def test_a_long_line_never_hides_a_human_only_command(command: str) -> None:
+    # Value: protects=ship review: the three ways the reverted shortening hid a resume
+    # (a long quoted prompt, a stray apostrophe, ANSI-C quoting) stay visible; fails_when=a
+    # long word is dropped instead of restored; why_new=ship red team; seam=none
+    assert ri.human_only_command(command) == "resume"
+
+
+def test_placeholder_lexing_matches_shlex_word_for_word(monkeypatch) -> None:
+    # Value: protects=the placeholder pass reads quoting exactly as shlex does; fails_when=a
+    # quote, escape or separator is read differently; why_new=linear lexer; seam=a small
+    # LEX_WORD_MAX so every word goes through a placeholder
+    import random
+
+    rng = random.Random(28)
+    alphabet = ["a", "b", " ", "'", '"', "\\", ";", "|", "&", "\n", "$", "(", "x"]
+    checked = 0
+    for _ in range(3000):
+        command = "".join(rng.choice(alphabet) for _ in range(rng.randint(1, 24)))
+        try:
+            expected = ri._shlex_words(command)
+        except ValueError:
+            continue
+        monkeypatch.setattr(ri, "LEX_WORD_MAX", 0)
+        swapped = ri._placeholders(command)
+        monkeypatch.setattr(ri, "LEX_WORD_MAX", 4096)
+        assert swapped is not None, command
+        text, table = swapped
+        got = [
+            ri._PLACEHOLDER_RE.sub(lambda m, table=table: table[int(m.group(1))], w)
+            for w in ri._shlex_words(text)
+        ]
+        assert got == expected, command
+        checked += 1
+    assert checked > 1000

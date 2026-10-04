@@ -435,19 +435,103 @@ def join_lines(command: str) -> str:
     return "".join(out)
 
 
+# The longest word shlex reads itself. It builds a word one character at a
+# time, so its time grows with the square of the word's length (a 1 MB word
+# took 40 s, past the guard's timeout); a longer word goes in as a placeholder.
+LEX_WORD_MAX = 4096
+_PLACEHOLDER = "\x00"
+_PLACEHOLDER_RE = re.compile("\x00(\\d+)\x00")
+_WORD_STOP = frozenset(" \t\r\n;&|'\"\\")
+_DOUBLE_ESCAPE_RE = re.compile(r'\\([\\"])')
+
+
+def _placeholders(command: str) -> tuple[str, list[str]] | None:
+    """The line with each quoted span or unquoted word longer than
+    ``LEX_WORD_MAX`` swapped for a short placeholder, and the text each one
+    stands for, as shlex would read it; ``None`` when a quote never closes,
+    which shlex would reject after reading to the end.
+
+    The scan follows shlex's POSIX rules exactly: outside quotes a backslash
+    escapes the next character; inside single quotes nothing is special;
+    inside double quotes a backslash escapes only a double quote or itself.
+    """
+    out: list[str] = []
+    table: list[str] = []
+    i, n = 0, len(command)
+
+    def stand_in(text: str) -> str:
+        table.append(text)
+        return f"{_PLACEHOLDER}{len(table) - 1}{_PLACEHOLDER}"
+
+    while i < n:
+        c = command[i]
+        if c == "\\":
+            out.append(command[i : i + 2])
+            i += 2
+        elif c == "'":
+            j = command.find("'", i + 1)
+            if j == -1:
+                return None
+            inner = command[i + 1 : j]
+            out.append(stand_in(inner) if len(inner) > LEX_WORD_MAX else command[i : j + 1])
+            i = j + 1
+        elif c == '"':
+            j = i + 1
+            while j < n and command[j] != '"':
+                j += 2 if command[j] == "\\" and command[j + 1 : j + 2] in ('"', "\\") else 1
+            if j >= n:
+                return None
+            inner = command[i + 1 : j]
+            if len(inner) > LEX_WORD_MAX:
+                out.append(stand_in(_DOUBLE_ESCAPE_RE.sub(r"\1", inner)))
+            else:
+                out.append(command[i : j + 1])
+            i = j + 1
+        else:
+            j = i
+            while j < n and command[j] not in _WORD_STOP:
+                j += 1
+            if j == i:
+                out.append(c)
+                i += 1
+            else:
+                run = command[i:j]
+                out.append(stand_in(run) if len(run) > LEX_WORD_MAX else run)
+                i = j
+    return "".join(out), table
+
+
+def _shlex_words(command: str) -> list[str]:
+    lexer = shlex.shlex(command, posix=True, punctuation_chars=_PUNCTUATION)
+    lexer.whitespace = lexer.whitespace.replace("\n", "")
+    lexer.whitespace_split = True
+    lexer.commenters = ""
+    return list(lexer)
+
+
+def _fallback_words(command: str) -> list[str]:
+    # Quoting shlex cannot read (``$'...'``, an unclosed quote): split on
+    # whitespace, still one command per line.
+    return [w for line in command.split("\n") for w in (*line.split(), "\n")]
+
+
 @functools.lru_cache(maxsize=8)
 def _lex(command: str) -> tuple[tuple[str, ...], ...]:
     command = join_lines(command)
+    swapped = None if _PLACEHOLDER in command else _placeholders(command)
     try:
-        lexer = shlex.shlex(command, posix=True, punctuation_chars=_PUNCTUATION)
-        lexer.whitespace = lexer.whitespace.replace("\n", "")
-        lexer.whitespace_split = True
-        lexer.commenters = ""
-        words = list(lexer)
+        if swapped is None and _PLACEHOLDER not in command:
+            words = _fallback_words(command)
+        elif swapped is None:
+            words = _shlex_words(command)
+        else:
+            text, table = swapped
+            words = [
+                _PLACEHOLDER_RE.sub(lambda m: table[int(m.group(1))], w) if _PLACEHOLDER in w else w
+                for w in _shlex_words(text)
+            ]
     except ValueError:
-        # Quoting shlex cannot read (``$'...'``, an unclosed quote): split on
-        # whitespace, still one command per line.
-        words = [w for line in command.split("\n") for w in (*line.split(), "\n")]
+        words = _fallback_words(command)
     out: list[list[str]] = [[]]
     for word in words:
         if word in _SEPARATORS or (word and set(word) <= set(_PUNCTUATION)):
