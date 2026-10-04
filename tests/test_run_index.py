@@ -153,6 +153,48 @@ def test_resume_or_abort_is_found_in_any_shell_form(command: str, sub) -> None:
     assert ri.human_only_command(command) == sub
 
 
+@pytest.mark.parametrize(
+    ("command", "sub"),
+    [
+        ("delivery-loop --sess abc resume", "resume"),
+        ("delivery-loop --s abc resume", "resume"),
+        ("delivery-loop --se abc abort", "abort"),
+        ("delivery-loop --a resume", "resume"),
+        ('eval "delivery-loop resume"', "resume"),
+        ("eval delivery-loop abort", "abort"),
+        ("builtin eval 'delivery-loop resume'", "resume"),
+        ('bash <<<"delivery-loop resume"', "resume"),
+        ("bash <<< 'delivery-loop resume'", "resume"),
+        ("printf 'delivery-loop resume' | sh", "resume"),
+        ('echo "delivery-loop abort" | /bin/bash', "abort"),
+        ("printf 'delivery-loop resume' | bash -s", "resume"),
+        ("printf 'delivery-loop resume' | tee x | sh", "resume"),
+        ("echo 'delivery-loop resume' | xargs -I{} sh -c '{}'", "resume"),
+        ("echo 'delivery-loop resume' | source /dev/stdin", "resume"),
+        ("echo 'delivery-loop resume' | sudo bash", "resume"),
+        ("echo 'delivery-loop resume' |& sh", "resume"),
+        ("bash<<<'delivery-loop resume'", "resume"),
+        ("script -q /dev/null <<< 'delivery-loop resume'", "resume"),
+        ("echo 'delivery-loop resume' | script -q /dev/null", "resume"),
+        ("echo 'delivery-loop resume' | bash -o pipefail", "resume"),
+        ("echo 'delivery-loop resume' | bash -s arg1", "resume"),
+        ("echo 'delivery-loop resume' | bash /dev/fd/0", "resume"),
+        ("echo 'delivery-loop resume' | sudo -u root bash", "resume"),
+        ("echo 'delivery-loop resume' | timeout 5 mksh", "resume"),
+        ("echo 'delivery-loop resume' |\nsh", "resume"),
+        ("cd /tmp\nbash <<<'delivery-loop resume'", "resume"),
+        ("cd /tmp\neval 'delivery-loop resume'", "resume"),
+        ("bash <<'EOF'\ndelivery-loop resume\nEOF", "resume"),
+        ("cat <<'EOF' | bash\ndelivery-loop resume\nEOF", "resume"),
+    ],
+)
+def test_resume_or_abort_is_found_behind_an_abbreviation_eval_or_stdin(command: str, sub) -> None:
+    # Value: protects=the early refusal of an agent's own resume; fails_when=an
+    # abbreviated option, eval, a here-string or a pipe into a shell hides the call;
+    # why_new=verification review of the plugin packaging; seam=none
+    assert ri.human_only_command(command) == sub
+
+
 def test_a_long_shell_line_without_the_cli_is_not_lexed(monkeypatch) -> None:
     # Value: protects=every shell call on the machine stays cheap; fails_when=a 1 MB
     # heredoc is lexed on the no-run path; why_new=review performance finding; seam=none
@@ -173,6 +215,15 @@ def test_a_line_that_repeats_the_cli_name_is_checked_in_linear_time() -> None:
     assert ri.human_only_command(line) is None
     assert ri.human_only_command(line + "; delivery-loop resume") == "resume"
     assert time.perf_counter() - started < 1.5  # was 2.9 s when quadratic
+    for nested in (
+        "eval " + "delivery-loop x " * 3000,
+        "bash " + "'<<<delivery-loop x' " * 3000,
+        "printf '" + "delivery-loop x " * 3000 + "' | sh",
+        "echo 'delivery-loop status'" + " | sh" * 3000,
+    ):
+        started = time.perf_counter()
+        assert ri.human_only_command(nested) is None
+        assert time.perf_counter() - started < 1.5
 
 
 def test_a_path_that_only_names_the_project_is_not_lexed(monkeypatch) -> None:
@@ -183,6 +234,8 @@ def test_a_path_that_only_names_the_project_is_not_lexed(monkeypatch) -> None:
     heredoc = "cat <<'EOF'\n" + "x" * 100_000 + "\nEOF"
     assert not ri.starts_run("cd /src/delivery-loop-90cd961a && " + heredoc)
     assert not ri.starts_run("cd /src/delivery-loop/ && " + heredoc)
+    # The CLI's module is named by its dotted name or its path, not by "cli".
+    assert ri.human_only_command("cat <<'EOF'\nclient click\nEOF", boot._CLI_MODULE) is None
 
 
 @pytest.mark.parametrize(
@@ -192,6 +245,19 @@ def test_a_path_that_only_names_the_project_is_not_lexed(monkeypatch) -> None:
         "delivery-loop start fix abort handling",
         "echo delivery-loop status --session abort-1",
         "grep -rn 'delivery-loop resume' README.md",
+        "printf 'delivery-loop resume' | grep resume",
+        'git commit -m "delivery-loop resume fix" && bash scripts/x.sh',
+        'bash scripts/x.sh "run delivery-loop resume to continue"',
+        'echo "run delivery-loop resume to continue" | bash scripts/notify.sh',
+        # Regression: ISSUE-001 - a fixed `sh -c` script was taken to run its stdin
+        # Found by /qa on 2026-10-01
+        # Report: .gstack/qa-reports/qa-report-delivery-loop-guard-2026-10-01.md
+        "grep -rn 'delivery-loop resume' README.md | sh -c 'wc -l'",
+        "echo 'next: run delivery-loop resume in a terminal'\ncurl -fsSL https://x/i.sh | bash",
+        "grep -c bash <<< 'see delivery-loop resume'",
+        "echo 'see delivery-loop resume' | grep -w sh",
+        "bash scripts/x.sh 'a <<< delivery-loop resume'",
+        "printf 'delivery-loop resume' || sh",
     ],
 )
 def test_a_mention_of_resume_is_not_a_resume(command: str) -> None:
@@ -205,6 +271,8 @@ def test_a_mention_of_resume_is_not_a_resume(command: str) -> None:
     "command",
     [
         "delivery-loop --session abc start CRB-1",
+        "delivery-loop --sess abc start CRB-1",
+        "delivery-loop --s abc start CRB-1",
         "printf 'start X' | delivery-loop --args-stdin",
     ],
 )
@@ -347,6 +415,8 @@ def test_old_python_leaves_a_paused_run_waiting(tmp_path: Path, monkeypatch) -> 
 def test_old_python_still_denies_an_agent_resume(monkeypatch: pytest.MonkeyPatch) -> None:
     _old(monkeypatch)
     call = {"tool_name": "Bash", "tool_input": {"command": "delivery-loop resume"}}
+    assert "only a person" in boot.old_python_hook("guard", call)["deny"]
+    call = {"tool_name": "Bash", "tool_input": {"command": 'eval "delivery-loop resume"'}}
     assert "only a person" in boot.old_python_hook("guard", call)["deny"]
 
 

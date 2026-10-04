@@ -18,6 +18,20 @@ def test_no_subcommand_prints_help(capsys: pytest.CaptureFixture[str]) -> None:
     assert "start" in capsys.readouterr().out
 
 
+@pytest.mark.parametrize(
+    "argv",
+    [["--sess", "abc", "resume"], ["--args", "start", "X"], ["start", "--conf", "x", "T"]],
+)
+def test_an_abbreviated_option_is_refused(argv: list, capsys) -> None:
+    # Value: protects=the guard reads options as typed; fails_when=argparse expands
+    # --sess or --args and hides a resume or a session from it; why_new=review security
+    # finding; seam=none
+    with pytest.raises(SystemExit) as exc:
+        cli.main(argv)
+    assert exc.value.code == 2
+    assert "unrecognized arguments" in capsys.readouterr().err
+
+
 def test_start_without_a_task_shows_an_example(
     make_repo, tmp_path: Path, monkeypatch, capsys
 ) -> None:

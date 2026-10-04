@@ -156,7 +156,8 @@ forced, deleting or redirected with `-c`. `gh pr merge` and a merge through
 `gh api` are refused: a merge is a person's call. Other `gh` commands that
 write to the remote are not checked. And a shell line that runs
 `delivery-loop resume` or `abort`, directly, behind a wrapper or in a nested
-shell, is refused early with an explanation; a line that only mentions them,
+shell (`bash -c`, `$(...)`, `eval`, a here-string, or text piped into a
+shell), is refused early with an explanation; a line that only mentions them,
 such as a commit message, is not. The CLI also refuses both outside a terminal,
 and only the full `/delivery-loop:pipeline resume|abort`, typed by a person,
 applies them from Claude Code. Neither is proof: an agent can give
