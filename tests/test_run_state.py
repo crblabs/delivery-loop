@@ -306,14 +306,14 @@ def test_adopting_a_waiting_run_forgets_the_wait_without_releasing(start_run) ->
     assert state["session_id"] == "s2" and state["status"] == "running"
     assert state["waiting_on"] == [] and state["waiting_since"] is None
     assert state["released_tasks"] == [] and state["wait_turns"]["autoplan"] == 0
-    assert state["refused_on"] == []
+    assert state["task_since"] == {}
 
 
 def test_a_wait_capped_pause_releases_even_from_a_new_session(start_run) -> None:
     # Value: protects=the cap card's promise after /clear; fails_when=adoption keeps the
     # dead tasks; why_new=spec review 2; seam=none
     run, _ = start_run()
-    _waiting(run, ["a1", "b2"], wait_capped=True)
+    _waiting(run, ["a1", "b2"], wait_capped=True, stuck_on=["a1", "b2"])
     rs.update(run, lambda s: rs.pause(s, "no_message", "card"))
     rs.resume(run, "person", "s2")
     state = _state(run)
@@ -353,7 +353,7 @@ def test_a_state_from_before_the_wait_fields_is_still_valid(start_run) -> None:
     run, _ = start_run()
     state = _state(run)
     keys = ("waiting_on", "waiting_since", "wait_turns", "wait_capped", "released_tasks")
-    for key in (*keys, "refused_on", "stuck_on", "activity_path", "waiting_shell_only"):
+    for key in (*keys, "task_since", "stuck_on", "activity_path", "waiting_shell_only"):
         state.pop(key)
     state["caps"] = {"attempts": rs.MAX_ATTEMPTS}
     assert ps.valid(state, DEFAULTS)
@@ -374,7 +374,8 @@ def test_a_state_from_before_the_wait_fields_is_still_valid(start_run) -> None:
         {"wait_capped": "yes"},
         {"waiting_shell_only": 1},
         {"activity_path": 5},
-        {"refused_on": "a1"},
+        {"task_since": []},
+        {"task_since": {"a1": "yesterday"}},
         {"stuck_on": [3]},
     ],
 )

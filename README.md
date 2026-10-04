@@ -140,11 +140,13 @@ one runs:
 - `<promise>STAGE DONE</promise>` is refused, so the next stage never starts
   beside a reviewer that still works. A command that never ends on its own,
   such as a dev server, is stopped with `TaskStop` first. The refusal spends an
-  attempt, but never releases the tasks.
+  attempt; three in a row pause the run.
 - After 20 waiting turn ends in one wait, the run pauses with a card naming the
   tasks. A turn end with nothing running ends the wait and restarts the count.
-  If the tasks will never report, `/delivery-loop:pipeline resume` releases
-  them and the stage goes on.
+- At either pause, the card gives each task's age: how long the run has seen
+  it pending. A task pending 30 minutes or more counts as stuck, and
+  `/delivery-loop:pipeline resume` releases it; a younger one is still waited
+  on, so an agent cannot hurry a working reviewer into a release.
 
 The wait relies on the session staying open. A headless `claude -p` session
 exits at the end of the turn, so its run stays `running` while it waits, and
@@ -245,14 +247,12 @@ rest is in `TODOS.md`.
   run's own session (or the CLI in a terminal) releases it and the stage goes
   on. A resume from a new session adopts the run instead, and the new session's
   transcript decides what it waits on.
-- **A run paused with `no_message` after a wait.** The card names the tasks that
-  never reported. `/delivery-loop:pipeline resume` releases them; `/delivery-loop:pipeline abort` ends the run.
-  A `no_message` pause from a refused `STAGE DONE` releases nothing: a
-  reviewer that still runs keeps the stage until it reports. Its card names the
-  tasks. If the stage pauses again beside a task that was already pending at
-  such a pause 30 or more minutes earlier (a lost notification while the agent
-  keeps writing `STAGE DONE`), the card says so and the resume after that pause
-  releases those tasks only; check that they are not still running first.
+- **A run paused with `no_message` beside background tasks** (the 20-wait
+  limit, or three refused `STAGE DONE`). The card names the tasks with their
+  ages. The ones pending 30 minutes or more are released by
+  `/delivery-loop:pipeline resume`; check that they are not still running
+  first. Younger ones keep the stage until they report or reach 30 minutes.
+  `/delivery-loop:pipeline abort` ends the run.
 - **The supervisor escalates `waiting_stale`.** A run has waited over an hour,
   with no turn end and no write to the session transcript for an hour either
   (`loop-scan --wait-stale-after-seconds` sets the limit), on tasks that have

@@ -58,8 +58,8 @@ MAX_ATTEMPTS = 3
 # turn end with nothing pending ends the wait and restarts the count. An
 # autoplan stage waits on about six to ten reviewers at a time.
 MAX_WAITS = 20
-# How long a wait must have lasted before a second refused STAGE DONE pause
-# beside the same tasks marks them stuck: longer than a reviewer runs.
+# How long the run must have seen a task pending before a pause at a cap marks
+# it stuck, so a resume releases it: longer than a reviewer runs.
 STUCK_AFTER_S = 30 * 60
 DONE_TOKEN = "<promise>STAGE DONE</promise>"
 PAUSE_TOKEN = "<promise>NEEDS HUMAN</promise>"
@@ -225,10 +225,9 @@ def _initial_state(
         "activity_path": None,
         "wait_turns": dict.fromkeys(names, 0),
         "wait_capped": False,
-        # The tasks the last refused STAGE DONE paused beside, and the ones a
-        # second pause marked stuck, which a resume releases.
-        "refused_on": [],
-        "refused_at": None,
+        # When the run first saw each pending task, and the tasks a pause at a
+        # cap marked stuck (pending 30+ min), which a resume releases.
+        "task_since": {},
         "stuck_on": [],
         "released_tasks": [],
         "plan_path": None,
@@ -451,8 +450,7 @@ def clear_wait(state: dict) -> None:
     state["waiting_on"] = []
     state["waiting_since"] = None
     state["waiting_shell_only"] = False
-    state["refused_on"] = []
-    state["refused_at"] = None
+    state["task_since"] = {}
     state["stuck_on"] = []
 
 
@@ -462,10 +460,17 @@ def _release(state: dict) -> None:
     The list is never trimmed: a released id dropped from it would come back
     as a wait, since its launch stays in the session's transcript.
     """
-    # A second refused pause marks only the old tasks stuck, never a newer one.
-    stuck = state.get("stuck_on") or state.get("waiting_on") or []
-    state["released_tasks"] = list(dict.fromkeys([*(state.get("released_tasks") or []), *stuck]))
+    # A pause at a cap releases only the tasks old enough to be stuck; a person's
+    # resume while the run is running and waiting releases what it waits on.
+    if state.get("wait_capped"):
+        released = list(state.get("stuck_on") or [])
+    else:
+        released = list(state.get("waiting_on") or [])
+    state["released_tasks"] = list(dict.fromkeys([*(state.get("released_tasks") or []), *released]))
+    # Tasks still waited on keep their first-seen time, so their age goes on.
+    kept = {t: v for t, v in (state.get("task_since") or {}).items() if t not in released}
     clear_wait(state)
+    state["task_since"] = kept
     state["wait_capped"] = False
 
 
@@ -480,8 +485,8 @@ def resume(run: Run, by: str, session_id: str | None = None) -> str:
     how a person adopts a run whose session ended, running or paused.
 
     Background tasks the run waits on are released only when the wait is stuck:
-    a pause at the wait cap, a refused STAGE DONE pause beside tasks that were
-    pending at one ``STUCK_AFTER_S`` earlier (only those tasks), or a
+    a pause at the wait or attempts cap releases the tasks pending for
+    ``STUCK_AFTER_S`` by their own first-seen time (``stuck_on``), or a
     resume that does not adopt the run while it is running and waiting. Any
     other resume keeps waiting on them, since a reviewer that still runs will
     report. Adopting a running run forgets its

@@ -27,12 +27,12 @@ end with no token is then let through without spending an attempt, up to
 the tasks named (``wait_capped``). A turn end with nothing pending ends the wait
 and restarts that count. ``STAGE DONE`` is refused while a task runs, so the
 next stage never starts beside a reviewer that is still working; that refusal
-spends an attempt. A pause on such refusals marks a task stuck only when it
-was pending at an earlier such pause at least ``STUCK_AFTER_S`` before and
-still is: two pauses that far apart prove the task's own age, which a lost
-notification reaches and a quick agent cannot. Every turn end records the tasks
-in ``waiting_on`` and when the wait began in ``waiting_since``; a person's
-resume can release tasks that will never report.
+spends an attempt. A pause at either cap (waits, or attempts on refused
+``STAGE DONE``) marks stuck, so that a person's resume releases them, only the
+tasks the run has seen pending for ``STUCK_AFTER_S`` by their own first-seen
+time (``task_since``): a lost notification gets there, a quick agent cannot.
+Every turn end records the tasks in ``waiting_on`` and when the wait began in
+``waiting_since``; a person's resume can release tasks that will never report.
 
 Every turn end also hashes the guard map: the carve-outs, the ``loop_exact``
 files, every file under ``loop_prefixes``, the ``guard_watch`` files and the
@@ -47,10 +47,10 @@ That catches a shell edit, which the edit guard never sees.
         │ guard map changed off the declared edits? ─────────> pause guard_changed
         │ NEEDS HUMAN ────────────────────────────────────────> pause needs_human
         │ background task running ── STAGE DONE ─> block, reinject (an attempt)
-        │                          │   at cap ─> pause no_message; a task pending at
-        │                          │   a pause 30+ min earlier too ─> stuck_on, released
+        │                          │   at cap ─> pause no_message
         │                          └ no token ── waits < cap ─> let it end (a wait)
-        │                                       at cap ─> pause no_message, wait_capped
+        │                                       at cap ─> pause no_message
+        │                          either pause: tasks pending 30+ min ─> stuck_on
         │ tasks unreadable ── STAGE DONE ─> block, reinject (an attempt)
         │ STAGE DONE ── emits missing / tree dirty / dash ─> block, reinject
         │            └─ last stage ─> done   gate ─> pause gate   else ─> block, next stage
@@ -234,18 +234,14 @@ def _block(state: dict, text: str) -> TurnEndVerdict:
 
 
 def _no_token(
-    run: rs.Run, state: dict, why: str, refused_on: list[str] | None = None
+    run: rs.Run, state: dict, why: str, beside: list[str] | None = None
 ) -> TurnEndVerdict:
     stage = state["current_stage"]
     state["attempts"][stage] += 1
     state["total_attempts"] += 1
-    if not refused_on:
-        # Any other refusal breaks the run of refusals beside the same tasks.
-        state["refused_on"] = []
-        state["refused_at"] = None
     cap = (state.get("caps") or {}).get("attempts", rs.MAX_ATTEMPTS)
     if state["attempts"][stage] >= cap:
-        release = _refusal_release(run, state, refused_on) if refused_on else ""
+        release = _mark_stuck(run, state, beside) if beside else ""
         rs.pause(
             state,
             "no_message",
@@ -257,44 +253,51 @@ def _no_token(
     return _block(state, f"The stage is not finished: {why}.\n\n{rs.state_text(run, state)}")
 
 
-def _refusal_release(run: rs.Run, state: dict, refused_on: list[str]) -> str:
-    """The card's word on tasks a refused STAGE DONE paused beside.
+def _ages(state: dict, ids: list[str]) -> dict[str, int | None]:
+    """Each task's own age in minutes, from when the run first saw it pending."""
+    now = datetime.now(UTC)
+    seen = state.get("task_since") or {}
+    ages: dict[str, int | None] = {}
+    for task in ids:
+        since = ps.parse_iso(seen.get(task))
+        ages[task] = None if since is None else int((now - since).total_seconds() // 60)
+    return ages
 
-    One such pause says nothing about the tasks: a reviewer that still runs
-    will report, and a resume keeps waiting. Tasks are marked stuck, so the
-    person's resume releases them, only when they were pending at an earlier
-    pause (``refused_at``) at least ``rs.STUCK_AFTER_S`` before this one and
-    still are: each task's own age is proven by the two pauses, so an agent can
-    neither hurry a reviewer it just started into a release nor borrow the age
-    of an older task beside it. Only those tasks are released (``stuck_on``).
+
+def _mark_stuck(run: rs.Run, state: dict, pending: list[str]) -> str:
+    """Mark the pending tasks old enough to be stuck, and say so on the card.
+
+    Every automatic release, at the wait cap or at an attempts pause on
+    refused STAGE DONE, goes through here. A task counts as stuck only when the
+    run has seen it pending for ``rs.STUCK_AFTER_S`` by its own first-seen
+    time: turn counts and refusals are the agent's to make in seconds, a task's
+    age is not. Only stuck tasks are released (``stuck_on``); younger ones are
+    still waited on.
     """
-    both = sorted(set(refused_on) & set(state.get("refused_on") or []))
-    since = ps.parse_iso(state.get("refused_at")) if both else None
-    minutes = int((datetime.now(UTC) - since).total_seconds() // 60) if since is not None else None
+    ages = _ages(state, pending)
     floor = rs.STUCK_AFTER_S // 60
-    if both and minutes is not None and minutes * 60 >= rs.STUCK_AFTER_S:
-        state["wait_capped"] = True
-        state["stuck_on"] = both
-        state["refused_on"] = []
-        state["refused_at"] = None
-        return (
-            f" The stage paused beside {', '.join(both)} {minutes} min ago and again now. "
-            "They may still be running: check the session first, then "
-            f"{run.config.resume_command} releases them."
+    stuck = [t for t in pending if ages[t] is not None and ages[t] * 60 >= rs.STUCK_AFTER_S]
+    young = [t for t in pending if t not in stuck]
+
+    def shown(tasks: list[str]) -> str:
+        return ", ".join(
+            f"{t} ({ages[t]} min)" if ages[t] is not None else f"{t} (age unknown)" for t in tasks
         )
-    if both:
-        # Keep the earlier pause's time: the age is of the tasks in both pauses.
-        state["refused_on"] = both
-        first = f"first paused beside {', '.join(both)} {minutes or 0} min ago"
-    else:
-        state["refused_on"] = sorted(refused_on)
-        state["refused_at"] = ri.now_iso()
-        first = "first pause beside them"
-    return (
-        f" This resume keeps waiting on {', '.join(refused_on)} ({first}). If the stage "
-        f"pauses beside one of them again {floor} min or more after its first pause, "
-        f"{run.config.resume_command} then releases it."
-    )
+
+    text = ""
+    if stuck:
+        state["wait_capped"] = True
+        state["stuck_on"] = stuck
+        text += (
+            f" Pending for {floor} min or more: {shown(stuck)}. They may still be running: "
+            f"check the session first, then {run.config.resume_command} releases them."
+        )
+    if young:
+        text += (
+            f" Still waited on after a resume: {shown(young)}; a task is released only "
+            f"once it has been pending {floor} min."
+        )
+    return text
 
 
 def _gate_card(name: str, gate: str, state: dict, config: LoopConfig) -> str:
@@ -411,6 +414,10 @@ def _record_pending(state: dict, pending: list[str], shell: tuple[str, ...] = ()
     if state.get("waiting_since") is None:
         state["waiting_since"] = ri.now_iso()
     state["waiting_on"] = list(pending)
+    # When each task was first seen pending: the age a release is judged by.
+    seen = state.get("task_since") or {}
+    now = ri.now_iso()
+    state["task_since"] = {t: seen.get(t) or now for t in pending}
     # A wait on shell commands alone may be one that never ends, such as a dev
     # server; the supervisor flags it sooner.
     state["waiting_shell_only"] = all(t in shell for t in pending)
@@ -437,14 +444,12 @@ def _pending_rules(
     turns = state.setdefault("wait_turns", {})
     cap = (state.get("caps") or {}).get("waits", rs.MAX_WAITS)
     if turns.get(stage, 0) >= cap:
-        state["wait_capped"] = True
+        release = _mark_stuck(run, state, pending)
         rs.pause(
             state,
             "no_message",
             f"Stage {stage} waited {cap} turns on background tasks that have not reported "
-            f"({ids}, since {state.get('waiting_since')}). If they will never report, "
-            f"{run.config.resume_command} releases them and the stage goes on; "
-            f"{run.config.abort_command} ends the run.",
+            f"({ids}).{release} {run.config.abort_command} ends the run.",
         )
         return TurnEndVerdict(block=False, pause_reason="no_message")
     turns[stage] = turns.get(stage, 0) + 1
