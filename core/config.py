@@ -303,6 +303,11 @@ class LoopConfig:
     # command in the background, quoted in what the agent is told.
     stop_task_tool: str = "TaskStop"
     background_flag: str = "run_in_background"
+    # How long a background wait may last, with the session quiet as long,
+    # before the supervisor escalates it (waiting_stale); a wait on shell
+    # commands alone, such as a dev server left running, gets the shorter one.
+    wait_stale_after_s: int = 3600
+    shell_wait_stale_after_s: int = 900
 
     def __post_init__(self) -> None:
         _refuse_empty("state_dir", self.state_dir)
@@ -362,6 +367,10 @@ class LoopConfig:
         ):
             _refuse_empty(name, getattr(self, name))
         _refuse_empty("tracker_prefix", self.tracker_prefix)
+        for name in ("wait_stale_after_s", "shell_wait_stale_after_s"):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+                raise ConfigError(f"{name} must be a whole number of seconds, 1 or more")
         try:
             re.compile(self.tracker_pattern)
         except (re.error, OverflowError, RecursionError) as exc:
@@ -470,6 +479,10 @@ _STRING_KEYS = (
     ("tracker_prefix", "tracker", "prefix"),
     ("tracker_pattern", "tracker", "pattern"),
 )
+_INT_KEYS = (
+    ("wait_stale_after_s", "supervisor", "wait_stale_after_seconds"),
+    ("shell_wait_stale_after_s", "supervisor", "shell_wait_stale_after_seconds"),
+)
 _ADDITIVE = ("carve_outs", "carve_out_prefixes", "guard_watch")
 _LIST_KEYS = (
     ("carve_outs", "loop_paths", "carve_outs"),
@@ -484,6 +497,13 @@ def _str(table: dict, key: str) -> str:
     value = table[key]
     if not isinstance(value, str):
         raise ConfigError(f"{key} takes a string, got {value!r}")
+    return value
+
+
+def _int(table: dict, key: str) -> int:
+    value = table[key]
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ConfigError(f"{key} takes a whole number, got {value!r}")
     return value
 
 
@@ -569,6 +589,10 @@ def from_mapping(data: dict) -> LoopConfig:
         table = _table(data, table_name)
         if key in table:
             values[field_name] = _strs(table, key)
+    for field_name, table_name, key in _INT_KEYS:
+        table = _table(data, table_name)
+        if key in table:
+            values[field_name] = _int(table, key)
     if "stages" in data:
         values["stages"] = _stages(data["stages"])
     # A file may add carve-outs but never remove one: the carve-outs guard the

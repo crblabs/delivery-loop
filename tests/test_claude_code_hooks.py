@@ -479,3 +479,26 @@ def test_a_failed_scan_refuses_stage_done_and_is_logged(
     done = ch.run_stop(_stop(worktree, "<promise>STAGE DONE</promise>", transcript_path="/t.jsonl"))
     assert "could not read which background tasks" in json.loads(done.stdout)["reason"]
     assert _events(run)[-1]["scan"] == logged
+
+
+def test_only_the_shell_tool_is_trusted_to_run_in_the_background(start_run, monkeypatch) -> None:
+    # Value: protects=the background flag exempts a wait only on the tool that honors it;
+    # fails_when=any tool that carries the key is believed; why_new=accepted risk: trusting
+    # run_in_background; seam=capture the guard's call
+    from core import guard
+
+    calls = []
+    real = guard.handle_pre_tool
+    monkeypatch.setattr(
+        guard, "handle_pre_tool", lambda call, *a, **k: calls.append(call) or real(call, *a, **k)
+    )
+    _, worktree = start_run()
+    ch.run_guard(_pre(worktree, "Bash", {"command": "sleep 3", "run_in_background": True}))
+    ch.run_guard(
+        _pre(
+            worktree,
+            "Write",
+            {"file_path": str(worktree / "x"), "content": "y", "run_in_background": True},
+        )
+    )
+    assert [(c.tool_name, c.background) for c in calls] == [("Bash", True), ("Write", False)]

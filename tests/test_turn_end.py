@@ -864,3 +864,37 @@ def test_a_resume_after_the_wait_cap_lets_a_new_wait_through(start_run) -> None:
     verdict = _wait(run, "Waiting on the next reviewer.", ("c3",))
     assert verdict.waiting and verdict.tasks == ("c3",)
     assert _state(run)["wait_turns"]["autoplan"] == 1
+
+
+def test_a_released_task_is_forgotten_once_the_transcript_drops_it(start_run) -> None:
+    # Value: protects=released_tasks stays small on long runs without ever letting a
+    # released task back in; fails_when=ids are pruned while still pending, or never;
+    # why_new=accepted risk: released ids never trimmed; seam=none
+    run, _ = start_run()
+    _wait(run, "Waiting.", ("a1", "b1"))
+    _age_tasks(run, 45, "a1")
+    _refuse_to_pause(run, ("a1", "b1"))
+    rs.resume(run, "person")
+    assert _state(run)["released_tasks"] == ["a1"]
+    _wait(run, "Waiting.", ("a1", "b1"))
+    assert _state(run)["released_tasks"] == ["a1"]
+    unknown = te.TurnEnd("s1", "Waiting.", "p1", (), (), tasks_unknown=True)
+    te.handle_turn_end(unknown, run)
+    assert _state(run)["released_tasks"] == ["a1"]
+    _wait(run, "Waiting.", ("b1",))
+    assert _state(run)["released_tasks"] == []
+
+
+def test_a_stage_spends_a_bounded_number_of_turn_ends_waiting(start_run) -> None:
+    # Value: protects=an agent that keeps a trivial command in the background cannot wait
+    # forever across many short waits; fails_when=only one wait is bounded; why_new=accepted
+    # risk: restarting trivial background commands; seam=none
+    run, _ = start_run()
+    rs.update(run, lambda s: s["caps"].update(stage_waits=4))
+    for i in range(4):
+        assert _wait(run, "Waiting.", (f"sh{i}",)).waiting
+    verdict = _wait(run, "Waiting.", ("sh9",))
+    assert verdict.pause_reason == "no_message"
+    assert "spent 4 turn ends waiting" in _state(run)["pending_question"]
+    rs.resume(run, "person")
+    assert _state(run)["stage_waits"]["autoplan"] == 0

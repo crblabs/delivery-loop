@@ -372,7 +372,7 @@ def test_a_state_from_before_the_wait_fields_is_still_valid(start_run) -> None:
     run, _ = start_run()
     state = _state(run)
     keys = ("waiting_on", "waiting_since", "wait_turns", "wait_capped", "released_tasks")
-    for key in (*keys, "task_since", "activity_path", "waiting_shell_only"):
+    for key in (*keys, "task_since", "stage_waits", "activity_path", "waiting_shell_only"):
         state.pop(key)
     state["caps"] = {"attempts": rs.MAX_ATTEMPTS}
     assert ps.valid(state, DEFAULTS)
@@ -393,6 +393,7 @@ def test_a_state_from_before_the_wait_fields_is_still_valid(start_run) -> None:
         {"wait_capped": "yes"},
         {"waiting_shell_only": 1},
         {"activity_path": 5},
+        {"stage_waits": {"autoplan": -1}},
         {"task_since": []},
         {"task_since": {"a1": "yesterday"}},
     ],

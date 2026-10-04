@@ -204,9 +204,10 @@ def _waits_ok(state: dict) -> bool:
     since = state.get("waiting_since")
     if since is not None and parse_iso(since) is None:
         return False
-    turns = state.get("wait_turns", {})
-    if not isinstance(turns, dict) or any(not _int_ok(v) or v < 0 for v in turns.values()):
-        return False
+    for key in ("wait_turns", "stage_waits"):
+        turns = state.get(key, {})
+        if not isinstance(turns, dict) or any(not _int_ok(v) or v < 0 for v in turns.values()):
+            return False
     activity = state.get("activity_path")
     return (
         isinstance(state.get("wait_capped", False), bool)

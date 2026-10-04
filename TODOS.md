@@ -107,73 +107,17 @@ stops fixing after three cycles, so they are listed here.
 - **Context:** `adapters/claude_code/hooks.py` `_pause_note`;
   `adapters/claude_code/bootstrap.py` `old_python_hook`.
 
-## A time limit on a background wait (CRB-28 follow-up, with CRB-10)
+## End a background wait past its limit (CRB-28 follow-up, with CRB-10)
 
-- **What:** end or escalate a wait that has lasted past a configured limit,
-  instead of relying on the 20-wait cap and the supervisor's `waiting_stale`.
-- **Why:** a task that never reports keeps a run `running` until a person acts.
-- **Pros:** an unattended run stops wasting a slot on a dead task.
-- **Cons:** needs a timer outside the session; a limit that is too short cuts
-  real long reviews.
-- **Context:** CRB-28 adds `waiting_on`/`waiting_since` and the supervisor's
-  `waiting_stale` escalation; CRB-10 is the place for the timer.
+- **What:** a timer outside the session that acts on a run whose wait passed
+  its limit, rather than only escalating it.
+- **Why:** CRB-28 escalates a stuck wait (`waiting_stale`, with the limits in
+  `[supervisor]` of `loop.toml`), but nothing outside the session can end or
+  release it; a person must resume or abort.
+- **Pros:** an unattended run stops holding a slot on a dead task.
+- **Cons:** the actor needs a person's authority (resume and abort are
+  person-only); a limit too short cuts real long reviews.
+- **Context:** CRB-10 is the place for the timer; CRB-28 provides
+  `waiting_since`, per-task `task_since`, and the escalation.
 - **Effort:** M (human) / S (CC). **Priority:** P2.
-- **Depends on:** CRB-28.
-
-## Monitor and SendMessage-continued agents as pending tasks (CRB-28 follow-up)
-
-- **What:** recognize a Monitor launch, and an agent woken again with
-  SendMessage, as background work the Stop hook waits for.
-- **Why:** today only Agent async launches, background Bash and their
-  notifications are read; a Monitor wait is refused like a missing token.
-- **Pros:** every harness wait tool works with the loop.
-- **Cons:** no record shape observed yet; guessing risks phantom waits.
-- **Context:** `adapters/claude_code/transcript_tasks.py`; capture the shapes
-  from a real transcript first.
-- **Effort:** S / S. **Priority:** P3.
-- **Depends on:** CRB-28.
-
-## Cache the transcript scan per session (CRB-28 follow-up)
-
-- **What:** keep the last scanned byte offset and the launch/delivery id sets
-  per transcript in the run directory, and scan only new bytes at each Stop.
-- **Why:** the Stop hook reads the whole transcript every turn end; very long
-  sessions make that slower.
-- **Pros:** constant work per Stop.
-- **Cons:** must notice a rewritten or truncated transcript and rescan.
-- **Context:** `adapters/claude_code/transcript_tasks.py`. Measured: a 5 MB
-  transcript scans in about 40 ms; the hard budget is `SCAN_BUDGET_S` (10 s).
-- **Effort:** S / S. **Priority:** P3.
-- **Depends on:** CRB-28.
-
-## A background CI watch trips the 15 minute shell-only alarm (CRB-28 follow-up)
-
-- **What:** give a background `gh run watch` or `gh pr checks --watch` the
-  60 minute stale-wait limit instead of the 15 minute one for shell commands.
-- **Why:** the wait guard tells the agent to run those watches in the
-  background, which makes the wait shell-only; CI often runs past 15 minutes,
-  so the supervisor escalates `waiting_stale` on a healthy run. Kept as is in
-  the CRB-28 review (decision D10); found again by /qa on 2026-10-04.
-- **Pros:** no false alarm on long CI.
-- **Cons:** the scanner must read each background command's text from its
-  launch's tool call.
-- **Context:** `adapters/claude_code/transcript_tasks.py` (`Pending.shell`),
-  `core/supervisor_scan.py` (`DEFAULT_SHELL_WAIT_STALE_S`).
-- **Effort:** S / S. **Priority:** P3.
-- **Depends on:** CRB-28.
-
-## Background work started by a foreground subagent is not waited on (CRB-28 follow-up)
-
-- **What:** wait on background tasks a foreground subagent launches, or treat
-  a stage as unable to read its tasks when a subagent result shows it started
-  background work.
-- **Why:** the Stop hook reads only the main session transcript and skips
-  sidechain entries, so a reviewer launched in the background by a subagent
-  never counts as pending, and STAGE DONE can advance beside it. Found by the
-  CRB-28 ship review on 2026-10-04; how the harness records nested launches is
-  not yet checked.
-- **Pros:** the wait covers every background reviewer, however it started.
-- **Cons:** needs the nested launch's record shape, or subagent transcripts.
-- **Context:** `adapters/claude_code/transcript_tasks.py` (`isSidechain` skip).
-- **Effort:** S / M. **Priority:** P2.
-- **Depends on:** CRB-28.
+- **Depends on:** CRB-28, CRB-10.

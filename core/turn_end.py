@@ -340,6 +340,7 @@ def _advance(run: rs.Run, state: dict, message: str) -> TurnEndVerdict:
     state["current_stage"] = config.stages[state["current"]].name
     state["attempts"][state["current_stage"]] = 0
     state.setdefault("wait_turns", {})[state["current_stage"]] = 0
+    state.setdefault("stage_waits", {})[state["current_stage"]] = 0
     if stage.gate != "none":
         rs.pause(state, "gate", _gate_card(stage.name, stage.gate, state, config))
         return TurnEndVerdict(block=False, pause_reason="gate")
@@ -419,17 +420,28 @@ def _pending_rules(
         )
     stage = state["current_stage"]
     turns = state.setdefault("wait_turns", {})
-    cap = (state.get("caps") or {}).get("waits", rs.MAX_WAITS)
-    if turns.get(stage, 0) >= cap:
+    stage_turns = state.setdefault("stage_waits", {})
+    caps = state.get("caps") or {}
+    cap = caps.get("waits", rs.MAX_WAITS)
+    stage_cap = caps.get("stage_waits", rs.MAX_STAGE_WAITS)
+    if turns.get(stage, 0) >= cap or stage_turns.get(stage, 0) >= stage_cap:
+        # The stage cap bounds a run of short waits too: an agent that keeps a
+        # trivial command in the background never lets one wait end.
+        limit = (
+            f"waited {cap} turns"
+            if turns.get(stage, 0) >= cap
+            else f"spent {stage_cap} turn ends waiting"
+        )
         release = _mark_stuck(run, state, pending)
         rs.pause(
             state,
             "no_message",
-            f"Stage {stage} waited {cap} turns on background tasks that have not reported "
+            f"Stage {stage} {limit} on background tasks that have not reported "
             f"({ids}).{release} {run.config.abort_command} ends the run.",
         )
         return TurnEndVerdict(block=False, pause_reason="no_message")
     turns[stage] = turns.get(stage, 0) + 1
+    stage_turns[stage] = stage_turns.get(stage, 0) + 1
     state["history"].append(
         {"at": ri.now_iso(), "event": "wait", "stage": stage, "tasks": list(pending)}
     )
@@ -457,6 +469,12 @@ def handle_turn_end(event: TurnEnd, run: rs.Run, timeout: float = ri.HOOK_LOCK_S
         pending = [t for t in event.pending_tasks if t not in released]
         if not event.tasks_unknown:
             _record_pending(state, pending, event.shell_tasks)
+            # A released id the transcript no longer shows as pending has
+            # reported, been stopped or left its launch turn: it never comes
+            # back, so it need not be remembered.
+            state["released_tasks"] = [
+                t for t in state.get("released_tasks") or [] if t in event.pending_tasks
+            ]
         verdict = _check_guard(run, state)
         if verdict is not None:
             return verdict

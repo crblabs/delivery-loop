@@ -54,11 +54,6 @@ from core.config import (
 )
 
 DEFAULT_STALE_S = 600
-# A wait on background tasks this old is stuck: a reviewer runs minutes, not hours.
-DEFAULT_WAIT_STALE_S = 3600
-# A wait on shell commands alone is stuck sooner: a command that never ends on
-# its own, such as a dev server, never wakes the session.
-DEFAULT_SHELL_WAIT_STALE_S = 900
 _RECORD_KEYS = (
     "run_id",
     "branch",
@@ -125,6 +120,38 @@ def _activity_age(path: object, now: datetime) -> float | None:
     return now.timestamp() - mtime
 
 
+def _wait_stale(
+    state: dict,
+    now: datetime,
+    config: LoopConfig,
+    wait_stale_after: int | None = None,
+    shell_wait_stale_after: int | None = None,
+) -> bool:
+    """Whether a running run's wait has lasted past its limit with the session quiet.
+
+    The limit is the run's own config (``[supervisor]``) unless the command line
+    sets one; a wait on shell commands alone gets the shorter one. Quiet means no
+    turn end and, when the harness names one, no write to its activity file: a
+    turn a notification woke writes the transcript while it works.
+    """
+    if state.get("status") != "running" or not state.get("waiting_on"):
+        return False
+    if state.get("waiting_shell_only"):
+        limit = shell_wait_stale_after or config.shell_wait_stale_after_s
+    else:
+        limit = wait_stale_after or config.wait_stale_after_s
+    wait_age = _age_seconds(state.get("waiting_since"), now)
+    age = _age_seconds(state.get("updated_at"), now)
+    activity = _activity_age(state.get("activity_path"), now)
+    return (
+        wait_age is not None
+        and wait_age >= limit
+        and age is not None
+        and age >= limit
+        and (activity is None or activity >= limit)
+    )
+
+
 def build_record(
     directory: Path,
     worktree: Path | None,
@@ -133,8 +160,8 @@ def build_record(
     stale_after: int,
     config: LoopConfig = DEFAULTS,
     per_worktree: bool = False,
-    wait_stale_after: int = DEFAULT_WAIT_STALE_S,
-    shell_wait_stale_after: int = DEFAULT_SHELL_WAIT_STALE_S,
+    wait_stale_after: int | None = None,
+    shell_wait_stale_after: int | None = None,
 ) -> dict:
     """One report object for one run, whatever the file's condition.
 
@@ -180,20 +207,11 @@ def build_record(
     # session is quiet too: waiting_on changes at a turn end, so a turn a
     # notification woke still lists the task while it works. A paused run keeps
     # its own pause card.
-    # A wait on shell commands alone gets the shorter limit. Quiet means no
-    # turn end and, when the harness names one, no write to its activity file:
-    # a turn a notification woke writes the transcript while it works.
-    wait_age = _age_seconds(state.get("waiting_since"), now) if state.get("waiting_on") else None
-    limit = shell_wait_stale_after if state.get("waiting_shell_only") else wait_stale_after
-    activity = _activity_age(state.get("activity_path"), now) if wait_age is not None else None
-    record["wait_age_s"] = wait_age
-    record["is_wait_stale"] = (
-        state.get("status") == "running"
-        and wait_age is not None
-        and wait_age >= limit
-        and age is not None
-        and age >= limit
-        and (activity is None or activity >= limit)
+    record["wait_age_s"] = (
+        _age_seconds(state.get("waiting_since"), now) if state.get("waiting_on") else None
+    )
+    record["is_wait_stale"] = _wait_stale(
+        state, now, config, wait_stale_after, shell_wait_stale_after
     )
     record["index_missing"] = _index_missing(directory, worktree, state)
     return record
@@ -235,8 +253,8 @@ def scan(
     stale_after: int,
     config: LoopConfig = DEFAULTS,
     per_worktree: bool = False,
-    wait_stale_after: int = DEFAULT_WAIT_STALE_S,
-    shell_wait_stale_after: int = DEFAULT_SHELL_WAIT_STALE_S,
+    wait_stale_after: int | None = None,
+    shell_wait_stale_after: int | None = None,
 ) -> list[dict]:
     """Discover, repo-filter, and report every run."""
     records = [
@@ -293,15 +311,17 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument(
         "--wait-stale-after-seconds",
         type=int,
-        default=DEFAULT_WAIT_STALE_S,
+        default=None,
         help="how long a wait on background tasks, and the quiet since the last turn "
-        "end, may last before it is flagged",
+        "end, may last before it is flagged (default: the run's [supervisor] "
+        "wait_stale_after_seconds, 3600)",
     )
     parser.add_argument(
         "--shell-wait-stale-after-seconds",
         type=int,
-        default=DEFAULT_SHELL_WAIT_STALE_S,
-        help="the same limit for a wait on background shell commands alone",
+        default=None,
+        help="the same limit for a wait on background shell commands alone (default: the "
+        "run's [supervisor] shell_wait_stale_after_seconds, 900)",
     )
     parser.add_argument(
         "--config",

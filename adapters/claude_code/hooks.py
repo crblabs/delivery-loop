@@ -386,7 +386,10 @@ def _guard(payload: dict) -> HookResult:
                     command=command if isinstance(command, str) else None,
                     path=target if isinstance(target, str) else None,
                     branch=branch if isinstance(branch, str) else None,
-                    background=isinstance(tool_input, dict)
+                    # Only the shell tool runs a command in the background on
+                    # this flag; another tool that merely accepts the key does not.
+                    background=tool_name == "Bash"
+                    and isinstance(tool_input, dict)
                     and tool_input.get(run.config.background_flag) is True,
                 )
                 verdict = guard.handle_pre_tool(call, run, state)

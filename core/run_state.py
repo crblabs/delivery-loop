@@ -59,6 +59,10 @@ MAX_ATTEMPTS = 3
 # turn end with nothing pending ends the wait and restarts the count. An
 # autoplan stage waits on about six to ten reviewers at a time.
 MAX_WAITS = 20
+# Turn ends a whole stage may spend waiting, across all its waits: three full
+# waits. It bounds an agent that never lets a wait end by keeping a trivial
+# command in the background.
+MAX_STAGE_WAITS = 3 * MAX_WAITS
 # How long the run must have seen a task pending before a pause at a cap marks
 # it stuck, so a resume releases it: longer than a reviewer runs.
 STUCK_AFTER_S = 30 * 60
@@ -200,7 +204,7 @@ def _initial_state(
         "status": "running",
         "attempts": dict.fromkeys(names, 0),
         "total_attempts": 0,
-        "caps": {"attempts": MAX_ATTEMPTS, "waits": MAX_WAITS},
+        "caps": {"attempts": MAX_ATTEMPTS, "waits": MAX_WAITS, "stage_waits": MAX_STAGE_WAITS},
         "revision": 1,
         "session_id": session_id,
         "history": [{"at": now, "event": "start", "stage": names[0]}],
@@ -225,6 +229,7 @@ def _initial_state(
         # can tell a stuck wait from a long turn a notification woke.
         "activity_path": None,
         "wait_turns": dict.fromkeys(names, 0),
+        "stage_waits": dict.fromkeys(names, 0),
         "wait_capped": False,
         # When the run first saw each pending task: a resume releases only the
         # ones pending 30+ min.
@@ -522,6 +527,7 @@ def resume(run: Run, by: str, session_id: str | None = None) -> str:
         if state["status"] == "running" and adopting:
             state["attempts"][stage] = 0
             state.setdefault("wait_turns", {})[stage] = 0
+            state.setdefault("stage_waits", {})[stage] = 0
             clear_wait(state)
             return state_text(run, state)
         releasing = state["status"] == "running" and bool(state.get("waiting_on"))
@@ -547,6 +553,7 @@ def resume(run: Run, by: str, session_id: str | None = None) -> str:
             reason = state["paused_reason"]
         state["attempts"][stage] = 0
         state.setdefault("wait_turns", {})[stage] = 0
+        state.setdefault("stage_waits", {})[stage] = 0
         state["resumed_by"] = by
         state["history"].append({"at": ri.now_iso(), "event": "resume", "by": by, "reason": reason})
         state["paused_reason"] = None

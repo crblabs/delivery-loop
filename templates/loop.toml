@@ -84,6 +84,16 @@ dir = "{state_dir}/supervisor"
 name = "{slug}-ledger.local.jsonl"
 
 
+[supervisor]
+# How long a run may wait on background tasks, with its session quiet as long,
+# before loop-scan flags it and the supervisor escalates it (waiting_stale). A
+# wait on background shell commands alone, usually a dev server left running,
+# gets the shorter limit; a background CI watch keeps the long one. loop-scan's
+# --wait-stale-after-seconds and --shell-wait-stale-after-seconds override both.
+wait_stale_after_seconds = 3600
+shell_wait_stale_after_seconds = 900
+
+
 [loop_paths]
 # The enforcement files no declaration may ever authorize. Keep this list
 # short and exact: every entry is a file the loop refuses to let a run edit
