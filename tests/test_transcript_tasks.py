@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -190,3 +191,85 @@ def test_a_notification_whose_content_is_a_list_of_blocks_delivers(tmp_path: Pat
     }
     path = _lines(tmp_path / "t.jsonl", _prompt(), _agent("a1"), _agent("a2"), note)
     assert scan(path).tasks == ("a2",)
+
+
+MONITOR = "be9cp7jjl"
+
+
+def test_a_monitor_is_pending_until_its_stream_ends(transcript) -> None:
+    # Value: protects=a Monitor wait is judged like an agent's and its events do not end
+    # it; fails_when=a Monitor launch is ignored or its first event counts as a delivery;
+    # why_new=Monitor shape captured 2026-10-04; seam=none
+    path = transcript(START, "monitor_launch", "monitor_event")
+    assert scan(path, START) == Pending((MONITOR,), ())
+    transcript(START, "monitor_launch", "monitor_event", "monitor_ended", path=path)
+    assert scan(path, START).tasks == ()
+
+
+def test_an_agent_with_its_own_background_work_is_still_pending(transcript) -> None:
+    # Value: protects=a subagent that stopped with background work still running keeps
+    # the stage; fails_when=its interim notification counts as the delivery; why_new=nested
+    # launch shape captured 2026-10-04; seam=none
+    path = transcript(START, "agent_launch", "agent_still_running")
+    assert scan(path, START).tasks == (AGENT,)
+    transcript(START, "agent_launch", "agent_still_running", "agent_delivered_mid_turn", path=path)
+    assert scan(path, START).tasks == ()
+
+
+def test_an_agent_woken_by_sendmessage_is_pending_again(transcript) -> None:
+    # Value: protects=a finished agent continued with SendMessage is waited on until it
+    # reports again; fails_when=the earlier delivery keeps it finished; why_new=SendMessage
+    # shape captured 2026-10-04; seam=none
+    path = transcript(START, "agent_launch", "agent_delivered_mid_turn", "agent_resumed")
+    assert scan(path, START).tasks == (AGENT,)
+
+
+def test_a_background_ci_watch_is_not_a_shell_only_wait(transcript) -> None:
+    # Value: protects=a gh run watch the guard sent to the background gets the agent alarm,
+    # not the 15 min dev-server one; fails_when=watches count as shell-only; why_new=TODO
+    # CI watch alarm; seam=none
+    path = transcript(START, "bash_watch_launch", "bash_launch")
+    assert scan(path, START) == Pending(("bwatch001", BASH), (BASH,))
+
+
+def test_the_scan_goes_on_from_its_cache(transcript, tmp_path: Path, monkeypatch) -> None:
+    # Value: protects=each Stop reads only what the transcript gained, with the same result;
+    # fails_when=the cache loses state or rereads the whole file; why_new=TODO scan cache;
+    # seam=count json.loads
+    import adapters.claude_code.transcript_tasks as tt
+
+    cache = tmp_path / "scan.json"
+    path = transcript(START, "agent_launch", "bash_launch")
+    first = scan(path, START, cache=cache)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(
+            Path(
+                transcript(START, "agent_delivered_mid_turn", path=tmp_path / "d.jsonl")
+            ).read_text()
+        )
+    parsed: list[bytes] = []
+    real = json.loads
+    monkeypatch.setattr(tt.json, "loads", lambda text, *a, **k: parsed.append(text) or real(text))
+    second = scan(path, START, cache=cache)
+    assert first.tasks == (AGENT, BASH) and second.tasks == (BASH,)
+    assert len([p for p in parsed if isinstance(p, bytes)]) == 1
+
+
+def test_a_rewritten_transcript_is_read_again_whole(transcript, tmp_path: Path) -> None:
+    cache = tmp_path / "scan.json"
+    path = transcript(START, "agent_launch", "bash_launch")
+    assert scan(path, START, cache=cache).tasks == (AGENT, BASH)
+    transcript(START, "bash_launch", path=path)
+    assert scan(path, START, cache=cache).tasks == (BASH,)
+    cache.write_text("not json", encoding="utf-8")
+    assert scan(path, START, cache=cache).tasks == (BASH,)
+
+
+def test_a_line_still_being_written_is_read_next_time(transcript, tmp_path: Path) -> None:
+    cache = tmp_path / "scan.json"
+    path = transcript(START, "agent_launch")
+    text = path.read_text(encoding="utf-8")
+    path.write_text(text.rstrip("\n"), encoding="utf-8")
+    assert scan(path, START, cache=cache).tasks == ()
+    path.write_text(text, encoding="utf-8")
+    assert scan(path, START, cache=cache).tasks == (AGENT,)

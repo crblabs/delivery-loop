@@ -17,3 +17,9 @@ scanner's `since` filter sees them as the run's own records.
 older Claude Code versions (`shell_id` and "Successfully killed shell"), taken
 from their tool's documented output. No local transcript holds one, so it is
 unconfirmed; a wrong guess only means a stop is not seen.
+
+`monitor_launch`, `monitor_event`, `monitor_ended`, `agent_still_running` and
+`agent_resumed` copy records from probes run in a Claude Code 2.1.289 session
+on 2026-10-04 (a Monitor, a subagent that started background work of its own,
+and a finished agent woken by `SendMessage`). `bash_watch_launch` pairs a
+background `gh run watch` tool call with its launch result.

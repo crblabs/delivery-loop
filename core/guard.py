@@ -512,6 +512,15 @@ def wait_command(command: object, depth: int = 0) -> str | None:
     return None
 
 
+def ci_watch(command: object) -> bool:
+    """Whether a shell line is a CI watch (``gh run watch``, ``gh pr checks
+    --watch``): a wait that ends on its own when CI does, run in the background
+    as the wait rule asks. A wait on one is judged like an agent's, not like a
+    dev server's."""
+    found = wait_command(command)
+    return found is not None and found.split()[0] == "gh"
+
+
 def _check_wait(call: PreToolCall, run: rs.Run, state: dict) -> PreToolVerdict | None:
     """A foreground wait in the run's own session, unless its stage allows one."""
     if call.background or state.get("status") != "running":

@@ -223,7 +223,7 @@ def run_stop(raw: str) -> HookResult:
         if run is None:
             return early or PASS
         prompt_id = payload.get("prompt_id")
-        pending, scan = _pending(payload, state)
+        pending, scan = _pending(payload, state, Path(run_dir) / SCAN_CACHE)
         event = te.TurnEnd(
             session_id=_session(payload),
             message=last_message(payload),
@@ -280,7 +280,12 @@ def _decision(verdict) -> str:
     return "note" if verdict.note else "pass"
 
 
-def _pending(payload: dict, state: dict):
+# The transcript scan's saved state in the run directory, so each Stop reads
+# only what the transcript gained since the last one.
+SCAN_CACHE = "transcript-scan.json"
+
+
+def _pending(payload: dict, state: dict, cache: Path | None = None):
     """The run's running background tasks (a ``transcript_tasks.Pending``) and,
     when the scan failed, why.
 
@@ -300,10 +305,10 @@ def _pending(payload: dict, state: dict):
     if bound is not None and bound != _session(payload):
         return none, None
     try:
-        pending = tt.scan(Path(path), state.get("started_at"))
+        pending = tt.scan(Path(path), state.get("started_at"), cache=cache)
         if pending.tasks:
             time.sleep(_TRANSCRIPT_WAIT_S)
-            pending = tt.scan(Path(path), state.get("started_at"))
+            pending = tt.scan(Path(path), state.get("started_at"), cache=cache)
         return pending, None
     except tt.ScanTooSlow:
         return none, "slow"
