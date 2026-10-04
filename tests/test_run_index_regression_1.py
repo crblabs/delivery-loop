@@ -1,4 +1,4 @@
-"""Regression: ISSUE-001 — a huge quoted word stalls the shell lexer past the guard's timeout.
+"""Regression: ISSUE-001: a huge quoted word stalls the shell lexer past the guard's timeout.
 
 Found by /qa on 2026-10-04
 Report: .gstack/qa-reports/run-20261004T142012Z/qa-report-delivery-loop-hooks-2026-10-04.md
