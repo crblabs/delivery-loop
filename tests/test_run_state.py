@@ -305,7 +305,7 @@ def test_adopting_a_waiting_run_forgets_the_wait_without_releasing(start_run) ->
     state = _state(run)
     assert state["session_id"] == "s2" and state["status"] == "running"
     assert state["waiting_on"] == [] and state["waiting_since"] is None
-    assert state["released_tasks"] == []
+    assert state["released_tasks"] == [] and state["wait_turns"]["autoplan"] == 0
 
 
 def test_a_wait_capped_pause_releases_even_from_a_new_session(start_run) -> None:
@@ -371,6 +371,7 @@ def test_a_state_from_before_the_wait_fields_is_still_valid(start_run) -> None:
         {"wait_turns": {"autoplan": -1}},
         {"wait_capped": "yes"},
         {"waiting_shell_only": 1},
+        {"activity_path": 5},
     ],
 )
 def test_a_malformed_wait_field_makes_the_state_invalid(start_run, bad: dict) -> None:

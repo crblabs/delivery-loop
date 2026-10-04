@@ -537,7 +537,7 @@ def test_a_turn_that_waits_on_a_background_task_ends_without_an_attempt(start_ru
     # why_new=CRB-28; seam=none
     run, _ = start_run()
     verdict = _wait(run, "Waiting for the spec reviewer.", ("a1",))
-    assert verdict == te.TurnEndVerdict(block=False, waiting=True, tasks=("a1",))
+    assert verdict == te.TurnEndVerdict(block=False, tasks=("a1",))
     state = _state(run)
     assert state["attempts"]["autoplan"] == 0 and state["total_attempts"] == 0
     assert state["waiting_on"] == ["a1"] and state["waiting_since"] is not None
@@ -719,7 +719,7 @@ def test_the_attempts_pause_says_how_to_release_a_task_still_waited_on(start_run
     run, _ = start_run()
     for _ in range(3):
         _wait(run, DONE, ("a1",))
-    assert "a1; if they will never report" in _state(run)["pending_question"]
+    assert "keeps waiting on a1; if they will never report" in _state(run)["pending_question"]
     rs.resume(run, "person")
     rs.resume(run, "person")
     assert _state(run)["released_tasks"] == ["a1"]
@@ -729,3 +729,17 @@ def test_a_turn_end_records_the_session_s_activity_file(start_run) -> None:
     run, _ = start_run()
     te.handle_turn_end(te.TurnEnd("s1", "x", "p1", activity_path="/t.jsonl"), run)
     assert _state(run)["activity_path"] == "/t.jsonl"
+
+
+def test_a_resume_after_the_wait_cap_lets_a_new_wait_through(start_run) -> None:
+    # Value: protects=after a wait-cap resume the stage gets a fresh wait count, so a new
+    # reviewer's wait is let through; fails_when=resume stops resetting wait_turns and the
+    # next wait re-pauses at once; why_new=no test waited again after a cap resume; seam=none
+    run, _ = start_run()
+    for _ in range(rs.MAX_WAITS + 1):
+        _wait(run, "Waiting.", ("a1",))
+    assert _state(run)["wait_capped"] is True
+    rs.resume(run, "person")
+    verdict = _wait(run, "Waiting on the next reviewer.", ("c3",))
+    assert verdict.waiting and verdict.tasks == ("c3",)
+    assert _state(run)["wait_turns"]["autoplan"] == 1

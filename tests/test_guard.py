@@ -366,6 +366,9 @@ WAITS = [
     "sleep 60 &",
     "tail -f server.log",
     "tail -Fn5 server.log",
+    # Value: protects=the long --follow form of tail is a foreground wait; fails_when=the
+    # --follow branch of _wait_in is dropped; why_new=no row used the long option; seam=none
+    "tail --follow=name server.log",
     "watch ls",
     "wait",
     "gh run watch 123",
@@ -395,6 +398,8 @@ WAITS = [
     "sle\\\nep 600",
     "case x in x) sleep 5;; esac",
     "a=$[1<<2]\nsleep 100",
+    # Only a wait right after kill is exempt, never another wait.
+    "srv & pid=$!; kill $pid; sleep 5",
 ]
 NOT_WAITS = [
     'git ls-files | while read f; do echo "$f"; done',

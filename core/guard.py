@@ -403,10 +403,10 @@ def _check_push(command: str, run: rs.Run, state: dict) -> PreToolVerdict:
 _WAIT_TRIGGER_RE = re.compile(r"(?<![\w.-])(?:sleep|wait|watch|tail|gh)(?![\w.-])")
 # Words that open a command inside a loop or a group; the command follows them.
 _SHELL_KEYWORDS = frozenset(("do", "then", "else", "elif", "while", "until", "if", "!", "{", "("))
-_TIMEOUT_VALUE_OPTIONS = ("-s", "--signal", "-k", "--kill-after")
 # Commands that run the command after them, with their options that take a
 # value, and how many plain arguments come before that command.
 _WAIT_WRAPPERS = {
+    "timeout": (("-s", "--signal", "-k", "--kill-after"), 1),
     "nice": (("-n", "--adjustment"), 0),
     "ionice": (("-c", "-n", "-p", "--class", "--classdata"), 0),
     "sudo": (("-u", "-g", "-C", "-D", "-h", "-p", "-r", "-t", "-U"), 0),
@@ -437,14 +437,6 @@ def _skip_wrapper(words: list[str]) -> list[str] | None:
     return words[i + positional :]
 
 
-def _skip_timeout(words: list[str]) -> list[str]:
-    """``timeout [options] DURATION command...`` as the command it runs."""
-    i = 1
-    while i < len(words) and words[i].startswith("-"):
-        i += 2 if words[i] in _TIMEOUT_VALUE_OPTIONS else 1
-    return words[i + 1 :]
-
-
 def _wait_in(words: list[str]) -> str | None:
     """The wait one simple command runs, as its first words, or ``None``."""
     i = 0
@@ -462,10 +454,7 @@ def _wait_in(words: list[str]) -> str | None:
     for _ in range(ri.NEST_MAX + 1):
         if not words:
             return None
-        if os.path.basename(words[0]) == "timeout":
-            inner = _skip_timeout(words)
-        else:
-            inner = _skip_wrapper(words)
+        inner = _skip_wrapper(words)
         if inner is None:
             break
         words = ri.strip_prefix(inner)

@@ -418,7 +418,7 @@ def test_the_wait_limits_are_read_from_the_command_line(worktree, capsys):
     worktree("agent", make_state(waiting_on=["a1"], **quiet))
     worktree("shell", make_state(waiting_on=["b1"], waiting_shell_only=True, **quiet))
     args = ["--wait-stale-after-seconds", "600", "--shell-wait-stale-after-seconds", "601"]
-    assert ss.main(["--now", NOW.isoformat(), *args]) in (0, 1)
+    assert ss.main(["--now", NOW.isoformat(), *args]) == 1
     records = {Path(r["worktree"]).name: r for r in json.loads(capsys.readouterr().out)}
     assert records["agent"]["is_wait_stale"] is True
     assert records["shell"]["is_wait_stale"] is False

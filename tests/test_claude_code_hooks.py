@@ -365,6 +365,10 @@ def test_a_stop_while_a_background_task_runs_waits(start_run, transcript) -> Non
     last = _events(run)[-1]
     assert last["decision"] == "wait" and last["tasks"] == ["a6187e5a074a90e2d"]
     assert rs.read(run)[1]["attempts"]["autoplan"] == 0
+    # Value: protects=the Stop hook hands the transcript path on as the activity file the
+    # supervisor reads; fails_when=run_stop drops activity_path; why_new=only TurnEnd was
+    # tested, not the adapter wiring; seam=none
+    assert rs.read(run)[1]["activity_path"] == str(path)
 
 
 def test_a_stop_after_the_task_reports_is_judged_as_usual(start_run, transcript) -> None:

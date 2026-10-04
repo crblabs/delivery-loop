@@ -176,3 +176,17 @@ def test_a_mid_turn_compaction_or_peer_message_does_not_start_a_turn(tmp_path: P
     nxt = {"type": "user", "turnPosition": {"turnIndex": 8}, "origin": {"kind": "peer"}}
     _lines(path, first, _bash("b1"), compact, nxt)
     assert scan(path).tasks == ()
+
+
+def test_a_notification_whose_content_is_a_list_of_blocks_delivers(tmp_path: Path) -> None:
+    # Value: protects=a wake whose message content is a list of text blocks still delivers
+    # its task; fails_when=_content_text reads only string content and the agent stays
+    # pending forever; why_new=fixtures only hold string content; seam=none
+    header = "<task-notification>\n<task-id>a1</task-id>\n<status>completed</status>"
+    note = {
+        "type": "user",
+        "origin": {"kind": "task-notification"},
+        "message": {"content": [{"type": "image"}, {"type": "text", "text": header}]},
+    }
+    path = _lines(tmp_path / "t.jsonl", _prompt(), _agent("a1"), _agent("a2"), note)
+    assert scan(path).tasks == ("a2",)

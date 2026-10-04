@@ -485,6 +485,7 @@ def resume(run: Run, by: str, session_id: str | None = None) -> str:
         stage = state["current_stage"]
         if state["status"] == "running" and adopting:
             state["attempts"][stage] = 0
+            state.setdefault("wait_turns", {})[stage] = 0
             clear_wait(state)
             return state_text(run, state)
         if state["status"] == "running" and state.get("waiting_on"):

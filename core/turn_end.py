@@ -46,6 +46,7 @@ That catches a shell edit, which the edit guard never sees.
         │ background task running ── STAGE DONE ─> block, reinject (an attempt)
         │                          └ no token ── waits < cap ─> let it end (a wait)
         │                                       at cap ─> pause no_message, wait_capped
+        │ tasks unreadable ── STAGE DONE ─> block, reinject (an attempt)
         │ STAGE DONE ── emits missing / tree dirty / dash ─> block, reinject
         │            └─ last stage ─> done   gate ─> pause gate   else ─> block, next stage
         └ no token ── attempts < cap ─> block, reinject   at cap ─> pause no_message
@@ -94,10 +95,13 @@ class TurnEndVerdict:
     pause_reason: str | None = None
     # Shown to the person without blocking, such as how to adopt a run.
     note: str | None = None
-    # The turn ends while background tasks run; their notification wakes it.
-    waiting: bool = False
-    # The tasks it waits on, after a person's releases.
+    # The tasks the turn ends waiting on, after a person's releases; their
+    # notification wakes the session.
     tasks: tuple[str, ...] = ()
+
+    @property
+    def waiting(self) -> bool:
+        return bool(self.tasks)
 
 
 PASS = TurnEndVerdict(block=False)
@@ -232,8 +236,9 @@ def _no_token(run: rs.Run, state: dict, why: str) -> TurnEndVerdict:
         # says nothing about the task, and a resume must not release it.
         waiting = state.get("waiting_on") or []
         release = (
-            f" The run still waits on {', '.join(waiting)}; if they will never report, "
-            f"{run.config.resume_command} once more after this resume releases them."
+            f" This resume keeps waiting on {', '.join(waiting)}; if they will never "
+            f"report, run {run.config.resume_command} a second time afterwards to release "
+            "them."
             if waiting
             else ""
         )
@@ -401,7 +406,7 @@ def _pending_rules(
     state["history"].append(
         {"at": ri.now_iso(), "event": "wait", "stage": stage, "tasks": list(pending)}
     )
-    return TurnEndVerdict(block=False, waiting=True, tasks=tuple(pending))
+    return TurnEndVerdict(block=False, tasks=tuple(pending))
 
 
 # How many other sessions a run remembers having told about adoption.

@@ -50,6 +50,8 @@ been stopped with `TaskStop`. A background command counts as waited on only in
 the turn that started it; an agent counts until it reports. A command that
 never ends on its own, such as a dev server, never wakes you: stop it with
 `TaskStop` before you end a turn to wait, or the run waits until a person looks.
+(`TaskStop` is Claude Code's name; a loop.toml can name another harness's tool
+as `stop_task_tool`, and the loop's refusal text names it.)
 
 ## What the loop guards
 
