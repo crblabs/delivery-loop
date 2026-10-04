@@ -269,10 +269,16 @@ def test_an_old_state_with_a_forged_run_id_is_kept_in_place(start_run) -> None:
 # --- Waiting on background tasks ----------------------------------------------
 
 
-def _waiting(run: rs.Run, tasks: list[str], **more) -> None:
+def _waiting(run: rs.Run, tasks: list[str], age_min: int = 45, **more) -> None:
+    """The run waits on these tasks, first seen ``age_min`` minutes ago."""
+    from datetime import UTC, datetime, timedelta
+
+    seen = (datetime.now(UTC) - timedelta(minutes=age_min)).isoformat()
+
     def apply(state: dict) -> None:
         state["waiting_on"] = tasks
         state["waiting_since"] = ri.now_iso()
+        state["task_since"] = dict.fromkeys(tasks, seen)
         state["wait_turns"][state["current_stage"]] = 3
         state.update(more)
 
@@ -313,7 +319,7 @@ def test_a_wait_capped_pause_releases_even_from_a_new_session(start_run) -> None
     # Value: protects=the cap card's promise after /clear; fails_when=adoption keeps the
     # dead tasks; why_new=spec review 2; seam=none
     run, _ = start_run()
-    _waiting(run, ["a1", "b2"], wait_capped=True, stuck_on=["a1", "b2"])
+    _waiting(run, ["a1", "b2"], wait_capped=True)
     rs.update(run, lambda s: rs.pause(s, "no_message", "card"))
     rs.resume(run, "person", "s2")
     state = _state(run)
@@ -341,6 +347,19 @@ def test_released_tasks_are_never_trimmed(start_run) -> None:
     assert _state(run)["released_tasks"][0] == "t0"
 
 
+def test_a_resume_while_waiting_keeps_tasks_younger_than_thirty_minutes(start_run) -> None:
+    # Value: protects=ship red team: a second resume while the run is idle and waiting cannot
+    # release a reviewer started seconds ago; fails_when=that resume releases every task;
+    # why_new=ship review cycle 3; seam=none
+    run, _ = start_run()
+    _waiting(run, ["old", "new"])
+    rs.update(run, lambda s: s["task_since"].update(new=ri.now_iso()))
+    rs.resume(run, "person", "s1")
+    state = _state(run)
+    assert state["released_tasks"] == ["old"]
+    assert state["waiting_on"] == ["new"] and list(state["task_since"]) == ["new"]
+
+
 def test_status_shows_what_the_run_waits_on(start_run) -> None:
     run, _ = start_run()
     _waiting(run, ["a1", "b2"])
@@ -353,7 +372,7 @@ def test_a_state_from_before_the_wait_fields_is_still_valid(start_run) -> None:
     run, _ = start_run()
     state = _state(run)
     keys = ("waiting_on", "waiting_since", "wait_turns", "wait_capped", "released_tasks")
-    for key in (*keys, "task_since", "stuck_on", "activity_path", "waiting_shell_only"):
+    for key in (*keys, "task_since", "activity_path", "waiting_shell_only"):
         state.pop(key)
     state["caps"] = {"attempts": rs.MAX_ATTEMPTS}
     assert ps.valid(state, DEFAULTS)
@@ -376,7 +395,6 @@ def test_a_state_from_before_the_wait_fields_is_still_valid(start_run) -> None:
         {"activity_path": 5},
         {"task_since": []},
         {"task_since": {"a1": "yesterday"}},
-        {"stuck_on": [3]},
     ],
 )
 def test_a_malformed_wait_field_makes_the_state_invalid(start_run, bad: dict) -> None:

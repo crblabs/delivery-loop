@@ -30,6 +30,7 @@ import subprocess
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TypeVar
 
@@ -225,10 +226,9 @@ def _initial_state(
         "activity_path": None,
         "wait_turns": dict.fromkeys(names, 0),
         "wait_capped": False,
-        # When the run first saw each pending task, and the tasks a pause at a
-        # cap marked stuck (pending 30+ min), which a resume releases.
+        # When the run first saw each pending task: a resume releases only the
+        # ones pending 30+ min.
         "task_since": {},
-        "stuck_on": [],
         "released_tasks": [],
         "plan_path": None,
         "pr_url": None,
@@ -451,26 +451,44 @@ def clear_wait(state: dict) -> None:
     state["waiting_since"] = None
     state["waiting_shell_only"] = False
     state["task_since"] = {}
-    state["stuck_on"] = []
+
+
+def task_ages(state: dict) -> dict[str, float | None]:
+    """Each waited-on task's age in seconds since the run first saw it pending."""
+    now = datetime.now(UTC)
+    seen = state.get("task_since") or {}
+    ages: dict[str, float | None] = {}
+    for task in state.get("waiting_on") or []:
+        since = ps.parse_iso(seen.get(task))
+        ages[task] = None if since is None else (now - since).total_seconds()
+    return ages
+
+
+def stuck_tasks(state: dict) -> list[str]:
+    """The waited-on tasks pending ``STUCK_AFTER_S`` or more: the only ones a
+    resume may release. Turn counts and refusals are the agent's to make in
+    seconds; a task's own age is not."""
+    return [t for t, age in task_ages(state).items() if age is not None and age >= STUCK_AFTER_S]
 
 
 def _release(state: dict) -> None:
-    """Stop waiting on the tasks the run waits on: a person says they will not report.
+    """Stop waiting on the tasks stuck at this moment: a person says they will not report.
 
-    The list is never trimmed: a released id dropped from it would come back
-    as a wait, since its launch stays in the session's transcript.
+    Judged at the resume, so a task that grew old during a pause is released
+    and one an agent started seconds ago never is. Younger tasks stay waited
+    on with their first-seen time. The list is never trimmed: a released id
+    dropped from it would come back as a wait, since its launch stays in the
+    session's transcript.
     """
-    # A pause at a cap releases only the tasks old enough to be stuck; a person's
-    # resume while the run is running and waiting releases what it waits on.
-    if state.get("wait_capped"):
-        released = list(state.get("stuck_on") or [])
-    else:
-        released = list(state.get("waiting_on") or [])
+    released = stuck_tasks(state)
     state["released_tasks"] = list(dict.fromkeys([*(state.get("released_tasks") or []), *released]))
-    # Tasks still waited on keep their first-seen time, so their age goes on.
-    kept = {t: v for t, v in (state.get("task_since") or {}).items() if t not in released}
-    clear_wait(state)
-    state["task_since"] = kept
+    young = [t for t in state.get("waiting_on") or [] if t not in released]
+    kept = {t: v for t, v in (state.get("task_since") or {}).items() if t in young}
+    if young:
+        state["waiting_on"] = young
+        state["task_since"] = kept
+    else:
+        clear_wait(state)
     state["wait_capped"] = False
 
 
@@ -484,10 +502,10 @@ def resume(run: Run, by: str, session_id: str | None = None) -> str:
     type: given from another session, it binds the run to that session, which is
     how a person adopts a run whose session ended, running or paused.
 
-    Background tasks the run waits on are released only when the wait is stuck:
-    a pause at the wait or attempts cap releases the tasks pending for
-    ``STUCK_AFTER_S`` by their own first-seen time (``stuck_on``), or a
-    resume that does not adopt the run while it is running and waiting. Any
+    Background tasks are released by a resume after a pause at the wait or
+    attempts cap beside them (``wait_capped``), or by a resume that does not
+    adopt the run while it is running and waiting; either way only the tasks
+    pending ``STUCK_AFTER_S`` or more at that moment (``stuck_tasks``). Any
     other resume keeps waiting on them, since a reviewer that still runs will
     report. Adopting a running run forgets its
     wait without releasing it: the new session's transcript says what it runs.

@@ -144,9 +144,9 @@ one runs:
 - After 20 waiting turn ends in one wait, the run pauses with a card naming the
   tasks. A turn end with nothing running ends the wait and restarts the count.
 - At either pause, the card gives each task's age: how long the run has seen
-  it pending. A task pending 30 minutes or more counts as stuck, and
-  `/delivery-loop:pipeline resume` releases it; a younger one is still waited
-  on, so an agent cannot hurry a working reviewer into a release.
+  it pending. `/delivery-loop:pipeline resume` releases the tasks pending 30
+  minutes or more at the moment you resume, and keeps waiting on younger ones,
+  so an agent cannot hurry a working reviewer into a release.
 
 The wait relies on the session staying open. A headless `claude -p` session
 exits at the end of the turn, so its run stays `running` while it waits, and
@@ -244,15 +244,15 @@ rest is in `TODOS.md`.
 - **A run waiting on background tasks.** `delivery-loop status` shows the task
   ids, since when, and the wait count. Nothing to do while they run. If one
   will never report (its process died), `/delivery-loop:pipeline resume` in the
-  run's own session (or the CLI in a terminal) releases it and the stage goes
-  on. A resume from a new session adopts the run instead, and the new session's
-  transcript decides what it waits on.
+  run's own session (or the CLI in a terminal) releases it once it has been
+  pending 30 minutes, and the stage goes on. A resume from a new session adopts
+  the run instead, and the new session's transcript decides what it waits on.
 - **A run paused with `no_message` beside background tasks** (the 20-wait
   limit, or three refused `STAGE DONE`). The card names the tasks with their
-  ages. The ones pending 30 minutes or more are released by
-  `/delivery-loop:pipeline resume`; check that they are not still running
-  first. Younger ones keep the stage until they report or reach 30 minutes.
-  `/delivery-loop:pipeline abort` ends the run.
+  ages. `/delivery-loop:pipeline resume` releases the ones pending 30 minutes
+  or more at that moment; check that they are not still running first.
+  Younger ones are still waited on, and a later resume releases them once they
+  are 30 minutes old. `/delivery-loop:pipeline abort` ends the run.
 - **The supervisor escalates `waiting_stale`.** A run has waited over an hour,
   with no turn end and no write to the session transcript for an hour either
   (`loop-scan --wait-stale-after-seconds` sets the limit), on tasks that have

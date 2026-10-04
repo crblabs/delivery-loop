@@ -196,11 +196,9 @@ def _waits_ok(state: dict) -> bool:
         return False
     if "released_tasks" in state and not _strs_ok(state["released_tasks"]):
         return False
-    if "stuck_on" in state and not _strs_ok(state["stuck_on"]):
-        return False
-    since = state.get("task_since", {})
-    if not isinstance(since, dict) or any(
-        not isinstance(k, str) or parse_iso(v) is None for k, v in since.items()
+    task_since = state.get("task_since", {})
+    if not isinstance(task_since, dict) or any(
+        not isinstance(k, str) or parse_iso(v) is None for k, v in task_since.items()
     ):
         return False
     since = state.get("waiting_since")

@@ -27,10 +27,10 @@ end with no token is then let through without spending an attempt, up to
 the tasks named (``wait_capped``). A turn end with nothing pending ends the wait
 and restarts that count. ``STAGE DONE`` is refused while a task runs, so the
 next stage never starts beside a reviewer that is still working; that refusal
-spends an attempt. A pause at either cap (waits, or attempts on refused
-``STAGE DONE``) marks stuck, so that a person's resume releases them, only the
-tasks the run has seen pending for ``STUCK_AFTER_S`` by their own first-seen
-time (``task_since``): a lost notification gets there, a quick agent cannot.
+spends an attempt. A person's resume after a pause at either cap (waits, or
+attempts on refused ``STAGE DONE``) releases only the tasks the run has seen
+pending for ``STUCK_AFTER_S`` by their own first-seen time (``task_since``),
+judged at the resume: a lost notification gets there, a quick agent cannot.
 Every turn end records the tasks in ``waiting_on`` and when the wait began in
 ``waiting_since``; a person's resume can release tasks that will never report.
 
@@ -50,7 +50,7 @@ That catches a shell edit, which the edit guard never sees.
         │                          │   at cap ─> pause no_message
         │                          └ no token ── waits < cap ─> let it end (a wait)
         │                                       at cap ─> pause no_message
-        │                          either pause: tasks pending 30+ min ─> stuck_on
+        │                          either pause: resume releases tasks pending 30+ min
         │ tasks unreadable ── STAGE DONE ─> block, reinject (an attempt)
         │ STAGE DONE ── emits missing / tree dirty / dash ─> block, reinject
         │            └─ last stage ─> done   gate ─> pause gate   else ─> block, next stage
@@ -62,11 +62,9 @@ from __future__ import annotations
 import re
 import subprocess
 from dataclasses import dataclass
-from datetime import UTC, datetime
 from pathlib import Path
 
 from core import no_unicode_dash as nd
-from core import pipeline_state as ps
 from core import run_index as ri
 from core import run_state as rs
 from core.config import LoopConfig, git_env
@@ -253,50 +251,29 @@ def _no_token(
     return _block(state, f"The stage is not finished: {why}.\n\n{rs.state_text(run, state)}")
 
 
-def _ages(state: dict, ids: list[str]) -> dict[str, int | None]:
-    """Each task's own age in minutes, from when the run first saw it pending."""
-    now = datetime.now(UTC)
-    seen = state.get("task_since") or {}
-    ages: dict[str, int | None] = {}
-    for task in ids:
-        since = ps.parse_iso(seen.get(task))
-        ages[task] = None if since is None else int((now - since).total_seconds() // 60)
-    return ages
-
-
 def _mark_stuck(run: rs.Run, state: dict, pending: list[str]) -> str:
-    """Mark the pending tasks old enough to be stuck, and say so on the card.
+    """Mark a pause at a cap beside tasks, and give each task's age on the card.
 
-    Every automatic release, at the wait cap or at an attempts pause on
-    refused STAGE DONE, goes through here. A task counts as stuck only when the
-    run has seen it pending for ``rs.STUCK_AFTER_S`` by its own first-seen
-    time: turn counts and refusals are the agent's to make in seconds, a task's
-    age is not. Only stuck tasks are released (``stuck_on``); younger ones are
-    still waited on.
+    The resume after it releases only the tasks pending ``rs.STUCK_AFTER_S``
+    at that moment (``rs.stuck_tasks``): turn counts and refusals are the
+    agent's to make in seconds, a task's own age is not.
     """
-    ages = _ages(state, pending)
+    state["wait_capped"] = True
+    ages = rs.task_ages(state)
     floor = rs.STUCK_AFTER_S // 60
-    stuck = [t for t in pending if ages[t] is not None and ages[t] * 60 >= rs.STUCK_AFTER_S]
-    young = [t for t in pending if t not in stuck]
 
     def shown(tasks: list[str]) -> str:
-        return ", ".join(
-            f"{t} ({ages[t]} min)" if ages[t] is not None else f"{t} (age unknown)" for t in tasks
-        )
+        return ", ".join(f"{t} ({int((ages.get(t) or 0) // 60)} min)" for t in tasks)
 
-    text = ""
-    if stuck:
-        state["wait_capped"] = True
-        state["stuck_on"] = stuck
-        text += (
-            f" Pending for {floor} min or more: {shown(stuck)}. They may still be running: "
-            f"check the session first, then {run.config.resume_command} releases them."
-        )
+    old = [t for t in pending if (ages.get(t) or 0) >= rs.STUCK_AFTER_S]
+    young = [t for t in pending if t not in old]
+    text = f" {run.config.resume_command} releases the tasks pending {floor} min or more"
+    text += " when you resume, and keeps waiting on younger ones."
+    if old:
+        text += f" Pending {floor} min or more now: {shown(old)}; they may still be running, "
+        text += "so check the session first."
     if young:
-        text += (
-            f" Still waited on after a resume: {shown(young)}; a task is released only "
-            f"once it has been pending {floor} min."
-        )
+        text += f" Younger, still waited on: {shown(young)}."
     return text
 
 

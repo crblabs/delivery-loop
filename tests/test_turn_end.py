@@ -583,10 +583,9 @@ def test_a_refused_stage_done_at_the_attempt_cap_never_releases_a_running_task(s
     assert _wait(run, "Waiting.", ("a1", "a2")).waiting
     verdict = _wait(run, DONE, ("a2",))
     assert verdict.pause_reason == "no_message"
-    state = _state(run)
-    assert not state.get("wait_capped")
-    card = state["pending_question"]
+    card = _state(run)["pending_question"]
     assert "turns that were not accepted (last: a background task is still running" in card
+    assert "Younger, still waited on: a2 (0 min)" in card
     rs.resume(run, "person")
     state = _state(run)
     assert state["released_tasks"] == [] and state["waiting_on"] == ["a2"]
@@ -603,7 +602,7 @@ def test_the_wait_cap_pauses_with_a_card_naming_the_tasks(start_run) -> None:
     verdict = _wait(run, "Waiting.", ("a1", "b2"))
     assert verdict.pause_reason == "no_message" and not verdict.waiting
     state = _state(run)
-    assert state["wait_capped"] is True and state["stuck_on"] == ["a1", "b2"]
+    assert state["wait_capped"] is True
     assert state["attempts"]["autoplan"] == 0 and state["total_attempts"] == 0
     card = state["pending_question"]
     assert f"waited {rs.MAX_WAITS} turns" in card and "(a1, b2)" in card
@@ -658,6 +657,7 @@ def test_a_pause_still_records_what_the_run_waits_on(start_run) -> None:
 def test_released_tasks_are_not_waited_on_again(start_run) -> None:
     run, _ = start_run()
     _wait(run, "Waiting.", ("a1",))
+    _age_tasks(run, 45, "a1")
     rs.resume(run, "person", "s1")
     assert _state(run)["released_tasks"] == ["a1"]
     assert _wait(run, "still thinking", ("a1",)).block
@@ -727,47 +727,44 @@ def _refuse_to_pause(run: rs.Run, tasks: tuple[str, ...]) -> None:
         _wait(run, DONE, tasks)
 
 
-def test_an_attempts_pause_marks_only_old_tasks_stuck(start_run) -> None:
+def test_an_attempts_pause_releases_only_old_tasks(start_run) -> None:
     # Value: protects=a task whose notification was lost is released even when the agent
-    # keeps writing STAGE DONE, and a reviewer started beside it never is; fails_when=the
-    # stuck mark ignores each task's own age; why_new=ship review red team; seam=none
+    # keeps writing STAGE DONE, and a reviewer started beside it never is; fails_when=a
+    # release ignores each task's own age; why_new=ship review red team; seam=none
     run, _ = start_run()
     _wait(run, "Waiting.", ("a1", "b1"))
     _age_tasks(run, 45, "a1")
     _refuse_to_pause(run, ("a1", "b1"))
-    state = _state(run)
-    assert state["wait_capped"] and state["stuck_on"] == ["a1"]
-    card = state["pending_question"]
-    assert "Pending for 30 min or more: a1 (45 min)" in card and "may still be running" in card
-    assert "Still waited on after a resume: b1 (0 min)" in card
+    card = _state(run)["pending_question"]
+    assert "Pending 30 min or more now: a1 (45 min)" in card and "may still be running" in card
+    assert "Younger, still waited on: b1 (0 min)" in card
+    assert DEFAULTS.resume_command in card
     rs.resume(run, "person")
     state = _state(run)
-    assert state["released_tasks"] == ["a1"] and state["waiting_on"] == []
+    assert state["released_tasks"] == ["a1"] and state["waiting_on"] == ["b1"]
     assert list(state["task_since"]) == ["b1"]
     assert _wait(run, DONE, ("a1", "b1")).block and _state(run)["waiting_on"] == ["b1"]
 
 
-def test_quick_pauses_never_release_a_reviewer_that_still_runs(start_run) -> None:
-    # Value: protects=an agent that writes STAGE DONE six times in seconds cannot get a live
-    # reviewer released; fails_when=a pause marks tasks stuck by count; why_new=review;
-    # seam=none
+def test_quick_pauses_and_resumes_never_release_a_reviewer_that_still_runs(start_run) -> None:
+    # Value: protects=ship red team: no sequence of quick refusals and resumes, including
+    # a second resume while the run is idle and waiting, releases a young reviewer;
+    # fails_when=any resume releases by count instead of age; why_new=review; seam=none
     run, _ = start_run()
     _refuse_to_pause(run, ("a1",))
     rs.resume(run, "person")
+    _wait(run, "Waiting.", ("a1",))
+    rs.resume(run, "person")
     _refuse_to_pause(run, ("a1",))
-    state = _state(run)
-    assert (
-        not state["wait_capped"]
-        and "Still waited on after a resume: a1" in (state["pending_question"])
-    )
     rs.resume(run, "person")
     assert _state(run)["released_tasks"] == []
+    assert _wait(run, DONE, ("a1",)).block
 
 
-def test_a_task_started_beside_an_old_wait_is_never_marked_stuck_by_it(start_run) -> None:
+def test_a_task_started_beside_an_old_wait_is_never_released_by_it(start_run) -> None:
     # Value: protects=ship review: a reviewer launched seconds ago cannot borrow the age of
-    # an older task in the same wait; fails_when=the age is the wait's, not the task's;
-    # why_new=ship red team; seam=none
+    # an older wait; fails_when=the age is the wait's, not the task's; why_new=ship red
+    # team; seam=none
     from datetime import UTC, datetime, timedelta
 
     run, _ = start_run()
@@ -775,36 +772,60 @@ def test_a_task_started_beside_an_old_wait_is_never_marked_stuck_by_it(start_run
     old = (datetime.now(UTC) - timedelta(minutes=45)).isoformat()
     rs.update(run, lambda s: s.update(waiting_since=old))
     _refuse_to_pause(run, ("a1", "b1"))
-    assert _state(run)["stuck_on"] == []
     rs.resume(run, "person")
+    assert _state(run)["released_tasks"] == []
     assert _wait(run, DONE, ("b1",)).block
 
 
 def test_many_quick_waits_never_release_a_reviewer_that_still_runs(start_run) -> None:
     # Value: protects=ship red team: an agent that reaches the wait cap in seconds (a quick
     # background command each turn) cannot get a live reviewer released; fails_when=the
-    # wait cap marks every pending task stuck; why_new=ship review; seam=none
+    # wait cap releases every pending task; why_new=ship review; seam=none
     run, _ = start_run()
     for i in range(rs.MAX_WAITS + 1):
         _wait(run, "Waiting.", ("r1", f"sh{i}"))
     state = _state(run)
-    assert state["status"] == "awaiting_human" and not state["wait_capped"]
+    assert state["status"] == "awaiting_human"
+    assert DEFAULTS.resume_command in state["pending_question"]
     rs.resume(run, "person")
     assert _state(run)["released_tasks"] == []
     assert _wait(run, DONE, ("r1",)).block
 
 
-@pytest.mark.parametrize(("minutes", "stuck"), [(29, False), (30, True)])
-def test_a_task_is_stuck_from_thirty_minutes_on(start_run, minutes: int, stuck: bool) -> None:
+def test_a_wait_cap_releases_the_old_task_and_keeps_the_young_one(start_run) -> None:
+    run, _ = start_run()
+    for _ in range(rs.MAX_WAITS):
+        _wait(run, "Waiting.", ("a1", "b1"))
+    _age_tasks(run, 45, "a1")
+    _wait(run, "Waiting.", ("a1", "b1"))
+    rs.resume(run, "person")
+    state = _state(run)
+    assert state["released_tasks"] == ["a1"] and state["waiting_on"] == ["b1"]
+
+
+def test_a_task_that_grows_old_during_a_pause_is_released_by_the_resume(start_run) -> None:
+    # Value: protects=ship red team: the lost-notification case is released once the task is
+    # 30 min old, even if it was younger when the run paused; fails_when=stuck is decided
+    # at the pause; why_new=ship review; seam=none
+    run, _ = start_run()
+    _wait(run, "Waiting.", ("lost",))
+    _age_tasks(run, 20, "lost")
+    _refuse_to_pause(run, ("lost",))
+    _age_tasks(run, 60, "lost")
+    rs.resume(run, "person")
+    assert _state(run)["released_tasks"] == ["lost"]
+
+
+@pytest.mark.parametrize(("minutes", "released"), [(29, []), (30, ["a1"])])
+def test_a_task_is_released_from_thirty_minutes_on(start_run, minutes: int, released) -> None:
     # Value: protects=the STUCK_AFTER_S boundary; fails_when=the floor or its >= moves;
     # why_new=mutation check; seam=none
     run, _ = start_run()
     _wait(run, "Waiting.", ("a1",))
     _age_tasks(run, minutes, "a1")
     _refuse_to_pause(run, ("a1",))
-    assert bool(_state(run)["wait_capped"]) is stuck
     rs.resume(run, "person")
-    assert _state(run)["released_tasks"] == (["a1"] if stuck else [])
+    assert _state(run)["released_tasks"] == released
 
 
 def test_a_task_keeps_its_first_seen_time_while_pending(start_run) -> None:
@@ -814,21 +835,13 @@ def test_a_task_keeps_its_first_seen_time_while_pending(start_run) -> None:
     _wait(run, "Waiting.", ("a1", "b1"))
     since = _state(run)["task_since"]
     assert since["a1"] == first and set(since) == {"a1", "b1"}
+    _refuse_to_pause(run, ("a1", "b1"))
+    rs.resume(run, "person")
+    assert _state(run)["task_since"]["a1"] == first
     _wait(run, "Waiting.", ("b1",))
     assert set(_state(run)["task_since"]) == {"b1"}
     _end(run, "thinking")
     assert _state(run)["task_since"] == {}
-
-
-def test_a_back_to_back_second_resume_releases_what_the_run_waits_on(start_run) -> None:
-    # Value: protects=a person's resume while the run is running and waiting releases its
-    # tasks; fails_when=the merged resume path stops releasing; why_new=review; seam=none
-    run, _ = start_run()
-    _refuse_to_pause(run, ("a1",))
-    rs.resume(run, "person")
-    rs.resume(run, "person")
-    state = _state(run)
-    assert state["released_tasks"] == ["a1"] and not state["wait_capped"]
 
 
 def test_a_turn_end_records_the_session_s_activity_file(start_run) -> None:

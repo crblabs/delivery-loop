@@ -180,3 +180,19 @@ stops fixing after three cycles, so they are listed here.
   apostrophe on a long line, `$'...'` quoting).
 - **Effort:** S / M. **Priority:** P2.
 - **Depends on:** CRB-28.
+
+## Background work started by a foreground subagent is not waited on (CRB-28 follow-up)
+
+- **What:** wait on background tasks a foreground subagent launches, or treat
+  a stage as unable to read its tasks when a subagent result shows it started
+  background work.
+- **Why:** the Stop hook reads only the main session transcript and skips
+  sidechain entries, so a reviewer launched in the background by a subagent
+  never counts as pending, and STAGE DONE can advance beside it. Found by the
+  CRB-28 ship review on 2026-10-04; how the harness records nested launches is
+  not yet checked.
+- **Pros:** the wait covers every background reviewer, however it started.
+- **Cons:** needs the nested launch's record shape, or subagent transcripts.
+- **Context:** `adapters/claude_code/transcript_tasks.py` (`isSidechain` skip).
+- **Effort:** S / M. **Priority:** P2.
+- **Depends on:** CRB-28.
