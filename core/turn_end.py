@@ -226,22 +226,15 @@ def _block(state: dict, text: str) -> TurnEndVerdict:
     return TurnEndVerdict(block=True, reinject=text)
 
 
-def _no_token(run: rs.Run, state: dict, why: str) -> TurnEndVerdict:
+def _no_token(
+    run: rs.Run, state: dict, why: str, refused_on: list[str] | None = None
+) -> TurnEndVerdict:
     stage = state["current_stage"]
     state["attempts"][stage] += 1
     state["total_attempts"] += 1
     cap = (state.get("caps") or {}).get("attempts", rs.MAX_ATTEMPTS)
     if state["attempts"][stage] >= cap:
-        # Never wait_capped here: a refused STAGE DONE beside a running task
-        # says nothing about the task, and a resume must not release it.
-        waiting = state.get("waiting_on") or []
-        release = (
-            f" This resume keeps waiting on {', '.join(waiting)}; if they will never "
-            f"report, run {run.config.resume_command} a second time afterwards to release "
-            "them."
-            if waiting
-            else ""
-        )
+        release = _refusal_release(run, state, refused_on) if refused_on else ""
         rs.pause(
             state,
             "no_message",
@@ -251,6 +244,28 @@ def _no_token(run: rs.Run, state: dict, why: str) -> TurnEndVerdict:
         )
         return TurnEndVerdict(block=False, pause_reason="no_message")
     return _block(state, f"The stage is not finished: {why}.\n\n{rs.state_text(run, state)}")
+
+
+def _refusal_release(run: rs.Run, state: dict, refused_on: list[str]) -> str:
+    """The card's word on tasks a refused STAGE DONE paused beside.
+
+    One such pause says nothing about the tasks: a reviewer that still runs
+    will report, and a resume keeps waiting. A second pause on the same tasks
+    is the sign they never will (a lost notification, while the agent keeps
+    writing STAGE DONE): they are marked stuck, so the resume releases them.
+    """
+    ids = ", ".join(refused_on)
+    if state.get("refused_on") == sorted(refused_on):
+        state["wait_capped"] = True
+        return (
+            f" The stage paused a second time beside the same tasks ({ids}); "
+            f"{run.config.resume_command} releases them."
+        )
+    state["refused_on"] = sorted(refused_on)
+    return (
+        f" This resume keeps waiting on {ids}. If the stage pauses again beside the same "
+        f"tasks, {run.config.resume_command} then releases them."
+    )
 
 
 def _gate_card(name: str, gate: str, state: dict, config: LoopConfig) -> str:
@@ -387,6 +402,7 @@ def _pending_rules(
             "and its notification wakes this session. A background command that never ends "
             f"on its own, such as a dev server, is stopped with {run.config.stop_task_tool} "
             "before STAGE DONE",
+            pending,
         )
     stage = state["current_stage"]
     turns = state.setdefault("wait_turns", {})

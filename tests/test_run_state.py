@@ -372,6 +372,7 @@ def test_a_state_from_before_the_wait_fields_is_still_valid(start_run) -> None:
         {"wait_capped": "yes"},
         {"waiting_shell_only": 1},
         {"activity_path": 5},
+        {"refused_on": "a1"},
     ],
 )
 def test_a_malformed_wait_field_makes_the_state_invalid(start_run, bad: dict) -> None:

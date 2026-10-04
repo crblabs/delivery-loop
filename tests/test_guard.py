@@ -398,7 +398,8 @@ WAITS = [
     "sle\\\nep 600",
     "case x in x) sleep 5;; esac",
     "a=$[1<<2]\nsleep 100",
-    # Only a wait right after kill is exempt, never another wait.
+    # After a kill on the line only wait is exempt (any wait, not just the next
+    # command), never another kind of wait.
     "srv & pid=$!; kill $pid; sleep 5",
 ]
 NOT_WAITS = [

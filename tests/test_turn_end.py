@@ -712,14 +712,42 @@ def test_an_unread_task_list_refuses_stage_done_and_keeps_the_wait(start_run) ->
     assert state["attempts"]["autoplan"] == 1
 
 
-def test_the_attempts_pause_says_how_to_release_a_task_still_waited_on(start_run) -> None:
-    # Value: protects=review adversarial: a task whose notification was lost can still be
-    # released after an attempts pause; fails_when=the card hides the second resume;
-    # why_new=review; seam=none
+def test_a_second_pause_beside_the_same_tasks_lets_a_resume_release_them(start_run) -> None:
+    # Value: protects=review red team: a task whose notification was lost is released even
+    # when the agent keeps writing STAGE DONE, so the card's promise holds; fails_when=every
+    # resume lands back in the same pause and only abort ends the run; why_new=review
     run, _ = start_run()
     for _ in range(3):
         _wait(run, DONE, ("a1",))
-    assert "keeps waiting on a1; if they will never report" in _state(run)["pending_question"]
+    state = _state(run)
+    assert not state["wait_capped"]
+    assert "If the stage pauses again beside the same tasks" in state["pending_question"]
+    rs.resume(run, "person")
+    assert _state(run)["released_tasks"] == []
+    for _ in range(3):
+        _wait(run, DONE, ("a1",))
+    state = _state(run)
+    assert state["status"] == "awaiting_human" and state["wait_capped"]
+    assert "paused a second time beside the same tasks (a1)" in state["pending_question"]
+    rs.resume(run, "person")
+    state = _state(run)
+    assert state["released_tasks"] == ["a1"] and state["refused_on"] == []
+
+
+def test_a_pause_beside_other_tasks_is_a_first_pause_again(start_run) -> None:
+    run, _ = start_run()
+    for _ in range(3):
+        _wait(run, DONE, ("a1",))
+    rs.resume(run, "person")
+    for _ in range(3):
+        _wait(run, DONE, ("a1", "b2"))
+    assert not _state(run)["wait_capped"]
+
+
+def test_a_back_to_back_second_resume_still_releases(start_run) -> None:
+    run, _ = start_run()
+    for _ in range(3):
+        _wait(run, DONE, ("a1",))
     rs.resume(run, "person")
     rs.resume(run, "person")
     assert _state(run)["released_tasks"] == ["a1"]

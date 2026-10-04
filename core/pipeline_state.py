@@ -196,6 +196,8 @@ def _waits_ok(state: dict) -> bool:
         return False
     if "released_tasks" in state and not _strs_ok(state["released_tasks"]):
         return False
+    if "refused_on" in state and not _strs_ok(state["refused_on"]):
+        return False
     since = state.get("waiting_since")
     if since is not None and parse_iso(since) is None:
         return False

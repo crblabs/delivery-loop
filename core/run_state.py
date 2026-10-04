@@ -222,6 +222,9 @@ def _initial_state(
         "activity_path": None,
         "wait_turns": dict.fromkeys(names, 0),
         "wait_capped": False,
+        # The tasks the last refused STAGE DONE paused beside; a second pause
+        # on the same tasks marks them stuck.
+        "refused_on": [],
         "released_tasks": [],
         "plan_path": None,
         "pr_url": None,
@@ -443,6 +446,7 @@ def clear_wait(state: dict) -> None:
     state["waiting_on"] = []
     state["waiting_since"] = None
     state["waiting_shell_only"] = False
+    state["refused_on"] = []
 
 
 def _release(state: dict) -> None:
@@ -451,9 +455,9 @@ def _release(state: dict) -> None:
     The list is never trimmed: a released id dropped from it would come back
     as a wait, since its launch stays in the session's transcript.
     """
-    state["released_tasks"] = list(state.get("released_tasks") or []) + [
-        t for t in state.get("waiting_on") or [] if t not in (state.get("released_tasks") or [])
-    ]
+    state["released_tasks"] = list(
+        dict.fromkeys([*(state.get("released_tasks") or []), *(state.get("waiting_on") or [])])
+    )
     clear_wait(state)
     state["wait_capped"] = False
 
@@ -488,36 +492,31 @@ def resume(run: Run, by: str, session_id: str | None = None) -> str:
             state.setdefault("wait_turns", {})[stage] = 0
             clear_wait(state)
             return state_text(run, state)
-        if state["status"] == "running" and state.get("waiting_on"):
-            _release(state)
-            state["attempts"][stage] = 0
-            state.setdefault("wait_turns", {})[stage] = 0
-            state["resumed_by"] = by
-            state["history"].append(
-                {"at": ri.now_iso(), "event": "resume", "by": by, "reason": "waiting"}
-            )
-            return state_text(run, state)
-        if state["status"] != "awaiting_human":
+        releasing = state["status"] == "running" and bool(state.get("waiting_on"))
+        if not releasing and state["status"] != "awaiting_human":
             raise RunError(
                 f"nothing to resume: the run is {state['status']}. Fix: delivery-loop status."
             )
-        if state.get("paused_reason") == "guard_changed" and isinstance(
-            state.get("guard_pending"), dict
-        ):
-            state["guard_baseline"] = state["guard_pending"]
-            state["guard_files_seen"].append(state["guard_pending"])
-        if state.get("paused_reason") == "gate" and "pending_loop_edits" in state:
-            _approve_plan(state)
-        if state.get("wait_capped"):
+        if releasing:
             _release(state)
-        state["guard_pending"] = None
-        state["status"] = "running"
+            reason = "waiting"
+        else:
+            if state.get("paused_reason") == "guard_changed" and isinstance(
+                state.get("guard_pending"), dict
+            ):
+                state["guard_baseline"] = state["guard_pending"]
+                state["guard_files_seen"].append(state["guard_pending"])
+            if state.get("paused_reason") == "gate" and "pending_loop_edits" in state:
+                _approve_plan(state)
+            if state.get("wait_capped"):
+                _release(state)
+            state["guard_pending"] = None
+            state["status"] = "running"
+            reason = state["paused_reason"]
         state["attempts"][stage] = 0
         state.setdefault("wait_turns", {})[stage] = 0
         state["resumed_by"] = by
-        state["history"].append(
-            {"at": ri.now_iso(), "event": "resume", "by": by, "reason": state["paused_reason"]}
-        )
+        state["history"].append({"at": ri.now_iso(), "event": "resume", "by": by, "reason": reason})
         state["paused_reason"] = None
         state["pending_question"] = None
         return state_text(run, state)
