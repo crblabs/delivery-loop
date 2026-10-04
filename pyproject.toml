@@ -12,8 +12,16 @@ loop-card = "core.supervisor_card:main"
 loop-card-check = "core.card_shape:main"
 loop-pause-stats = "core.supervisor_pause_stats:main"
 loop-prune = "core.supervisor_prune:main"
+loop-ledger = "core.supervisor_ledger:main"
 loop-transcript = "adapters.claude_code.supervisor_transcript:main"
 loop-no-dash = "core.no_unicode_dash:main"
+loop-comments = "core.comments_gate:main"
+loop-complexity = "core.complexity_gate:main"
+loop-pr-body = "core.pr_body:main"
+loop-pr-decisions = "core.pr_decisions:main"
+loop-pre-push = "core.pre_push:main"
+loop-impact = "core.impact:main"
+loop-issue = "core.issue_writer:main"
 
 [dependency-groups]
 dev = [

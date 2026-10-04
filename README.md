@@ -83,6 +83,8 @@ but a hook that changes under a running run may not read its state the same way.
 - macOS or Linux. Windows is not supported.
 
 `delivery-loop doctor` checks each of these and says what to fix.
+`delivery-loop start` refuses to start a run while a stage's command is not
+found in your skills, the repository's `.claude/skills` or an installed plugin.
 
 ## Using it
 
@@ -146,7 +148,13 @@ tool that writes to the remote (a GitHub, GitLab, Bitbucket or Gitea server's
 tools that name files, branches, commits, releases or pull requests, other
 than its `get`, `list`, `search` and `read` tools) is allowed only in the stage
 that opens the pull request, only for the run's own branch, and a `merge` tool
-never.
+never. A Linear MCP tool that writes (it saves, creates, updates or deletes an
+issue, a comment, a project or a label) is denied in every stage: a run writes
+only to its worktree and its pull request. The agent writes the issue as a
+draft, checks it with `loop-issue DRAFT.md` and puts it in the pull request
+body, and a person files it after the run. Linear's reads pass. Outside a run
+the plugin leaves Linear alone, because it is installed per developer and a
+person's own tracker writes are not the loop's to judge.
 An MCP tool that writes under another name is not checked.
 
 A shell command is not checked before it runs, with three exceptions, and all
@@ -258,10 +266,15 @@ than the engine. Capability 4 is the only one that degrades.
 ## Commands
 
 The supervisor's tools ship as console entry points, so a runbook calls them by
-name and not by file path. They are operator tools: install them from a checkout
-of this repository. The plugin does not ship them. A path can move; a name is stable. `uv sync` installs them into
-the project environment, and `uv run <name>` runs one. The names share the
-`loop-` prefix so they group together in a shell.
+name and not by file path. A path can move; a name is stable. The plugin puts
+the ones the supervisor skill calls (`loop-scan`, `loop-transcript`,
+`loop-decide`, `loop-card`, `loop-ledger`, `loop-pause-stats` and `loop-prune`) in `bin/`, on
+the agent's `PATH`, so a session runs them by name. From a checkout of this
+repository, `uv sync` installs them all into the project environment, and
+`uv run <name>` runs one. The names share the `loop-` prefix so they group
+together in a shell. The `supervisor` skill in `skills/supervisor/` is the
+routine that drives them: start it with `/loop /delivery-loop:supervisor` in a
+checkout with no active run.
 
 | Command | Does |
 |---|---|
@@ -269,10 +282,18 @@ the project environment, and `uv run <name>` runs one. The names share the
 | `loop-decide` | Reads one scan record and prints the decision for that run. |
 | `loop-card` | Renders one run's pause as the decision card a person reads. |
 | `loop-card-check` | Checks that a pause question carries the required card shape. |
+| `loop-ledger` | The supervisor's lock and notification ledger: `lock` and `unlock` one supervisor per repository, `check` whether a pause was already notified, `record` a notification. |
 | `loop-pause-stats` | Counts the pauses in a scan by category. |
 | `loop-prune` | Lists the runs whose worktree is gone, and deletes them and their index entries with `--yes`. |
 | `loop-transcript` | Reads the pending question out of one harness session. |
 | `loop-no-dash` | Fails when a line the diff adds, a commit message or a PR body holds an en dash, an em dash, a figure dash or a horizontal bar. Exceptions and excluded directories live in `.dash-exceptions.json` in the host repository. The plugin also ships it in `bin/`, and the implement, qa, review and ship stages run it. |
+| `loop-comments` | Fails when a line the diff adds to a Python file breaks comment hygiene: a comment block or a private docstring over three lines, a ticket or PR id in a comment or docstring, commented-out code (when `ruff` is on `PATH`), or more than one comment line per four code lines. Which files it reads and which ids it bans live in `.comments-policy.json` in the host repository. The plugin also ships it in `bin/`. |
+| `loop-complexity` | Fails when a function the diff adds or changes is over the cyclomatic bar (10) or the length bar (60 statements, tests exempt), or grew past its recorded number. A ratchet: existing code is listed, with its numbers, in `.complexity-baseline.json` in the host repository, and that list may only shrink. The file also holds the bars, the directories to scan and which files are tests. The plugin also ships it in `bin/`. |
+| `loop-pr-body` | Fails when a pull request body lacks a required level-2 section. The host repository names the sections in `.pr-sections` at its root, one per line, or with `--sections`. With neither, it passes. A heading inside a code block or an HTML comment does not count. The plugin also ships it in `bin/`, and the ship stage runs it. |
+| `loop-pr-decisions` | Reads a JSON array of decisions on stdin and prints the pull request's `## Decisions` section, one line per decision, or `None`. The plugin also ships it in `bin/`, and the ship stage runs it. |
+| `loop-impact` | Prints the impact map of a branch: which zones of the host's zone map the diff touched, directly or through a declared edge or a Python import, as a mermaid flowchart and a table. The map lives in `docs/architecture.zones.toml` in the host repository, or `--map`; `templates/zones.toml` is an example to copy. With no map it prints one line and exits 0. It fails when a changed file is owned by no zone. The plugin also ships it in `bin/`, and the ship stage runs it. |
+| `loop-issue` | Lints an issue draft and writes it to the tracker: `loop-issue DRAFT.md` lints (rules I1 to I8: title, blocks, 120 words, no long dash, project, milestone, priority, team and well-formed issue ids), `--apply` creates the issue, `--update` updates the one its `issue:` line names. `--audit` counts the gaps in every active issue and project (P1 to P4) against a ratchet in `.issue-audit-baseline.json`, and `--update-baseline` seeds or lowers it. A draft inherits `[tracker] team`, `project` and `milestone` from `loop.toml`. `--tracker linear` is the default and the only adapter; it reads `LINEAR_API_KEY`. A write is refused during a run. `templates/issue-audit.yml` runs the audit weekly. The plugin also ships it in `bin/`. |
+| `loop-pre-push` | The git pre-push hook. It runs the rules the Stop hook enforces on every pushed branch: `loop-no-dash` on the added lines and the pushed commit messages, and `loop-comments` and `loop-complexity` unless `[checks]` turns them off. Install it as `.git/hooks/pre-push` with `exec loop-pre-push "$@"`, after `uv tool install` of this repository puts the commands on your `PATH`. |
 
 Every run's state lives outside the repository, under `~/.delivery-loop`, in
 `runs/<owner>-<repo>/<worktree>-<hash>/`, and the run index the hooks find a run
@@ -291,12 +312,14 @@ fails if a name does not resolve to a callable `main`.
 |---|---|
 | `core/` | The stage machine and everything harness-neutral. |
 | `adapters/claude_code/` | The adapter for one harness: its hooks, CLI and transcript reader. |
+| `adapters/linear/` | The adapter for one issue tracker: the Linear client `loop-issue` writes and audits through. |
 | `.claude-plugin/` | The plugin manifest and the `crblabs` marketplace that lists it. |
 | `hooks/` | The plugin's hook declarations and their one entry point, `pipeline_hook.py`. |
 | `commands/` | The `/delivery-loop:pipeline` slash command. |
 | `skills/pipeline/` | The stage skill and the default stage prompts. |
-| `bin/` | `delivery-loop` and `loop-no-dash`, which the plugin puts on the agent's `PATH`. |
-| `templates/` | `loop.toml`, the per-repo configuration a host repo fills in. |
+| `skills/supervisor/` | The supervisor skill and the routine it follows. |
+| `bin/` | `delivery-loop`, the check commands (`loop-no-dash`, `loop-comments`, `loop-complexity`, `loop-pr-body`, `loop-pr-decisions`, `loop-pre-push`, `loop-impact`), the issue writer `loop-issue` and the supervisor's `loop-*` commands, which the plugin puts on the agent's `PATH`. |
+| `templates/` | `loop.toml`, the per-repo configuration a host repo fills in, `zones.toml`, an example zone map for `loop-impact`, and `issue-audit.yml`, the weekly tracker audit a host copies into `.github/workflows/`. |
 | `docs/` | The contract and the operator runbooks. |
 | `scripts/` | Developer checks: the steps CI runs and the edit-time ruff hook. |
 
@@ -306,7 +329,8 @@ and what does not.
 ## Developing this repository
 
 `uv sync` installs the dev tools. `scripts/check.sh` runs the checks CI runs
-(tests, lint, format and the house rules), the same script CI calls on Python
+(tests, lint, format, the house rules, and the dash, comment and complexity
+rules over the branch's diff against `origin/main`), the same script CI calls on Python
 3.11, 3.12 and 3.13; name steps to run only those (`scripts/check.sh lint
 format`).
 

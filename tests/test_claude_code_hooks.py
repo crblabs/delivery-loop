@@ -184,6 +184,23 @@ def test_an_mcp_write_to_a_carve_out_is_denied(start_run) -> None:
     assert _decision(ch.run_guard(payload))["hookSpecificOutput"]["permissionDecision"] == "deny"
 
 
+def test_a_tracker_write_is_denied_during_a_run_and_a_read_passes(start_run) -> None:
+    # Value: protects=a run writes only to its worktree and its pull request, and an issue
+    # goes through loop-issue; fails_when=a Linear MCP write lands mid-run; why_new=issue writer
+    _, worktree = start_run()
+    write = _pre(worktree, "mcp__linear-server__save_issue", {"title": "x", "team": "ENG"})
+    out = _decision(ch.run_guard(write))["hookSpecificOutput"]
+    assert out["permissionDecision"] == "deny"
+    assert "loop-issue DRAFT.md" in out["permissionDecisionReason"]
+    read = _pre(worktree, "mcp__linear-server__get_issue", {"id": "ENG-1"})
+    assert ch.run_guard(read) == ch.PASS
+
+
+def test_a_tracker_write_outside_a_run_is_left_to_the_person(tmp_path: Path) -> None:
+    payload = _pre(tmp_path, "mcp__linear-server__save_issue", {"title": "x"})
+    assert ch.run_guard(payload) == ch.PASS
+
+
 def test_a_held_lock_fails_the_stop_closed_once_and_logs_it(start_run, monkeypatch) -> None:
     # Value: protects=a turn that cannot be recorded is not let through silently;
     # fails_when=the error branch passes or loops; why_new=review testing; seam=none

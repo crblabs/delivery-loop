@@ -48,6 +48,7 @@ from core.config import (
     to_dict,
 )
 from core.guard_evidence import config_hash, guard_map
+from core.push_preflight import ensure_https_origin
 
 PLUGIN_ROOT = Path(__file__).resolve().parent.parent
 STAGES_DIR = PLUGIN_ROOT / PLUGIN_STAGES_DIR
@@ -232,6 +233,23 @@ def _session_run(session_id: str | None, worktree: Path) -> str | None:
     return entry.get("worktree") if state.get("status") in ACTIVE else None
 
 
+def _push_preflight(worktree: Path, config: LoopConfig) -> str | None:
+    """Reroute origin to HTTPS when asked; a run that could not push never starts."""
+    if config.push_transport != "https":
+        return None
+    result = ensure_https_origin(worktree)
+    if not result.passed:
+        raise RunError(f'loop.toml sets [repo] push_transport = "https". {result.message}')
+    return result.message
+
+
+def _start_event(task: str, session_id: str | None, pushed: str | None) -> dict:
+    event = {"hook": "cli", "decision": "start", "task": task, "session": session_id}
+    if pushed is not None:
+        event["push_transport"] = pushed
+    return event
+
+
 def start(
     cwd: Path, task: str, config: LoopConfig, session_id: str | None = None
 ) -> tuple[Run, str]:
@@ -285,6 +303,9 @@ def start(
                 f"read from {config.stage_target} in the repository, then from the plugin. "
                 "Fix: add the file or set the stage's prompt key in loop.toml."
             )
+        # Before detect_repo and the guard baseline, so both see the origin the
+        # run will push to, and the rewrite is not read as a mid-run change.
+        pushed = _push_preflight(worktree, config)
         repo = detect_repo(worktree)
         run_dir = ps.run_dir(worktree, repo, config)
         with ri.locked(str(run_dir), ri.PERSON_LOCK_S):
@@ -307,10 +328,7 @@ def start(
                 raise RunError("internal error: the initial state does not validate")
             ri.write_json_atomic(str(path), state)
             ri.write_entry(key, str(run_dir), str(worktree), session_id)
-            ri.append_event(
-                str(run_dir),
-                {"hook": "cli", "decision": "start", "task": task, "session": session_id},
-            )
+            ri.append_event(str(run_dir), _start_event(task, session_id, pushed))
     run = Run(key, ri.read_entry(ri.index_path(key)) or {}, run_dir, config)
     return run, stage_text(config, worktree, 0, task)
 

@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import json
+import subprocess
+import sys
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import pytest
 
@@ -167,3 +171,87 @@ def test_an_orphaned_run_has_its_own_key():
     assert sl.pause_key({**paused, "orphaned": True}, prompt) == "R:orphaned"
     assert sl.pause_key({"run_id": "R", "status": "done", "orphaned": True}) == "R:orphaned"
     assert sl.pause_key(paused) != "R:orphaned"
+
+
+# ------------------------------------------------------------------ loop-ledger
+
+LAUNCHER = Path(__file__).resolve().parent.parent / "bin" / "loop-ledger"
+
+
+def _files(tmp_path: Path) -> tuple[str, str]:
+    record = tmp_path / "record.json"
+    record.write_text(
+        json.dumps(
+            {
+                "run_id": "R",
+                "status": "awaiting_human",
+                "paused_reason": "gate",
+                "paused_prompt_id": "p1",
+            }
+        ),
+        encoding="utf-8",
+    )
+    question = tmp_path / "question.json"
+    question.write_text(json.dumps({"outcome": "none"}), encoding="utf-8")
+    return str(record), str(question)
+
+
+def _check(record: str, question: str, channel: str, now: datetime) -> list[str]:
+    return [
+        "--repo",
+        "o/r",
+        "check",
+        "--record-file",
+        record,
+        "--question-file",
+        question,
+        "--channel",
+        channel,
+        "--now",
+        now.isoformat(),
+    ]
+
+
+def test_the_command_checks_then_records_one_pause(tmp_path, capsys):
+    # Value: protects=a restarted supervisor does not repeat a notification;
+    # fails_when=check and record name different keys, or record writes where check
+    # does not read; why_new=the routine calls the ledger by name; seam=CLI
+    record, question = _files(tmp_path)
+    first = _check(record, question, "desktop", NOW)
+    assert sl.main(first) == 0
+    assert json.loads(capsys.readouterr().out)["key"] == "R:pause:gate:p1"
+    recorded = [*first[:2], "record", *first[3:]]
+    assert sl.main(recorded) == 0
+    assert sl.main(first) == 1
+    assert sl.main(_check(record, question, "tracker", NOW)) == 0
+    later = NOW + timedelta(seconds=1800)
+    assert sl.main(_check(record, question, "desktop", later)) == 0
+
+
+def test_the_command_refuses_a_malformed_record(tmp_path):
+    bad = tmp_path / "bad.json"
+    bad.write_text("{not json", encoding="utf-8")
+    argv = ["--repo", "o/r", "check", "--record-file", str(bad), "--channel", "desktop"]
+    assert sl.main(argv) == 2
+
+
+def test_the_lock_holds_until_unlock_ends_its_process(capsys):
+    # Value: protects=one supervisor per repository across separate shell calls;
+    # fails_when=lock returns and frees the lock, or unlock cannot end the holder;
+    # why_new=the routine runs lock in the background; seam=CLI
+    holder = subprocess.Popen(
+        [sys.executable, str(LAUNCHER), "--repo", "o/r", "lock"],
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        assert holder.stdout.readline().startswith("LOCKED: pid ")
+        assert sl.main(["--repo", "o/r", "lock"]) == 1
+        assert "LOCK_HELD" in capsys.readouterr().out
+        assert sl.main(["--repo", "o/r", "unlock"]) == 0
+        assert holder.wait(timeout=10) == 0
+    finally:
+        holder.kill()
+        holder.stdout.close()
+    assert sl.main(["--repo", "o/r", "unlock"]) == 0
+    assert "NOT_LOCKED" in capsys.readouterr().out

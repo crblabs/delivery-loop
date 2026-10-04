@@ -54,8 +54,8 @@ stops fixing after three cycles, so they are listed here.
 
 - **What:** a stage list that runs on this plugin alone, chosen when the
   `/autoplan`, `/qa`, `/review` and `/ship` commands are not installed.
-- **Why:** a fresh machine without gstack starts a run that stops at stage 1.
-  `delivery-loop doctor` warns, but does not fix it.
+- **Why:** on a fresh machine without gstack, `delivery-loop start` refuses
+  and prints how to install it, but the plugin cannot run on its own.
 - **Effort:** M / S.
 
 ## Ship the supervisor through the plugin

@@ -1,7 +1,12 @@
 # adapters
 
-One directory per harness. An adapter is the only place a harness name may
-appear.
+One directory per harness, and one per issue tracker. An adapter is the only
+place a harness name may appear.
+
+A tracker adapter, such as `linear/`, implements the `Tracker` protocol in
+`core/issue_draft.py` for `loop-issue`: it resolves names to ids, writes an
+issue, and lists the active issues and projects the audit counts. It holds no
+lint rule and no audit rule; those are `core/`.
 
 An adapter translates in both directions:
 

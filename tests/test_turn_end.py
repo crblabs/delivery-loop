@@ -522,3 +522,52 @@ def test_the_dash_base_is_origin_head_when_the_repository_has_one(
     assert te._dash_base(clone, {"start_head": "abc"}) == "origin/HEAD"
     assert te._dash_base(origin, {"start_head": "abc"}) == "abc"
     assert te._dash_base(origin, {}) is None
+
+
+LONG_COMMENT = "# one\n# two\n# three\n# four\nx = 1\n"
+BRANCHY = "def f(a):\n" + "".join(f"    if a == {i}:\n        return {i}\n" for i in range(11))
+
+
+def _commit_file(git, worktree: Path, name: str, text: str) -> None:
+    (worktree / name).write_text(text, encoding="utf-8")
+    git(worktree, "add", name)
+    git(worktree, "commit", "-q", "-m", f"add {name}")
+
+
+def _stages_with(**checks) -> LoopConfig:
+    return LoopConfig(stages=_two_stages().stages, **checks)
+
+
+def test_the_comment_rule_binds_unless_the_config_turns_it_off(
+    make_repo, tmp_path: Path, git
+) -> None:
+    # Value: protects=installing the plugin opts in, and a developer can opt out;
+    # fails_when=the rule is skipped by default, or ignores its switch; why_new=port; seam=none
+    worktree = make_repo(tmp_path / "on")
+    run, _ = rs.start(worktree, "CRB-1", _two_stages(), "s1")
+    _commit_file(git, worktree, "a.py", LONG_COMMENT)
+    verdict = _end(run, DONE)
+    assert verdict.block and "loop-comments found" in verdict.reinject
+    assert "a.py:1" in verdict.reinject
+    assert _state(run)["current_stage"] == "implement"
+
+    worktree = make_repo(tmp_path / "off")
+    run, _ = rs.start(worktree, "CRB-1", _stages_with(check_comments=False), "s2")
+    _commit_file(git, worktree, "a.py", LONG_COMMENT)
+    assert _end(run, DONE, session="s2").reinject.startswith("Stage 2/2: ship")
+
+
+def test_the_complexity_rule_binds_unless_the_config_turns_it_off(
+    make_repo, tmp_path: Path, git
+) -> None:
+    worktree = make_repo(tmp_path / "on")
+    run, _ = rs.start(worktree, "CRB-1", _two_stages(), "s1")
+    _commit_file(git, worktree, "b.py", BRANCHY)
+    verdict = _end(run, DONE)
+    assert verdict.block and "loop-complexity found" in verdict.reinject
+    assert "b.py" in verdict.reinject
+
+    worktree = make_repo(tmp_path / "off")
+    run, _ = rs.start(worktree, "CRB-1", _stages_with(check_complexity=False), "s2")
+    _commit_file(git, worktree, "b.py", BRANCHY)
+    assert _end(run, DONE, session="s2").reinject.startswith("Stage 2/2: ship")

@@ -4,7 +4,7 @@
 #   scripts/check.sh                 every step
 #   scripts/check.sh lint format     only the named steps
 #
-# Steps: tests, lint, format, rules. CI calls each step by name, so a step
+# Steps: tests, lint, format, rules, branch. CI calls each step by name, so a step
 # changes here, in one place.
 set -uo pipefail
 cd "$(git rev-parse --show-toplevel)" || exit 2
@@ -46,17 +46,28 @@ step_rules() {
     return $fail
 }
 
+# The rules a delivery-loop stage enforces, over this branch's diff. CHECK_BASE
+# names the base (default origin/main); CI passes the pull request's base.
+# Under `uv run`, so loop-comments finds ruff for its commented-out code check.
+step_branch() {
+    local base="${CHECK_BASE:-origin/main}" fail=0
+    uv run bin/loop-no-dash --base "$base" || fail=1
+    uv run bin/loop-comments --base "$base" || fail=1
+    uv run bin/loop-complexity --base "$base" || fail=1
+    return $fail
+}
+
 steps=("$@")
 if [ ${#steps[@]} -eq 0 ]; then
-    steps=(tests lint format rules)
+    steps=(tests lint format rules branch)
 fi
 
 failed=()
 for step in "${steps[@]}"; do
     case "$step" in
-        tests | lint | format | rules) "step_$step" || failed+=("$step") ;;
+        tests | lint | format | rules | branch) "step_$step" || failed+=("$step") ;;
         *)
-            error "unknown step: $step (tests, lint, format, rules)"
+            error "unknown step: $step (tests, lint, format, rules, branch)"
             exit 2
             ;;
     esac

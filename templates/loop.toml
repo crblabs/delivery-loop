@@ -149,7 +149,8 @@ abort = "/delivery-loop:pipeline abort"
 #                 phrase. Empty means it leaves nothing the next stage reads.
 #   clean_tree    false. True when the stage's finishing token is only accepted
 #                 over a committed worktree whose branch adds no en dash or em
-#                 dash (see loop-no-dash).
+#                 dash (see loop-no-dash), and passes loop-comments and
+#                 loop-complexity unless [checks] turns them off.
 #   gate          "none". Whether the stage stops for a person: "none" never,
 #                 "approval" at an approval question, "review_batch" at a batch
 #                 of review questions. Nothing else is accepted.
@@ -219,8 +220,12 @@ gate = "none"
 # prefix = "[A-Za-z]+"
 # pattern = "({tracker_prefix}-\\d+)"
 
-# Not read yet. The tracker team, project and milestone the loop files and
-# updates work against, named as the tracker itself shows them.
+# The team, project and milestone an issue draft inherits when it names none,
+# written as the tracker itself shows them. `loop-issue` reads them; empty
+# means every draft names its own. A draft's own `team:`, `project:` or
+# `milestone:` line wins over these. The reference rule also reads `prefix`
+# and `pattern` above: a token that starts like an issue id must match the
+# pattern whole.
 # team = ""
 # project = ""
 # milestone = ""
@@ -254,7 +259,33 @@ check = ""
 # docs = ""
 
 
+
+[checks]
+# The rules a clean_tree stage must pass besides the dash rule, which is always
+# on. Installing the plugin opts in to both. Set one to false to turn it off for
+# this repository, here, or for yourself alone in
+# ~/.config/delivery-loop/<repository directory name>.toml; this file wins over
+# that one. A run reads the switches when it starts.
+#
+# comments:   loop-comments, configured in .comments-policy.json.
+# complexity: loop-complexity, with its baseline in .complexity-baseline.json.
+comments = true
+complexity = true
+
 [repo]
+# How `start` treats the `origin` remote. Empty, the default, leaves origin
+# alone. "https" is for a worktree whose `origin` is a GitHub SSH URL that
+# cannot push, while HTTPS to the same repository works through a credential
+# helper. Before the run, `start` then sets origin to the HTTPS URL of the same
+# repository (`git@github.com:owner/repo.git` becomes
+# `https://github.com/owner/repo.git`), removes every `remote.origin.pushurl`,
+# and checks that origin can be read. The change is in the repository's shared
+# git config, so it reaches every worktree, and it is made once: a second start
+# finds it done. If origin is not a GitHub repository, or cannot be read over
+# HTTPS, `start` refuses and says why. `delivery-loop doctor` shows the origin
+# transport when this key is set. Nothing else is accepted.
+push_transport = ""
+
 # Not read yet. The repository slug, in owner/name form. The supervisor takes
 # it on the command line today.
 slug = ""

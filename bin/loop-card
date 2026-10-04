@@ -1,0 +1,17 @@
+#!/usr/bin/env python3
+"""The supervisor's decision card for one run, on the agent's PATH so the supervisor skill calls it by name.
+
+The plugin puts this directory on the agent's PATH. The command lives in
+`core/supervisor_card.py`; this file only finds it. Python 3.8 must still parse
+this file.
+"""
+
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
+
+from core.supervisor_card import main  # noqa: E402
+
+if __name__ == "__main__":
+    sys.exit(main())
