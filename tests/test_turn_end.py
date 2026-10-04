@@ -712,11 +712,12 @@ def test_an_unread_task_list_refuses_stage_done_and_keeps_the_wait(start_run) ->
     assert state["attempts"]["autoplan"] == 1
 
 
-def _age_wait(run: rs.Run, minutes: int) -> None:
+def _age_first_pause(run: rs.Run, minutes: int) -> None:
+    """Move the first refused pause beside the tasks back in time."""
     from datetime import UTC, datetime, timedelta
 
     at = (datetime.now(UTC) - timedelta(minutes=minutes)).isoformat()
-    rs.update(run, lambda s: s.update(waiting_since=at))
+    rs.update(run, lambda s: s.update(refused_at=at))
 
 
 def _refuse_to_pause(run: rs.Run, tasks: tuple[str, ...]) -> None:
@@ -733,20 +734,39 @@ def test_an_old_wait_paused_beside_twice_lets_a_resume_release_it(start_run) -> 
     state = _state(run)
     assert (
         not state["wait_capped"]
-        and "If the stage pauses again beside them" in (state["pending_question"])
+        and "If the stage pauses beside one of them again" in (state["pending_question"])
     )
     rs.resume(run, "person")
-    _age_wait(run, 45)
+    _age_first_pause(run, 45)
     _refuse_to_pause(run, ("a1",))
     state = _state(run)
     assert state["status"] == "awaiting_human" and state["wait_capped"]
     card = state["pending_question"]
-    assert "paused a second time beside a1, which have waited 45 min" in card
+    assert "paused beside a1 45 min ago and again now" in card
     assert "may still be running" in card
     rs.resume(run, "person")
     state = _state(run)
     assert state["released_tasks"] == ["a1"]
     assert state["refused_on"] == [] and state["stuck_on"] == [] and not state["wait_capped"]
+
+
+def test_a_task_started_beside_an_old_wait_is_never_marked_stuck_by_it(start_run) -> None:
+    # Value: protects=ship review: a reviewer launched seconds ago cannot borrow the age of
+    # an older task in the same wait to be released; fails_when=the stuck age is the
+    # wait's (waiting_since), not proven by two pauses; why_new=ship red team; seam=none
+    from datetime import UTC, datetime, timedelta
+
+    run, _ = start_run()
+    _wait(run, "Waiting.", ("a1",))
+    old = (datetime.now(UTC) - timedelta(minutes=45)).isoformat()
+    rs.update(run, lambda s: s.update(waiting_since=old))
+    _refuse_to_pause(run, ("a1", "b1"))
+    rs.resume(run, "person")
+    _refuse_to_pause(run, ("a1", "b1"))
+    state = _state(run)
+    assert state["stuck_on"] == [] and not state["wait_capped"]
+    rs.resume(run, "person")
+    assert _wait(run, DONE, ("b1",)).block
 
 
 def test_two_quick_pauses_never_release_a_reviewer_that_still_runs(start_run) -> None:
@@ -760,10 +780,30 @@ def test_two_quick_pauses_never_release_a_reviewer_that_still_runs(start_run) ->
     state = _state(run)
     assert (
         not state["wait_capped"]
-        and "keeps waiting on a1 (waited 0 min)" in (state["pending_question"])
+        and "keeps waiting on a1 (first paused beside a1 0 min ago)" in (state["pending_question"])
     )
     rs.resume(run, "person")
     assert _state(run)["released_tasks"] == []
+
+
+@pytest.mark.parametrize(("minutes", "stuck"), [(29, False), (30, True)])
+def test_a_second_pause_marks_tasks_stuck_from_thirty_minutes_on(
+    start_run, minutes: int, stuck: bool
+) -> None:
+    # Value: protects=the 30 min STUCK_AFTER_S floor the card and runbook promise, at its
+    # >= boundary; fails_when=the floor is lowered or the comparison turns strict; why_new=
+    # other tests age waits 0 or 45 min, so both mutants survived; seam=none
+    run, _ = start_run()
+    _refuse_to_pause(run, ("a1",))
+    rs.resume(run, "person")
+    _age_first_pause(run, minutes)
+    _refuse_to_pause(run, ("a1",))
+    state = _state(run)
+    assert state["status"] == "awaiting_human"
+    assert state["wait_capped"] is stuck
+    assert state["stuck_on"] == (["a1"] if stuck else [])
+    rs.resume(run, "person")
+    assert _state(run)["released_tasks"] == (["a1"] if stuck else [])
 
 
 def test_only_the_old_task_is_marked_stuck_beside_a_newer_one(start_run) -> None:
@@ -773,7 +813,7 @@ def test_only_the_old_task_is_marked_stuck_beside_a_newer_one(start_run) -> None
     run, _ = start_run()
     _refuse_to_pause(run, ("a1", "b0"))
     rs.resume(run, "person")
-    _age_wait(run, 45)
+    _age_first_pause(run, 45)
     _refuse_to_pause(run, ("a1", "b1"))
     assert _state(run)["stuck_on"] == ["a1"]
     rs.resume(run, "person")
@@ -789,7 +829,7 @@ def test_another_refusal_breaks_the_run_of_pauses_beside_the_same_tasks(start_ru
     run, _ = start_run()
     _refuse_to_pause(run, ("a1",))
     rs.resume(run, "person")
-    _age_wait(run, 45)
+    _age_first_pause(run, 45)
     unknown = te.TurnEnd("s1", DONE, "p1", (), (), tasks_unknown=True)
     te.handle_turn_end(unknown, run)
     te.handle_turn_end(unknown, run)

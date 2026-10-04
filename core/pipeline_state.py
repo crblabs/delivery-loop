@@ -199,6 +199,9 @@ def _waits_ok(state: dict) -> bool:
     for key in ("refused_on", "stuck_on"):
         if key in state and not _strs_ok(state[key]):
             return False
+    refused_at = state.get("refused_at")
+    if refused_at is not None and parse_iso(refused_at) is None:
+        return False
     since = state.get("waiting_since")
     if since is not None and parse_iso(since) is None:
         return False

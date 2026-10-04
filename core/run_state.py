@@ -228,6 +228,7 @@ def _initial_state(
         # The tasks the last refused STAGE DONE paused beside, and the ones a
         # second pause marked stuck, which a resume releases.
         "refused_on": [],
+        "refused_at": None,
         "stuck_on": [],
         "released_tasks": [],
         "plan_path": None,
@@ -451,6 +452,7 @@ def clear_wait(state: dict) -> None:
     state["waiting_since"] = None
     state["waiting_shell_only"] = False
     state["refused_on"] = []
+    state["refused_at"] = None
     state["stuck_on"] = []
 
 
@@ -478,8 +480,8 @@ def resume(run: Run, by: str, session_id: str | None = None) -> str:
     how a person adopts a run whose session ended, running or paused.
 
     Background tasks the run waits on are released only when the wait is stuck:
-    a pause at the wait cap, a second refused STAGE DONE pause beside the same
-    tasks once they have waited ``STUCK_AFTER_S`` (only those tasks), or a
+    a pause at the wait cap, a refused STAGE DONE pause beside tasks that were
+    pending at one ``STUCK_AFTER_S`` earlier (only those tasks), or a
     resume that does not adopt the run while it is running and waiting. Any
     other resume keeps waiting on them, since a reviewer that still runs will
     report. Adopting a running run forgets its
