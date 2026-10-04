@@ -145,3 +145,19 @@ stops fixing after three cycles, so they are listed here.
   5 MB transcript under 1 s.
 - **Effort:** S / S. **Priority:** P3.
 - **Depends on:** CRB-28.
+
+## A background CI watch trips the 15 minute shell-only alarm (CRB-28 follow-up)
+
+- **What:** give a background `gh run watch` or `gh pr checks --watch` the
+  60 minute stale-wait limit instead of the 15 minute one for shell commands.
+- **Why:** the wait guard tells the agent to run those watches in the
+  background, which makes the wait shell-only; CI often runs past 15 minutes,
+  so the supervisor escalates `waiting_stale` on a healthy run. Kept as is in
+  the CRB-28 review (decision D10); found again by /qa on 2026-10-04.
+- **Pros:** no false alarm on long CI.
+- **Cons:** the scanner must read each background command's text from its
+  launch's tool call.
+- **Context:** `adapters/claude_code/transcript_tasks.py` (`Pending.shell`),
+  `core/supervisor_scan.py` (`DEFAULT_SHELL_WAIT_STALE_S`).
+- **Effort:** S / S. **Priority:** P3.
+- **Depends on:** CRB-28.
