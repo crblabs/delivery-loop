@@ -249,9 +249,11 @@ rest is in `TODOS.md`.
   never reported. `/delivery-loop:pipeline resume` releases them; `/delivery-loop:pipeline abort` ends the run.
   A `no_message` pause from a refused `STAGE DONE` releases nothing: a
   reviewer that still runs keeps the stage until it reports. Its card names the
-  tasks the run still waits on. If the stage pauses again beside the same
-  tasks (a lost notification while the agent keeps writing `STAGE DONE`), the
-  resume after that second pause releases them.
+  tasks and how long the run has waited on them. If the stage pauses again
+  beside the same tasks once they have waited 30 minutes (a lost notification
+  while the agent keeps writing `STAGE DONE`), the card says so and the resume
+  after that pause releases those tasks only; check that they are not still
+  running first.
 - **The supervisor escalates `waiting_stale`.** A run has waited over an hour,
   with no turn end and no write to the session transcript for an hour either
   (`loop-scan --wait-stale-after-seconds` sets the limit), on tasks that have

@@ -27,7 +27,9 @@ end with no token is then let through without spending an attempt, up to
 the tasks named (``wait_capped``). A turn end with nothing pending ends the wait
 and restarts that count. ``STAGE DONE`` is refused while a task runs, so the
 next stage never starts beside a reviewer that is still working; that refusal
-spends an attempt but never marks the tasks stuck. Every turn end records the
+spends an attempt. A pause on such refusals marks the tasks stuck only the
+second time in a row beside them, once they have waited ``STUCK_AFTER_S``: a
+lost notification is the only way they get there, never a quick agent. Every turn end records the
 tasks in ``waiting_on`` and when the wait began in ``waiting_since``; a person's
 resume can release tasks that will never report.
 
@@ -46,6 +48,8 @@ That catches a shell edit, which the edit guard never sees.
         │ background task running ── STAGE DONE ─> block, reinject (an attempt)
         │                          └ no token ── waits < cap ─> let it end (a wait)
         │                                       at cap ─> pause no_message, wait_capped
+        │                            at cap ─> pause no_message; again beside the
+        │                                      same tasks, waited 30 min ─> stuck
         │ tasks unreadable ── STAGE DONE ─> block, reinject (an attempt)
         │ STAGE DONE ── emits missing / tree dirty / dash ─> block, reinject
         │            └─ last stage ─> done   gate ─> pause gate   else ─> block, next stage
@@ -57,9 +61,11 @@ from __future__ import annotations
 import re
 import subprocess
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 
 from core import no_unicode_dash as nd
+from core import pipeline_state as ps
 from core import run_index as ri
 from core import run_state as rs
 from core.config import LoopConfig, git_env
@@ -232,6 +238,9 @@ def _no_token(
     stage = state["current_stage"]
     state["attempts"][stage] += 1
     state["total_attempts"] += 1
+    if not refused_on:
+        # Any other refusal breaks the run of refusals beside the same tasks.
+        state["refused_on"] = []
     cap = (state.get("caps") or {}).get("attempts", rs.MAX_ATTEMPTS)
     if state["attempts"][stage] >= cap:
         release = _refusal_release(run, state, refused_on) if refused_on else ""
@@ -246,25 +255,43 @@ def _no_token(
     return _block(state, f"The stage is not finished: {why}.\n\n{rs.state_text(run, state)}")
 
 
+def _wait_minutes(state: dict) -> int | None:
+    since = ps.parse_iso(state.get("waiting_since"))
+    if since is None:
+        return None
+    return int((datetime.now(UTC) - since).total_seconds() // 60)
+
+
 def _refusal_release(run: rs.Run, state: dict, refused_on: list[str]) -> str:
     """The card's word on tasks a refused STAGE DONE paused beside.
 
     One such pause says nothing about the tasks: a reviewer that still runs
-    will report, and a resume keeps waiting. A second pause on the same tasks
-    is the sign they never will (a lost notification, while the agent keeps
-    writing STAGE DONE): they are marked stuck, so the resume releases them.
+    will report, and a resume keeps waiting. Tasks are marked stuck, so the
+    person's resume releases them, only when the stage paused beside them a
+    second time in a row and the run has waited on them for
+    ``rs.STUCK_AFTER_S``: an agent can reach two pauses in seconds beside a
+    reviewer that is still working, but not make a wait old. Only those tasks
+    are released (``stuck_on``), never a newer task beside them.
     """
-    ids = ", ".join(refused_on)
-    if state.get("refused_on") == sorted(refused_on):
+    minutes = _wait_minutes(state)
+    waited = f"waited {minutes} min" if minutes is not None else "waited an unknown time"
+    both = sorted(set(refused_on) & set(state.get("refused_on") or []))
+    old = minutes is not None and minutes * 60 >= rs.STUCK_AFTER_S
+    if both and old:
         state["wait_capped"] = True
+        state["stuck_on"] = both
+        state["refused_on"] = []
         return (
-            f" The stage paused a second time beside the same tasks ({ids}); "
+            f" The stage paused a second time beside {', '.join(both)}, which have {waited}. "
+            "They may still be running: check the session first, then "
             f"{run.config.resume_command} releases them."
         )
-    state["refused_on"] = sorted(refused_on)
+    state["refused_on"] = both or sorted(refused_on)
+    floor = rs.STUCK_AFTER_S // 60
     return (
-        f" This resume keeps waiting on {ids}. If the stage pauses again beside the same "
-        f"tasks, {run.config.resume_command} then releases them."
+        f" This resume keeps waiting on {', '.join(refused_on)} ({waited}). If the stage "
+        f"pauses again beside them once they have waited {floor} min, "
+        f"{run.config.resume_command} then releases them."
     )
 
 

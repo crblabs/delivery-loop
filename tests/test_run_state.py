@@ -306,6 +306,7 @@ def test_adopting_a_waiting_run_forgets_the_wait_without_releasing(start_run) ->
     assert state["session_id"] == "s2" and state["status"] == "running"
     assert state["waiting_on"] == [] and state["waiting_since"] is None
     assert state["released_tasks"] == [] and state["wait_turns"]["autoplan"] == 0
+    assert state["refused_on"] == []
 
 
 def test_a_wait_capped_pause_releases_even_from_a_new_session(start_run) -> None:
@@ -351,7 +352,8 @@ def test_status_shows_what_the_run_waits_on(start_run) -> None:
 def test_a_state_from_before_the_wait_fields_is_still_valid(start_run) -> None:
     run, _ = start_run()
     state = _state(run)
-    for key in ("waiting_on", "waiting_since", "wait_turns", "wait_capped", "released_tasks"):
+    keys = ("waiting_on", "waiting_since", "wait_turns", "wait_capped", "released_tasks")
+    for key in (*keys, "refused_on", "stuck_on", "activity_path", "waiting_shell_only"):
         state.pop(key)
     state["caps"] = {"attempts": rs.MAX_ATTEMPTS}
     assert ps.valid(state, DEFAULTS)
@@ -373,6 +375,7 @@ def test_a_state_from_before_the_wait_fields_is_still_valid(start_run) -> None:
         {"waiting_shell_only": 1},
         {"activity_path": 5},
         {"refused_on": "a1"},
+        {"stuck_on": [3]},
     ],
 )
 def test_a_malformed_wait_field_makes_the_state_invalid(start_run, bad: dict) -> None:

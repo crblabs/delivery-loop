@@ -58,6 +58,9 @@ MAX_ATTEMPTS = 3
 # turn end with nothing pending ends the wait and restarts the count. An
 # autoplan stage waits on about six to ten reviewers at a time.
 MAX_WAITS = 20
+# How long a wait must have lasted before a second refused STAGE DONE pause
+# beside the same tasks marks them stuck: longer than a reviewer runs.
+STUCK_AFTER_S = 30 * 60
 DONE_TOKEN = "<promise>STAGE DONE</promise>"
 PAUSE_TOKEN = "<promise>NEEDS HUMAN</promise>"
 ACTIVE = ri.ACTIVE
@@ -222,9 +225,10 @@ def _initial_state(
         "activity_path": None,
         "wait_turns": dict.fromkeys(names, 0),
         "wait_capped": False,
-        # The tasks the last refused STAGE DONE paused beside; a second pause
-        # on the same tasks marks them stuck.
+        # The tasks the last refused STAGE DONE paused beside, and the ones a
+        # second pause marked stuck, which a resume releases.
         "refused_on": [],
+        "stuck_on": [],
         "released_tasks": [],
         "plan_path": None,
         "pr_url": None,
@@ -447,6 +451,7 @@ def clear_wait(state: dict) -> None:
     state["waiting_since"] = None
     state["waiting_shell_only"] = False
     state["refused_on"] = []
+    state["stuck_on"] = []
 
 
 def _release(state: dict) -> None:
@@ -455,9 +460,9 @@ def _release(state: dict) -> None:
     The list is never trimmed: a released id dropped from it would come back
     as a wait, since its launch stays in the session's transcript.
     """
-    state["released_tasks"] = list(
-        dict.fromkeys([*(state.get("released_tasks") or []), *(state.get("waiting_on") or [])])
-    )
+    # A second refused pause marks only the old tasks stuck, never a newer one.
+    stuck = state.get("stuck_on") or state.get("waiting_on") or []
+    state["released_tasks"] = list(dict.fromkeys([*(state.get("released_tasks") or []), *stuck]))
     clear_wait(state)
     state["wait_capped"] = False
 
@@ -473,9 +478,11 @@ def resume(run: Run, by: str, session_id: str | None = None) -> str:
     how a person adopts a run whose session ended, running or paused.
 
     Background tasks the run waits on are released only when the wait is stuck:
-    a pause at the wait cap, or a resume that does not adopt the run while it
-    is running and waiting. Any other resume keeps waiting on them, since a
-    reviewer that still runs will report. Adopting a running run forgets its
+    a pause at the wait cap, a second refused STAGE DONE pause beside the same
+    tasks once they have waited ``STUCK_AFTER_S`` (only those tasks), or a
+    resume that does not adopt the run while it is running and waiting. Any
+    other resume keeps waiting on them, since a reviewer that still runs will
+    report. Adopting a running run forgets its
     wait without releasing it: the new session's transcript says what it runs.
     """
 
