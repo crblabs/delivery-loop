@@ -50,10 +50,17 @@ SHELL_WAIT_RE = re.compile(r"(^|[;&|(\s])(sleep|wait|until|watch)\s|\btail\s+-f\
 
 @dataclass
 class Scenario:
+    """``stages`` maps a stage name to its prompt, or to (prompt, extra loop.toml keys).
+
+    ``replies`` are what a person types: each waits for the run to reach a status,
+    then types the text.
+    """
+
     name: str
     goal: str
-    stages: dict[str, str]
+    stages: dict[str, str | tuple[str, dict]]
     check: Callable[[Result], None]
+    replies: list[tuple[str, str]] = field(default_factory=list)
     timeout_s: int = 900
 
 
@@ -73,16 +80,31 @@ class Result:
         shown = _git(self.sandbox, "show", f"HEAD:{path}", check=False)
         return shown.stdout if shown.returncode == 0 else None
 
-    def shell_commands(self) -> list[str]:
-        commands = []
+    def _blocks(self):
         for entry in self.transcript:
             content = (entry.get("message") or {}).get("content")
-            for block in content if isinstance(content, list) else []:
-                if block.get("type") == "tool_use" and block.get("name") == "Bash":
-                    tool_input = block.get("input") or {}
-                    if not tool_input.get("run_in_background"):
-                        commands.append(str(tool_input.get("command", "")))
+            yield from (
+                (b for b in content if isinstance(b, dict)) if isinstance(content, list) else ()
+            )
+
+    def shell_commands(self) -> list[str]:
+        """The foreground shell commands that ran; a denied one never did."""
+        failed = {
+            b.get("tool_use_id")
+            for b in self._blocks()
+            if b.get("type") == "tool_result" and b.get("is_error")
+        }
+        commands = []
+        for block in self._blocks():
+            if block.get("type") != "tool_use" or block.get("name") != "Bash":
+                continue
+            tool_input = block.get("input") or {}
+            if not tool_input.get("run_in_background") and block.get("id") not in failed:
+                commands.append(str(tool_input.get("command", "")))
         return commands
+
+    def decisions(self, hook: str) -> list[str]:
+        return [str(e.get("decision")) for e in self.events if e.get("hook") == hook]
 
 
 def _check_common(r: Result) -> None:
@@ -95,10 +117,40 @@ def _check_common(r: Result) -> None:
 
 def _check_background_wait(r: Result) -> None:
     _check_common(r)
-    decisions = [e.get("decision") for e in r.events if e.get("hook") == "stop"]
+    decisions = r.decisions("stop")
     r.expect("wait" in decisions, f"no turn ended as a wait; stop decisions: {decisions}")
     r.expect("READY" in (r.committed("wait.txt") or ""), "wait.txt with READY is not committed")
     r.expect(r.committed("after.txt") is not None, "the second stage did not run")
+
+
+def _check_happy_path(r: Result) -> None:
+    _check_common(r)
+    for name in ("one.txt", "two.txt", "three.txt"):
+        r.expect(r.committed(name) is not None, f"{name} is not committed")
+    decisions = r.decisions("stop")
+    r.expect(decisions.count("block") >= 2, f"the run did not advance twice: {decisions}")
+    r.expect("wait" not in decisions, f"a turn waited with nothing in the background: {decisions}")
+    r.expect(not r.state.get("attempts", {}).get("three"), "the last stage needed a retry")
+
+
+def _check_guard_sleep(r: Result) -> None:
+    _check_common(r)
+    r.expect("deny" in r.decisions("guard"), f"the guard denied nothing: {r.decisions('guard')}")
+    r.expect(r.committed("denied.txt") is not None, "denied.txt is not committed")
+
+
+def _check_guarded_edit(r: Result) -> None:
+    _check_common(r)
+    r.expect("deny" in r.decisions("guard"), f"the guard denied nothing: {r.decisions('guard')}")
+    r.expect("e2e edit" not in (r.committed("loop.toml") or ""), "the loop.toml edit landed")
+    r.expect(r.committed("denied.txt") is not None, "denied.txt is not committed")
+
+
+def _check_pause_resume(r: Result) -> None:
+    _check_common(r)
+    decisions = r.decisions("stop")
+    r.expect("pause" in decisions, f"the run never paused: {decisions}")
+    r.expect("BETA" in (r.committed("choice.txt") or ""), "choice.txt does not hold BETA")
 
 
 SCENARIOS = {
@@ -120,6 +172,60 @@ SCENARIOS = {
                 ),
             },
             check=_check_background_wait,
+        ),
+        Scenario(
+            name="happy_path",
+            goal="three stages advance in order, one of them over a committed tree",
+            stages={
+                "one": f"Write ONE to one.txt, commit it, and end with the line {DONE}",
+                "two": (
+                    f"Write TWO to two.txt, commit it, and end with the line {DONE}",
+                    {"clean_tree": True},
+                ),
+                "three": f"Write THREE to three.txt, commit it, and end with the line {DONE}",
+            },
+            check=_check_happy_path,
+        ),
+        Scenario(
+            name="guard_sleep",
+            goal="the guard denies a foreground shell wait, and the stage still finishes",
+            stages={
+                "sleepy": (
+                    "Run the shell command `sleep 3` in the foreground, not in the background. "
+                    "If the tool refuses it, do not retry or work around it: write the first "
+                    "line of the refusal to denied.txt, commit it, and end with the line "
+                    f"{DONE}"
+                ),
+            },
+            check=_check_guard_sleep,
+        ),
+        Scenario(
+            name="guarded_edit",
+            goal="the guard denies an edit to loop.toml, an enforcement file",
+            stages={
+                "edit": (
+                    "Use the Edit tool to append the line `# e2e edit` to loop.toml. If the "
+                    "tool refuses it, do not retry or work around it: write the first line of "
+                    f"the refusal to denied.txt, commit it, and end with the line {DONE}"
+                ),
+            },
+            check=_check_guarded_edit,
+        ),
+        Scenario(
+            name="pause_resume",
+            goal="a NEEDS HUMAN card pauses the run, and a typed resume with the answer resumes it",
+            stages={
+                "ask": (
+                    "Ask the person which word to write. End this turn with this decision card "
+                    "and then the line <promise>NEEDS HUMAN</promise>:\n\n"
+                    "ASK   Which word should I write to choice.txt?\n"
+                    "REC   1. ALPHA\nALT   2. BETA\nCOST  none\nREPLY 1 | 2\n\n"
+                    "After the person answers, write the chosen word to choice.txt, commit it, "
+                    f"and end with the line {DONE}"
+                ),
+            },
+            replies=[("awaiting_human", "/delivery-loop:pipeline resume My answer: 2 (BETA)")],
+            check=_check_pause_resume,
         ),
     ]
 }
@@ -146,12 +252,15 @@ def build_sandbox(scenario: Scenario, run_dir: Path) -> Path:
     _git(repo, "config", "user.email", "e2e@delivery-loop.invalid")
     _git(repo, "config", "user.name", "delivery-loop e2e")
     (repo / "README.md").write_text(f"# e2e sandbox: {scenario.name}\n", encoding="utf-8")
-    toml = "".join(f'[[stages]]\nname = "{name}"\n\n' for name in scenario.stages)
-    (repo / "loop.toml").write_text(toml, encoding="utf-8")
     prompts = repo / ".claude/skills/pipeline/stages"
     prompts.mkdir(parents=True)
-    for name, text in scenario.stages.items():
+    toml = ""
+    for name, spec in scenario.stages.items():
+        text, extra = (spec, {}) if isinstance(spec, str) else spec
+        toml += f'[[stages]]\nname = "{name}"\n'
+        toml += "".join(f"{key} = {json.dumps(value)}\n" for key, value in extra.items()) + "\n"
         (prompts / f"{name}.md").write_text(text + "\n", encoding="utf-8")
+    (repo / "loop.toml").write_text(toml, encoding="utf-8")
     _git(repo, "add", "-A")
     _git(repo, "commit", "-q", "-m", "e2e sandbox")
     _git(repo, "remote", "add", "origin", str(origin))
@@ -228,15 +337,16 @@ def _read_jsonl(path: Path | None) -> list[dict]:
     return rows
 
 
-def watch(home: Path, session: str, timeout_s: int) -> tuple[dict, str]:
-    """Wait for the run to leave ``running``: (state, why the watch ended)."""
-    deadline = time.monotonic() + timeout_s
+def watch(home: Path, session: str, deadline: float, until: str | None = None) -> tuple[dict, str]:
+    """Wait for the run to reach ``until``, or to leave ``running``: (state, why it ended)."""
+    timeout_s = round(deadline - time.monotonic())
     state: dict = {}
     while time.monotonic() < deadline:
         path = _state_path(home)
         state = _read_json(path) if path else {}
-        if state.get("status") not in (None, "running"):
-            return state, state["status"]
+        status = state.get("status")
+        if status not in (None, "running") or (until is not None and status == until):
+            return state, str(status)
         if _tmux("has-session", "-t", session, check=False).returncode != 0:
             return state, "claude exited"
         time.sleep(3)
@@ -277,7 +387,15 @@ def run_scenario(scenario: Scenario, model: str) -> dict:
             f'Run `delivery-loop start "e2e {scenario.name}"` in the shell, then do the '
             "stage it prints, following the delivery-loop pipeline skill.",
         )
-        state, ended = watch(home, session, scenario.timeout_s)
+        deadline = time.monotonic() + scenario.timeout_s
+        for status, text in scenario.replies:
+            state, ended = watch(home, session, deadline, until=status)
+            if state.get("status") != status:
+                break
+            _type(session, text)
+            # The resume flips the status at once; wait for the next change from there.
+            time.sleep(5)
+        state, ended = watch(home, session, deadline)
         state_path = _state_path(home)
         events = _read_jsonl(state_path.parent / "events.jsonl" if state_path else None)
         transcripts = list(Path("~/.claude/projects").expanduser().glob(f"*/{session_id}.jsonl"))
