@@ -898,3 +898,19 @@ def test_a_stage_spends_a_bounded_number_of_turn_ends_waiting(start_run) -> None
     assert "spent 4 turn ends waiting" in _state(run)["pending_question"]
     rs.resume(run, "person")
     assert _state(run)["stage_waits"]["autoplan"] == 0
+
+
+def test_the_stage_wait_count_survives_a_wait_that_ends(start_run) -> None:
+    # Value: protects=caps.stage_waits counts across waits: a turn end with nothing pending
+    # restarts wait_turns only; fails_when=the empty turn end also zeroes stage_waits;
+    # why_new=the stage cap test never lets a wait end; seam=none
+    run, _ = start_run()
+    rs.update(run, lambda s: s["caps"].update(stage_waits=4))
+    for i in range(2):
+        assert _wait(run, "Waiting.", (f"sh{i}",)).waiting
+    assert _end(run, "Reviewed; next round.").block
+    assert _state(run)["wait_turns"]["autoplan"] == 0
+    assert _state(run)["stage_waits"]["autoplan"] == 2
+    for i in range(2, 4):
+        assert _wait(run, "Waiting.", (f"sh{i}",)).waiting
+    assert _wait(run, "Waiting.", ("sh9",)).pause_reason == "no_message"

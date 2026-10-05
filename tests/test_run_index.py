@@ -517,3 +517,14 @@ def test_placeholder_lexing_matches_shlex_word_for_word(monkeypatch) -> None:
         assert got == expected, command
         checked += 1
     assert checked > 1000
+
+
+def test_a_line_that_already_holds_a_placeholder_is_lexed_plainly() -> None:
+    # Value: protects=an agent's line with its own NUL-digit-NUL text and a long word still
+    # shows its git push; fails_when=placeholders are swapped in anyway and the lexer raises
+    # or reads a word wrongly; why_new=no test holds a NUL; seam=none
+    ri._lex.cache_clear()
+    long_word = "a" * (ri.LEX_WORD_MAX + 1)
+    command = f'echo "\x009\x00" ; git push --force origin main ; echo "{long_word}"'
+    assert ri.git_calls(command) == [["push", "--force", "origin", "main"]]
+    assert ri._lex(command)[0] == ("echo", "\x009\x00")

@@ -273,3 +273,48 @@ def test_a_line_still_being_written_is_read_next_time(transcript, tmp_path: Path
     assert scan(path, START, cache=cache).tasks == ()
     path.write_text(text, encoding="utf-8")
     assert scan(path, START, cache=cache).tasks == (AGENT,)
+
+
+def test_the_cache_keeps_the_turn_a_shell_command_was_launched_in(tmp_path: Path) -> None:
+    # Value: protects=a scan that goes on from its cache still sees a mid-turn compaction as
+    # the same turn; fails_when=the cache drops the last turn and a pending shell is lost;
+    # why_new=the cache test crosses no prompt; seam=none
+    cache = tmp_path / "scan.json"
+    first = {"type": "user", "turnPosition": {"turnIndex": 7}, "origin": {"kind": "human"}}
+    compact = {"type": "user", "isCompactSummary": True, "turnPosition": {"turnIndex": 7}}
+    nxt = {"type": "user", "turnPosition": {"turnIndex": 8}, "origin": {"kind": "human"}}
+    path = _lines(tmp_path / "t.jsonl", first, _bash("b1"))
+    assert scan(path, cache=cache).tasks == ("b1",)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(compact) + "\n")
+    assert scan(path, cache=cache) == Pending(("b1",), ("b1",))
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(nxt) + "\n")
+    assert scan(path, cache=cache).tasks == ()
+
+
+@pytest.mark.parametrize(
+    ("tool", "command", "shell"),
+    [
+        ("Bash", "gh pr checks 5 --watch", ()),
+        ("Bash", "sleep 600", ("s1",)),
+        ("Bash", "tail -f server.log", ("s1",)),
+        ("PowerShell", "gh run watch 7", ("s1",)),
+    ],
+)
+def test_only_a_background_ci_watch_leaves_the_shell_only_list(
+    tmp_path: Path, tool, command, shell
+) -> None:
+    # Value: protects=only a Bash gh CI watch gets the agent alarm; a background sleep or tail
+    # keeps the 15 min one; fails_when=ci_watch accepts any wait or any tool's command;
+    # why_new=the watch fixture only holds gh run watch; seam=none
+    call = {"type": "tool_use", "id": "tu1", "name": tool}
+    call["input"] = {"command": command, "run_in_background": True}
+    launch = _bash("s1") | {"message": {"content": [{"type": "tool_result", "tool_use_id": "tu1"}]}}
+    path = _lines(
+        tmp_path / "t.jsonl",
+        _prompt(),
+        {"type": "assistant", "message": {"content": [call]}},
+        launch,
+    )
+    assert scan(path) == Pending(("s1",), shell)

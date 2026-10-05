@@ -422,3 +422,20 @@ def test_the_wait_limits_are_read_from_the_command_line(worktree, capsys):
     records = {Path(r["worktree"]).name: r for r in json.loads(capsys.readouterr().out)}
     assert records["agent"]["is_wait_stale"] is True
     assert records["shell"]["is_wait_stale"] is False
+
+
+def test_a_worktree_s_supervisor_table_sets_its_own_wait_limit(worktree):
+    # Value: protects=a run's loop.toml [supervisor] wait limit reaches is_wait_stale in a
+    # scan; fails_when=build_record judges the wait by the defaults, not the run's config;
+    # why_new=test_config calls _wait_stale directly; seam=none
+    at = "2026-09-16T09:40:00+00:00"
+    waiting = {"waiting_on": ["a1"], "waiting_since": at, "updated_at": at}
+    short = worktree("short", make_state(**waiting))
+    (short / "loop.toml").write_text(
+        "[supervisor]\nwait_stale_after_seconds = 600\n", encoding="utf-8"
+    )
+    worktree("default", make_state(**waiting))
+    records = {Path(r["worktree"]).name: r for r in ss.scan(None, NOW, 600, per_worktree=True)}
+    assert records["short"]["condition"] == "ok"
+    assert records["short"]["is_wait_stale"] is True
+    assert records["default"]["is_wait_stale"] is False
