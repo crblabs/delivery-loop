@@ -353,3 +353,128 @@ def test_a_case_variant_path_still_meets_the_carve_outs(start_run) -> None:
     upper = Path(str(worktree.parent)) / worktree.name.upper()
     assert not _edit(run, str(upper / "loop.toml")).allow
     assert not _edit(run, str(upper / ".claude/skills/pipeline/stages/qa.md")).allow
+
+
+# --- No waiting in a foreground shell -----------------------------------------
+
+WAITS = [
+    "sleep 30",
+    "until curl -s localhost:3000; do sleep 1; done",
+    "while ! grep -q ready log\ndo\n  sleep 30\ndone",
+    "(sleep 5)",
+    "timeout 60 sleep 5",
+    "sleep 60 &",
+    "tail -f server.log",
+    "tail -Fn5 server.log",
+    # Value: protects=the long --follow form of tail is a foreground wait; fails_when=the
+    # --follow branch of _wait_in is dropped; why_new=no row used the long option; seam=none
+    "tail --follow=name server.log",
+    "watch ls",
+    "wait",
+    "gh run watch 123",
+    "gh pr checks --watch",
+    'bash -c "sleep 3"',
+    "x=$(sleep 1)",
+    "timeout -s KILL 60 sleep 5",
+    # Review: wrappers, the shell's own quote removal, and the heredoc stripper's edges.
+    "nice sleep 600",
+    "sudo -u ci sleep 600",
+    "stdbuf -oL tail -f x",
+    "chrt 10 sleep 5",
+    "gh pr checks --watch=true",
+    "gh run view 1 --watch",
+    "s\\leep 600",
+    "sl''eep 600",
+    'cat <<< "x"\nsleep 30',
+    "echo $((1<<2))\nsleep 30",
+    'echo "<<EOF"\nsleep 600\nEOF',
+    ": # <<X\nsleep 600",
+    "ionice -c 3 sleep 9",
+    "taskset 0x1 sleep 5",
+    "setsid sleep 9",
+    "doas sleep 9",
+    "sudo -- sleep 5",
+    "xargs -n 1 sleep",
+    "sle\\\nep 600",
+    "case x in x) sleep 5;; esac",
+    "a=$[1<<2]\nsleep 100",
+    # After a kill on the line only wait is exempt (any wait, not just the next
+    # command), never another kind of wait.
+    "srv & pid=$!; kill $pid; sleep 5",
+]
+NOT_WAITS = [
+    'git ls-files | while read f; do echo "$f"; done',
+    "echo sleep",
+    'git commit -m "wait for CI"',
+    "git commit -F - <<EOF\nfix\n\nwait for CI\nEOF",
+    "tail -n 5 server.log",
+    "gh pr checks",
+    "pip install watchdog",
+    "gh pr checks --watch=false",
+    "nice -n 5 make",
+    "cat <<-'E'\n\tsleep 30\n\tE",
+    "srv & pid=$!; kill $pid; wait $pid",
+    'gh pr create --body "' + "wait " * 20_000 + '"',
+]
+
+
+def _shell(run: rs.Run, command: str, session: str = "s1", background: bool = False):
+    call = guard.PreToolCall(session, "shell", "Bash", None, command, None, None, background)
+    return guard.handle_pre_tool(call, run)
+
+
+@pytest.mark.parametrize("command", WAITS)
+def test_a_foreground_wait_is_denied_in_the_run_s_session(start_run, command: str) -> None:
+    # Value: protects=CRB-28: no turn is held open by a shell wait, which also holds task
+    # notifications; fails_when=a wait form slips past the lexer; why_new=run #14; seam=none
+    run, _ = start_run()
+    verdict = _shell(run, command)
+    assert not verdict.allow
+    assert "in a foreground shell" in verdict.reason
+    assert "Cause:" in verdict.reason and "Fix:" in verdict.reason
+    assert run.config.background_flag in verdict.reason and "shell_waits" in verdict.reason
+
+
+@pytest.mark.parametrize("command", NOT_WAITS)
+def test_a_command_that_only_mentions_a_wait_is_allowed(start_run, command: str) -> None:
+    run, _ = start_run()
+    assert _shell(run, command).allow
+
+
+def test_a_background_wait_and_another_session_are_allowed(start_run) -> None:
+    # Value: protects=the supported background route, and a person debugging in another
+    # session; fails_when=the rule ignores background or the session; why_new=Eng #65
+    run, _ = start_run()
+    assert _shell(run, "sleep 30", background=True).allow
+    assert _shell(run, "tail -f server.log", session="someone-else").allow
+
+
+def test_a_stage_with_shell_waits_may_wait_and_the_next_may_not(start_run) -> None:
+    config = LoopConfig(stages=(StageSpec(name="qa", shell_waits=True), StageSpec(name="review")))
+    run, _ = start_run(config=config)
+    assert _shell(run, "until curl -s x; do sleep 1; done").allow
+    rs.update(run, lambda s: s.update(current=1, current_stage="review"))
+    assert not _shell(run, "until curl -s x; do sleep 1; done").allow
+
+
+def test_a_push_on_a_later_line_is_now_seen(start_run) -> None:
+    # Value: protects=the intended difference of the newline split: a command on line 2
+    # is judged; fails_when=segments stops splitting lines; why_new=Eng #69; seam=none
+    run, _ = start_run()
+    assert not _shell(run, "echo ready\ngit push origin HEAD").allow
+
+
+def test_a_heredoc_fed_to_a_shell_still_cannot_resume_the_run() -> None:
+    # Value: protects=the human-only guard keeps reading heredoc bodies; fails_when=bodies
+    # are dropped in the shared lexer; why_new=spec review 3; seam=none
+    cli = ri.CLI_NAME
+    assert ri.human_only_command(f"bash <<EOF\n{cli} resume\nEOF") == "resume"
+
+
+def test_a_paused_run_or_an_unknown_session_may_wait(start_run) -> None:
+    # Value: protects=the wait rule binds only a running run's own session; fails_when=a
+    # paused run's person or a session-less call is refused; why_new=review testing
+    run, _ = start_run()
+    assert _shell(run, "sleep 30", session=None).allow
+    rs.update(run, lambda s: rs.pause(s, "gate", "card"))
+    assert _shell(run, "sleep 30").allow

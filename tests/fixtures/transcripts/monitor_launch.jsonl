@@ -1,0 +1,1 @@
+{"type": "user", "isSidechain": false, "timestamp": "{T+20}", "sessionId": "s1", "message": {"role": "user", "content": [{"tool_use_id": "toolu_m", "type": "tool_result", "content": "Monitor started (task be9cp7jjl, expires in 1m unless the source ends first)."}]}, "toolUseResult": {"taskId": "be9cp7jjl", "timeoutMs": 60000, "persistent": false}}

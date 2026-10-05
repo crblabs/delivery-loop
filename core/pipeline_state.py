@@ -186,6 +186,36 @@ def _identity_ok(state: dict) -> bool:
     return isinstance(state.get("history"), list)
 
 
+def _strs_ok(value: object) -> bool:
+    return isinstance(value, list) and all(isinstance(v, str) for v in value)
+
+
+def _waits_ok(state: dict) -> bool:
+    """The wait fields, each optional: a run started before them has none."""
+    if "waiting_on" in state and not _strs_ok(state["waiting_on"]):
+        return False
+    if "released_tasks" in state and not _strs_ok(state["released_tasks"]):
+        return False
+    task_since = state.get("task_since", {})
+    if not isinstance(task_since, dict) or any(
+        not isinstance(k, str) or parse_iso(v) is None for k, v in task_since.items()
+    ):
+        return False
+    since = state.get("waiting_since")
+    if since is not None and parse_iso(since) is None:
+        return False
+    for key in ("wait_turns", "stage_waits"):
+        turns = state.get(key, {})
+        if not isinstance(turns, dict) or any(not _int_ok(v) or v < 0 for v in turns.values()):
+            return False
+    activity = state.get("activity_path")
+    return (
+        isinstance(state.get("wait_capped", False), bool)
+        and isinstance(state.get("waiting_shell_only", False), bool)
+        and (activity is None or isinstance(activity, str))
+    )
+
+
 def valid(state: object, config: LoopConfig = DEFAULTS) -> bool:
     """True when every field the supervisor reads is present and well typed.
 
@@ -195,6 +225,8 @@ def valid(state: object, config: LoopConfig = DEFAULTS) -> bool:
     if not isinstance(state, dict):
         return False
     if not (_stages_ok(state, config) and _counters_ok(state, config) and _identity_ok(state)):
+        return False
+    if not _waits_ok(state):
         return False
     return parse_iso(state.get("updated_at")) is not None
 

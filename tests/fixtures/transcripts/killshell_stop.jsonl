@@ -1,0 +1,1 @@
+{"type": "user", "isSidechain": false, "timestamp": "{T+60}", "sessionId": "s1", "message": {"role": "user", "content": [{"tool_use_id": "toolu_x", "type": "tool_result", "content": "Successfully killed shell: baa2q82i2 (npm run dev)"}]}, "toolUseResult": {"success": true, "message": "Successfully killed shell: baa2q82i2 (npm run dev)", "shell_id": "baa2q82i2"}}

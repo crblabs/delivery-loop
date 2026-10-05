@@ -19,6 +19,21 @@ Any other turn end is blocked and the stage reinjected, counted in the stage's
 ``attempts``. At ``caps.attempts`` the run pauses with ``no_message``, so a run
 that keeps missing the token reaches a person without one typing in between.
 
+A turn that ends while a background task the agent started still runs is
+different: the agent is waiting for the task's notification, which wakes the
+session. The adapter reports those tasks in ``TurnEnd.pending_tasks``. A turn
+end with no token is then let through without spending an attempt, up to
+``caps.waits`` times in one wait, after which the run pauses for a person with
+the tasks named (``wait_capped``). A turn end with nothing pending ends the wait
+and restarts that count. ``STAGE DONE`` is refused while a task runs, so the
+next stage never starts beside a reviewer that is still working; that refusal
+spends an attempt. A person's resume after a pause at either cap (waits, or
+attempts on refused ``STAGE DONE``) releases only the tasks the run has seen
+pending for ``STUCK_AFTER_S`` by their own first-seen time (``task_since``),
+judged at the resume: a lost notification gets there, a quick agent cannot.
+Every turn end records the tasks in ``waiting_on`` and when the wait began in
+``waiting_since``; a person's resume can release tasks that will never report.
+
 Every turn end also hashes the guard map: the carve-outs, the ``loop_exact``
 files, every file under ``loop_prefixes``, the ``guard_watch`` files and the
 run's config snapshot. The two settings files are hashed by the keys that can
@@ -31,6 +46,12 @@ That catches a shell edit, which the edit guard never sees.
     turn end ── another session? ─────────────────────────────> let it end
         │ guard map changed off the declared edits? ─────────> pause guard_changed
         │ NEEDS HUMAN ────────────────────────────────────────> pause needs_human
+        │ background task running ── STAGE DONE ─> block, reinject (an attempt)
+        │                          │   at cap ─> pause no_message
+        │                          └ no token ── waits < cap ─> let it end (a wait)
+        │                                       at cap ─> pause no_message
+        │                          either pause: resume releases tasks pending 30+ min
+        │ tasks unreadable ── STAGE DONE ─> block, reinject (an attempt)
         │ STAGE DONE ── emits missing / tree dirty / dash ─> block, reinject
         │            └─ last stage ─> done   gate ─> pause gate   else ─> block, next stage
         └ no token ── attempts < cap ─> block, reinject   at cap ─> pause no_message
@@ -60,6 +81,16 @@ class TurnEnd:
     session_id: str | None
     message: str | None
     prompt_id: str | None = None
+    # The background tasks the agent started that have not reported yet, as
+    # the adapter reads them; empty when the harness cannot say.
+    pending_tasks: tuple[str, ...] = ()
+    # Which of them are shell commands, as opposed to agents, which always report.
+    shell_tasks: tuple[str, ...] = ()
+    # True when the adapter could not read the tasks: STAGE DONE is refused, and
+    # the wait the run records is left as it was.
+    tasks_unknown: bool = False
+    # A file the harness writes while the session works, for the supervisor.
+    activity_path: str | None = None
 
 
 @dataclass(frozen=True)
@@ -69,6 +100,13 @@ class TurnEndVerdict:
     pause_reason: str | None = None
     # Shown to the person without blocking, such as how to adopt a run.
     note: str | None = None
+    # The tasks the turn ends waiting on, after a person's releases; their
+    # notification wakes the session.
+    tasks: tuple[str, ...] = ()
+
+    @property
+    def waiting(self) -> bool:
+        return bool(self.tasks)
 
 
 PASS = TurnEndVerdict(block=False)
@@ -193,21 +231,50 @@ def _block(state: dict, text: str) -> TurnEndVerdict:
     return TurnEndVerdict(block=True, reinject=text)
 
 
-def _no_token(run: rs.Run, state: dict, why: str) -> TurnEndVerdict:
+def _no_token(
+    run: rs.Run, state: dict, why: str, beside: list[str] | None = None
+) -> TurnEndVerdict:
     stage = state["current_stage"]
     state["attempts"][stage] += 1
     state["total_attempts"] += 1
     cap = (state.get("caps") or {}).get("attempts", rs.MAX_ATTEMPTS)
     if state["attempts"][stage] >= cap:
+        release = _mark_stuck(run, state, beside) if beside else ""
         rs.pause(
             state,
             "no_message",
-            f"Stage {stage} ended {state['attempts'][stage]} turns in a row without a token "
-            f"({why}). Read the transcript, then {run.config.resume_command} or "
-            f"{run.config.abort_command}.",
+            f"Stage {stage} has ended {state['attempts'][stage]} turns that were not "
+            f"accepted (last: {why}). Read the transcript, then {run.config.resume_command} "
+            f"or {run.config.abort_command}.{release}",
         )
         return TurnEndVerdict(block=False, pause_reason="no_message")
     return _block(state, f"The stage is not finished: {why}.\n\n{rs.state_text(run, state)}")
+
+
+def _mark_stuck(run: rs.Run, state: dict, pending: list[str]) -> str:
+    """Mark a pause at a cap beside tasks, and give each task's age on the card.
+
+    The resume after it releases only the tasks pending ``rs.STUCK_AFTER_S``
+    at that moment (``rs.stuck_tasks``): turn counts and refusals are the
+    agent's to make in seconds, a task's own age is not.
+    """
+    state["wait_capped"] = True
+    ages = rs.task_ages(state)
+    floor = rs.STUCK_AFTER_S // 60
+
+    def shown(tasks: list[str]) -> str:
+        return ", ".join(f"{t} ({int((ages.get(t) or 0) // 60)} min)" for t in tasks)
+
+    old = [t for t in pending if (ages.get(t) or 0) >= rs.STUCK_AFTER_S]
+    young = [t for t in pending if t not in old]
+    text = f" {run.config.resume_command} releases the tasks pending {floor} min or more"
+    text += " when you resume, and keeps waiting on younger ones."
+    if old:
+        text += f" Pending {floor} min or more now: {shown(old)}; they may still be running, "
+        text += "so check the session first."
+    if young:
+        text += f" Younger, still waited on: {shown(young)}."
+    return text
 
 
 def _gate_card(name: str, gate: str, state: dict, config: LoopConfig) -> str:
@@ -272,6 +339,8 @@ def _advance(run: rs.Run, state: dict, message: str) -> TurnEndVerdict:
     state["current"] += 1
     state["current_stage"] = config.stages[state["current"]].name
     state["attempts"][state["current_stage"]] = 0
+    state.setdefault("wait_turns", {})[state["current_stage"]] = 0
+    state.setdefault("stage_waits", {})[state["current_stage"]] = 0
     if stage.gate != "none":
         rs.pause(state, "gate", _gate_card(stage.name, stage.gate, state, config))
         return TurnEndVerdict(block=False, pause_reason="gate")
@@ -308,6 +377,77 @@ def _check_guard(run: rs.Run, state: dict) -> TurnEndVerdict | None:
     return TurnEndVerdict(block=False, pause_reason="guard_changed")
 
 
+def _record_pending(state: dict, pending: list[str], shell: tuple[str, ...] = ()) -> None:
+    """What the run waits for, and since when.
+
+    The clock starts when a wait starts and keeps running while any task is
+    pending, so a task that never reports cannot hide behind newer ones. A turn
+    end with nothing pending ends the wait and restarts the stage's wait count:
+    the cap bounds one wait, not every review round of a stage.
+    """
+    if not pending:
+        rs.clear_wait(state)
+        state.setdefault("wait_turns", {})[state["current_stage"]] = 0
+        return
+    if state.get("waiting_since") is None:
+        state["waiting_since"] = ri.now_iso()
+    state["waiting_on"] = list(pending)
+    # When each task was first seen pending: the age a release is judged by.
+    seen = state.get("task_since") or {}
+    now = ri.now_iso()
+    state["task_since"] = {t: seen.get(t) or now for t in pending}
+    # A wait on shell commands alone may be one that never ends, such as a dev
+    # server; the supervisor flags it sooner.
+    state["waiting_shell_only"] = all(t in shell for t in pending)
+
+
+def _pending_rules(
+    run: rs.Run, state: dict, pending: list[str], last: str
+) -> TurnEndVerdict | None:
+    """The verdict for a turn that ends while background tasks run, else ``None``."""
+    if not pending:
+        return None
+    ids = ", ".join(pending)
+    if last == rs.DONE_TOKEN:
+        return _no_token(
+            run,
+            state,
+            f"a background task is still running ({ids}); end your turn without a token, "
+            "and its notification wakes this session. A background command that never ends "
+            f"on its own, such as a dev server, is stopped with {run.config.stop_task_tool} "
+            "before STAGE DONE",
+            pending,
+        )
+    stage = state["current_stage"]
+    turns = state.setdefault("wait_turns", {})
+    stage_turns = state.setdefault("stage_waits", {})
+    caps = state.get("caps") or {}
+    cap = caps.get("waits", rs.MAX_WAITS)
+    stage_cap = caps.get("stage_waits", rs.MAX_STAGE_WAITS)
+    if turns.get(stage, 0) >= cap or stage_turns.get(stage, 0) >= stage_cap:
+        # The stage cap bounds a run of short waits too: an agent that keeps a
+        # trivial command in the background never lets one wait end.
+        limit = (
+            f"waited {cap} turns"
+            if turns.get(stage, 0) >= cap
+            else f"spent {stage_cap} turn ends waiting"
+        )
+        release = _mark_stuck(run, state, pending)
+        rs.pause(
+            state,
+            "no_message",
+            f"Stage {stage} {limit} on background tasks that have not reported "
+            f"({ids}).{release} {run.config.abort_command} ends the run.",
+        )
+        return TurnEndVerdict(block=False, pause_reason="no_message")
+    turns[stage] = turns.get(stage, 0) + 1
+    stage_turns[stage] = stage_turns.get(stage, 0) + 1
+    state["history"].append(
+        {"at": ri.now_iso(), "event": "wait", "stage": stage, "tasks": list(pending)}
+    )
+    return TurnEndVerdict(block=False, tasks=tuple(pending))
+
+
 # How many other sessions a run remembers having told about adoption.
 _TOLD_MAX = 20
 
@@ -323,6 +463,18 @@ def handle_turn_end(event: TurnEnd, run: rs.Run, timeout: float = ri.HOOK_LOCK_S
         elif state.get("session_id") != event.session_id:
             return PASS
         state["hook_seen"] = ri.now_iso()
+        if event.activity_path:
+            state["activity_path"] = event.activity_path
+        released = set(state.get("released_tasks") or [])
+        pending = [t for t in event.pending_tasks if t not in released]
+        if not event.tasks_unknown:
+            _record_pending(state, pending, event.shell_tasks)
+            # A released id the transcript no longer shows as pending has
+            # reported, been stopped or left its launch turn: it never comes
+            # back, so it need not be remembered.
+            state["released_tasks"] = [
+                t for t in state.get("released_tasks") or [] if t in event.pending_tasks
+            ]
         verdict = _check_guard(run, state)
         if verdict is not None:
             return verdict
@@ -331,6 +483,19 @@ def handle_turn_end(event: TurnEnd, run: rs.Run, timeout: float = ri.HOOK_LOCK_S
         if last == rs.PAUSE_TOKEN:
             rs.pause(state, "needs_human", message[-_TAIL_CHARS:], event.prompt_id)
             return TurnEndVerdict(block=False, pause_reason="needs_human")
+        verdict = _pending_rules(run, state, pending, last)
+        if verdict is not None:
+            return verdict
+        if last == rs.DONE_TOKEN and event.tasks_unknown:
+            # Fail closed on the step that can harm: an advance beside a
+            # reviewer that still runs. A transcript that stays unreadable
+            # reaches a person at the attempts cap.
+            return _no_token(
+                run,
+                state,
+                "the loop could not read which background tasks still run; end your turn "
+                "without a token if you wait on one, or end it again with the token",
+            )
         if last == rs.DONE_TOKEN:
             return _advance(run, state, message)
         return _no_token(run, state, "the last line was not a token")

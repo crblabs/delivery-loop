@@ -1,0 +1,1 @@
+{"type": "user", "isSidechain": false, "timestamp": "{T+40}", "sessionId": "s1", "origin": {"kind": "task-notification", "producer": "session-task"}, "message": {"role": "user", "content": "<task-notification>\n<task-id>be9cp7jjl</task-id>\n<summary>Monitor event: \"shape probe\"</summary>\n<event>shape-probe-event</event>\n</task-notification>"}}

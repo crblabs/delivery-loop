@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import contextlib
 import errno
+import functools
 import hashlib
 import json
 import os
@@ -71,6 +72,8 @@ CLI_NAME = "delivery-loop"
 HUMAN_ONLY = ("resume", "abort")
 README_URL = "https://github.com/crblabs/delivery-loop#"
 _SEPARATORS = (";", "&&", "||", "|", "&", "\n")
+# The characters that end a command, and that shlex returns as their own tokens.
+_PUNCTUATION = ";&|\n"
 # The CLI named with resume or abort anywhere in one simple command, including
 # inside ``bash -c "..."``, ``$(...)`` or after options such as ``--session``.
 # The name counts as the CLI when a space follows it, or as the plugin's own
@@ -79,7 +82,7 @@ _SEPARATORS = (";", "&&", "||", "|", "&", "\n")
 # The CLI's options that take a value, so the subcommand is found past them.
 _OPTIONS_WITH_VALUE = ("--session", "--config")
 # How deep nested shells are followed.
-_NEST_MAX = 3
+NEST_MAX = 3
 # The plugin's slash command, as a nested session would be given it.
 _SLASH = "/%s:pipeline" % CLI_NAME
 _WRAPPERS = ("command", "exec", "env", "nohup", "time")
@@ -311,25 +314,246 @@ def take_intent(key: str, now: float | None = None) -> str | None:
 # --- Commands in a shell line -------------------------------------------------
 
 
-def _segments(command: str) -> list[list[str]]:
-    """Each simple command in a shell line, as its words. Best effort, never raises."""
+_DELIMITER_END = " \t;&|<>()"
+
+
+def _heredoc_delimiter(line: str, at: int) -> tuple[str, bool, int]:
+    """The delimiter word of the here-document operator at ``at``, unquoted, and
+    whether it strips tabs (``<<-``), and where the word ends."""
+    i = at + 2
+    tabs = line.startswith("-", i)
+    i += tabs
+    while i < len(line) and line[i] in " \t":
+        i += 1
+    word, quote = [], None
+    while i < len(line):
+        c = line[i]
+        if quote:
+            if c == quote:
+                quote = None
+            else:
+                word.append(c)
+        elif c in "'\"":
+            quote = c
+        elif c == "\\" and i + 1 < len(line):
+            i += 1
+            word.append(line[i])
+        elif c in _DELIMITER_END:
+            break
+        else:
+            word.append(c)
+        i += 1
+    return "".join(word), tabs, i
+
+
+@functools.lru_cache(maxsize=8)
+def strip_heredocs(command: str) -> str:
+    """The shell text without its here-document bodies. Best effort, never raises.
+
+    A body is text fed to a command, such as a commit message that says "git
+    push" or "wait for CI", not a command line. Only an unquoted ``<<`` outside a
+    comment and outside ``((...))``, ``$[...]`` and ``${...}`` opens one; ``<<<``
+    is a here-string. Several on one line are read in order. A body whose
+    delimiter line never comes is kept: what was read as a here-document was not
+    one, and dropping the lines after it would hide their commands. A command
+    that runs its body (``bash <<EOF``) is not seen through here; the human-only
+    check reads the whole text for that reason.
+    """
+    out: list[str] = []
+    body: list[str] = []
+    ends: list[tuple[str, bool]] = []
+    quote: str | None = None
+    for line in command.split("\n"):
+        if ends:
+            body.append(line)
+            end, tabs = ends[0]
+            if (line.lstrip("\t") if tabs else line) == end:
+                ends.pop(0)
+                if not ends:
+                    body = []
+            continue
+        out.append(line)
+        # The closers of the arithmetic and expansions open on this line.
+        nest: list[str] = []
+        i = 0
+        while i < len(line):
+            c = line[i]
+            if quote:
+                if c == "\\" and quote in ('"', "$'"):
+                    i += 1
+                elif c == quote[-1]:
+                    quote = None
+            elif c == "\\":
+                i += 1
+            elif line.startswith("$'", i):
+                quote = "$'"
+                i += 1
+            elif c in "'\"`":
+                quote = c
+            elif c == "#" and (i == 0 or line[i - 1] in " \t;&|("):
+                break
+            elif line.startswith("((", i):
+                nest.append("))")
+                i += 1
+            elif line.startswith("$[", i) or line.startswith("${", i):
+                nest.append("]" if line[i + 1] == "[" else "}")
+                i += 1
+            elif nest and line.startswith(nest[-1], i):
+                i += len(nest.pop()) - 1
+            elif line.startswith("<<<", i):
+                i += 2
+            elif line.startswith("<<", i) and not nest:
+                word, tabs, i = _heredoc_delimiter(line, i)
+                if word:
+                    ends.append((word, tabs))
+                continue
+            i += 1
+    return "\n".join(out + body)
+
+
+def join_lines(command: str) -> str:
+    """The line with each backslash-newline removed, as the shell does, except
+    inside single quotes, where it is text."""
+    if "\\\n" not in command:
+        return command
+    out, quote, i = [], None, 0
+    while i < len(command):
+        c = command[i]
+        if quote == "'":
+            quote = None if c == "'" else quote
+        elif c == "\\":
+            if command.startswith("\n", i + 1):
+                i += 2
+                continue
+            out.append(command[i : i + 2])
+            i += 2
+            continue
+        elif c in "'\"":
+            quote = None if quote == c else (quote or c)
+        out.append(c)
+        i += 1
+    return "".join(out)
+
+
+# The longest word shlex reads itself. It builds a word one character at a
+# time, so its time grows with the square of the word's length (a 1 MB word
+# took 40 s, past the guard's timeout); a longer word goes in as a placeholder.
+LEX_WORD_MAX = 4096
+_PLACEHOLDER = "\x00"
+_PLACEHOLDER_RE = re.compile("\x00(\\d+)\x00")
+_WORD_STOP = frozenset(" \t\r\n;&|'\"\\")
+_DOUBLE_ESCAPE_RE = re.compile(r'\\([\\"])')
+
+
+def _placeholders(command: str) -> tuple[str, list[str]] | None:
+    """The line with each quoted span or unquoted word longer than
+    ``LEX_WORD_MAX`` swapped for a short placeholder, and the text each one
+    stands for, as shlex would read it; ``None`` when a quote never closes,
+    which shlex would reject after reading to the end.
+
+    The scan follows shlex's POSIX rules exactly: outside quotes a backslash
+    escapes the next character; inside single quotes nothing is special;
+    inside double quotes a backslash escapes only a double quote or itself.
+    """
+    out: list[str] = []
+    table: list[str] = []
+    i, n = 0, len(command)
+
+    def stand_in(text: str) -> str:
+        table.append(text)
+        return f"{_PLACEHOLDER}{len(table) - 1}{_PLACEHOLDER}"
+
+    while i < n:
+        c = command[i]
+        if c == "\\":
+            out.append(command[i : i + 2])
+            i += 2
+        elif c == "'":
+            j = command.find("'", i + 1)
+            if j == -1:
+                return None
+            inner = command[i + 1 : j]
+            out.append(stand_in(inner) if len(inner) > LEX_WORD_MAX else command[i : j + 1])
+            i = j + 1
+        elif c == '"':
+            j = i + 1
+            while j < n and command[j] != '"':
+                j += 2 if command[j] == "\\" and command[j + 1 : j + 2] in ('"', "\\") else 1
+            if j >= n:
+                return None
+            inner = command[i + 1 : j]
+            if len(inner) > LEX_WORD_MAX:
+                out.append(stand_in(_DOUBLE_ESCAPE_RE.sub(r"\1", inner)))
+            else:
+                out.append(command[i : j + 1])
+            i = j + 1
+        else:
+            j = i
+            while j < n and command[j] not in _WORD_STOP:
+                j += 1
+            if j == i:
+                out.append(c)
+                i += 1
+            else:
+                run = command[i:j]
+                out.append(stand_in(run) if len(run) > LEX_WORD_MAX else run)
+                i = j
+    return "".join(out), table
+
+
+def _shlex_words(command: str) -> list[str]:
+    lexer = shlex.shlex(command, posix=True, punctuation_chars=_PUNCTUATION)
+    lexer.whitespace = lexer.whitespace.replace("\n", "")
+    lexer.whitespace_split = True
+    lexer.commenters = ""
+    return list(lexer)
+
+
+def _fallback_words(command: str) -> list[str]:
+    # Quoting shlex cannot read (``$'...'``, an unclosed quote): split on
+    # whitespace, still one command per line.
+    return [w for line in command.split("\n") for w in (*line.split(), "\n")]
+
+
+@functools.lru_cache(maxsize=8)
+def _lex(command: str) -> tuple[tuple[str, ...], ...]:
+    command = join_lines(command)
+    swapped = None if _PLACEHOLDER in command else _placeholders(command)
     try:
-        lexer = shlex.shlex(command, posix=True, punctuation_chars=";&|")
-        lexer.whitespace_split = True
-        lexer.commenters = ""
-        words = list(lexer)
+        if swapped is None and _PLACEHOLDER not in command:
+            words = _fallback_words(command)
+        elif swapped is None:
+            words = _shlex_words(command)
+        else:
+            text, table = swapped
+            words = [
+                _PLACEHOLDER_RE.sub(lambda m: table[int(m.group(1))], w) if _PLACEHOLDER in w else w
+                for w in _shlex_words(text)
+            ]
     except ValueError:
-        words = command.split()
+        words = _fallback_words(command)
     out: list[list[str]] = [[]]
     for word in words:
-        if word in _SEPARATORS or (word and set(word) <= set(";&|")):
+        if word in _SEPARATORS or (word and set(word) <= set(_PUNCTUATION)):
             out.append([])
         else:
             out[-1].append(word)
-    return [s for s in out if s]
+    return tuple(tuple(s) for s in out if s)
 
 
-def _strip_prefix(words: list[str]) -> list[str]:
+def segments(command: str) -> list[list[str]]:
+    """Each simple command in a shell line, as its words. Best effort, never raises.
+
+    An unquoted newline ends a command, as ``;`` does, so each line of a script
+    is its own segment; a newline inside quotes stays in its word. A backslash
+    before a newline continues the line, as in the shell, except inside single
+    quotes. A line is lexed once however many rules read it (the guard reads one
+    up to three times in a call); each caller gets its own lists.
+    """
+    return [list(words) for words in _lex(command)]
+
+
+def strip_prefix(words: list[str]) -> list[str]:
     """Drop variable assignments and wrappers such as ``env`` or ``command``."""
     i = 0
     while i < len(words):
@@ -365,8 +589,10 @@ def _calls(command: str, program: str) -> list[list[str]]:
     if program not in command or not _program_word(program).search(command):
         return []
     calls = []
-    for segment in _segments(command):
-        words = _strip_prefix(segment)
+    # A here-document body is data: a commit message that says "git push" is
+    # not a push.
+    for segment in segments(strip_heredocs(command)):
+        words = strip_prefix(segment)
         if words and os.path.basename(words[0]) == program:
             calls.append(words[1:])
     return calls
@@ -426,11 +652,11 @@ def _human_only_in(words: list[str], module: str | None) -> str | None:
     return None
 
 
-def _nested(command: str) -> list[str]:
+def nested_shells(command: str) -> list[str]:
     """The shell text a line runs in a nested shell: the script after a ``-c``
     option (``bash -c``, ``script -qc``), and each ``$(...)`` or backtick body."""
     found = []
-    for words in _segments(command):
+    for words in segments(command):
         for i, word in enumerate(words[:-1]):
             if word.startswith("-") and not word.startswith("--") and "c" in word[1:]:
                 found.append(words[i + 1])
@@ -452,16 +678,16 @@ def human_only_command(command: object, module: str | None = None, depth: int = 
     the early, readable refusal; the CLI itself also refuses both outside a
     terminal.
     """
-    if not isinstance(command, str) or depth > _NEST_MAX:
+    if not isinstance(command, str) or depth > NEST_MAX:
         return None
     named = _program_word(CLI_NAME).search(command) or _SLASH in command
     if not named and not (module and module.rsplit(".", 1)[-1] in command):
         return None
-    for words in _segments(command):
+    for words in segments(command):
         sub = _human_only_in(words, module)
         if sub is not None:
             return sub
-    for inner in _nested(command):
+    for inner in nested_shells(command):
         sub = human_only_command(inner, module, depth + 1)
         if sub is not None:
             return sub

@@ -30,6 +30,7 @@ import subprocess
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TypeVar
 
@@ -54,6 +55,17 @@ STAGES_DIR = PLUGIN_ROOT / PLUGIN_STAGES_DIR
 CONFIG_SNAPSHOT = ri.SNAPSHOT_FILE
 # How many turns a stage may end without a token before the run pauses.
 MAX_ATTEMPTS = 3
+# Turn ends one wait on background tasks may last before a person is asked; a
+# turn end with nothing pending ends the wait and restarts the count. An
+# autoplan stage waits on about six to ten reviewers at a time.
+MAX_WAITS = 20
+# Turn ends a whole stage may spend waiting, across all its waits: three full
+# waits. It bounds an agent that never lets a wait end by keeping a trivial
+# command in the background.
+MAX_STAGE_WAITS = 3 * MAX_WAITS
+# How long the run must have seen a task pending before a pause at a cap marks
+# it stuck, so a resume releases it: longer than a reviewer runs.
+STUCK_AFTER_S = 30 * 60
 DONE_TOKEN = "<promise>STAGE DONE</promise>"
 PAUSE_TOKEN = "<promise>NEEDS HUMAN</promise>"
 ACTIVE = ri.ACTIVE
@@ -192,7 +204,7 @@ def _initial_state(
         "status": "running",
         "attempts": dict.fromkeys(names, 0),
         "total_attempts": 0,
-        "caps": {"attempts": MAX_ATTEMPTS},
+        "caps": {"attempts": MAX_ATTEMPTS, "waits": MAX_WAITS, "stage_waits": MAX_STAGE_WAITS},
         "revision": 1,
         "session_id": session_id,
         "history": [{"at": now, "event": "start", "stage": names[0]}],
@@ -207,6 +219,22 @@ def _initial_state(
         "guard_files_seen": [],
         "guard_pending": None,
         "declared_loop_edits": [],
+        # The background tasks the run waits on, since when, whether they are
+        # all shell commands, how many turn ends each stage spent waiting, and
+        # the tasks a person released.
+        "waiting_on": [],
+        "waiting_since": None,
+        "waiting_shell_only": False,
+        # A file the harness writes while the session works, so the supervisor
+        # can tell a stuck wait from a long turn a notification woke.
+        "activity_path": None,
+        "wait_turns": dict.fromkeys(names, 0),
+        "stage_waits": dict.fromkeys(names, 0),
+        "wait_capped": False,
+        # When the run first saw each pending task: a resume releases only the
+        # ones pending 30+ min.
+        "task_since": {},
+        "released_tasks": [],
         "plan_path": None,
         "pr_url": None,
         "last_block_revision": None,
@@ -422,15 +450,70 @@ def _approve_plan(state: dict) -> None:
     state["declared_loop_edits"] = state.pop("pending_loop_edits")
 
 
+def clear_wait(state: dict) -> None:
+    """End the run's wait: no task, no start time, not shell-only."""
+    state["waiting_on"] = []
+    state["waiting_since"] = None
+    state["waiting_shell_only"] = False
+    state["task_since"] = {}
+
+
+def task_ages(state: dict) -> dict[str, float | None]:
+    """Each waited-on task's age in seconds since the run first saw it pending."""
+    now = datetime.now(UTC)
+    seen = state.get("task_since") or {}
+    ages: dict[str, float | None] = {}
+    for task in state.get("waiting_on") or []:
+        since = ps.parse_iso(seen.get(task))
+        ages[task] = None if since is None else (now - since).total_seconds()
+    return ages
+
+
+def stuck_tasks(state: dict) -> list[str]:
+    """The waited-on tasks pending ``STUCK_AFTER_S`` or more: the only ones a
+    resume may release. Turn counts and refusals are the agent's to make in
+    seconds; a task's own age is not."""
+    return [t for t, age in task_ages(state).items() if age is not None and age >= STUCK_AFTER_S]
+
+
+def _release(state: dict) -> None:
+    """Stop waiting on the tasks stuck at this moment: a person says they will not report.
+
+    Judged at the resume, so a task that grew old during a pause is released
+    and one an agent started seconds ago never is. Younger tasks stay waited
+    on with their first-seen time. The list is never trimmed: a released id
+    dropped from it would come back as a wait, since its launch stays in the
+    session's transcript.
+    """
+    released = stuck_tasks(state)
+    state["released_tasks"] = list(dict.fromkeys([*(state.get("released_tasks") or []), *released]))
+    young = [t for t in state.get("waiting_on") or [] if t not in released]
+    kept = {t: v for t, v in (state.get("task_since") or {}).items() if t in young}
+    if young:
+        state["waiting_on"] = young
+        state["task_since"] = kept
+    else:
+        clear_wait(state)
+    state["wait_capped"] = False
+
+
 def resume(run: Run, by: str, session_id: str | None = None) -> str:
     """Resume a paused run for a person, and return the text the agent continues with.
 
     Only a person's own action reaches this: the harness's prompt hook, or the
     CLI in a terminal. A guard pause accepts the changed files as the new
-    baseline. Any other pause restarts the current stage's attempts.
+    baseline. Any other pause restarts the current stage's attempts and waits.
     ``session_id`` comes from the harness, never from an argument the agent can
     type: given from another session, it binds the run to that session, which is
     how a person adopts a run whose session ended, running or paused.
+
+    Background tasks are released by a resume after a pause at the wait or
+    attempts cap beside them (``wait_capped``), or by a resume that does not
+    adopt the run while it is running and waiting; either way only the tasks
+    pending ``STUCK_AFTER_S`` or more at that moment (``stuck_tasks``). Any
+    other resume keeps waiting on them, since a reviewer that still runs will
+    report. Adopting a running run forgets its
+    wait without releasing it: the new session's transcript says what it runs.
     """
 
     def apply(state: dict) -> str:
@@ -440,27 +523,39 @@ def resume(run: Run, by: str, session_id: str | None = None) -> str:
                 {"at": ri.now_iso(), "event": "adopt", "from": state.get("session_id")}
             )
             state["session_id"] = session_id
+        stage = state["current_stage"]
         if state["status"] == "running" and adopting:
-            state["attempts"][state["current_stage"]] = 0
+            state["attempts"][stage] = 0
+            state.setdefault("wait_turns", {})[stage] = 0
+            state.setdefault("stage_waits", {})[stage] = 0
+            clear_wait(state)
             return state_text(run, state)
-        if state["status"] != "awaiting_human":
+        releasing = state["status"] == "running" and bool(state.get("waiting_on"))
+        if not releasing and state["status"] != "awaiting_human":
             raise RunError(
                 f"nothing to resume: the run is {state['status']}. Fix: delivery-loop status."
             )
-        if state.get("paused_reason") == "guard_changed" and isinstance(
-            state.get("guard_pending"), dict
-        ):
-            state["guard_baseline"] = state["guard_pending"]
-            state["guard_files_seen"].append(state["guard_pending"])
-        if state.get("paused_reason") == "gate" and "pending_loop_edits" in state:
-            _approve_plan(state)
-        state["guard_pending"] = None
-        state["status"] = "running"
-        state["attempts"][state["current_stage"]] = 0
+        if releasing:
+            _release(state)
+            reason = "waiting"
+        else:
+            if state.get("paused_reason") == "guard_changed" and isinstance(
+                state.get("guard_pending"), dict
+            ):
+                state["guard_baseline"] = state["guard_pending"]
+                state["guard_files_seen"].append(state["guard_pending"])
+            if state.get("paused_reason") == "gate" and "pending_loop_edits" in state:
+                _approve_plan(state)
+            if state.get("wait_capped"):
+                _release(state)
+            state["guard_pending"] = None
+            state["status"] = "running"
+            reason = state["paused_reason"]
+        state["attempts"][stage] = 0
+        state.setdefault("wait_turns", {})[stage] = 0
+        state.setdefault("stage_waits", {})[stage] = 0
         state["resumed_by"] = by
-        state["history"].append(
-            {"at": ri.now_iso(), "event": "resume", "by": by, "reason": state["paused_reason"]}
-        )
+        state["history"].append({"at": ri.now_iso(), "event": "resume", "by": by, "reason": reason})
         state["paused_reason"] = None
         state["pending_question"] = None
         return state_text(run, state)
@@ -492,6 +587,13 @@ def status_text(run: Run) -> str:
             lines.append(f"Resume accepts them: {run.config.resume_command}")
         elif state.get("pending_question"):
             lines.append(state["pending_question"].strip()[-500:])
+    if state.get("waiting_on"):
+        used = (state.get("wait_turns") or {}).get(state["current_stage"], 0)
+        cap = (state.get("caps") or {}).get("waits", MAX_WAITS)
+        lines.append(
+            f"Waiting on {', '.join(state['waiting_on'])} since {state.get('waiting_since')} "
+            f"(wait {used} of {cap})"
+        )
     if state.get("plan_path"):
         edits = state.get("declared_loop_edits") or []
         lines.append(f"Plan: {state['plan_path']}")

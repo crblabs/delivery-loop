@@ -1050,3 +1050,49 @@ def test_a_file_that_breaks_the_parser_is_refused(tmp_path: Path, text: str) -> 
     # why_new=the native adversarial pass crashed loop-scan this way; seam=none
     with pytest.raises(cfg.ConfigError):
         cfg.load_config(write(tmp_path, text))
+
+
+def test_a_stage_may_allow_shell_waits() -> None:
+    # Value: protects=the per-stage escape hatch for a dev server check; fails_when=the key
+    # is dropped or accepts a non-boolean; why_new=CRB-28 DX #57; seam=none
+    config = cfg.from_mapping({"stages": [{"name": "qa", "shell_waits": True}, {"name": "x"}]})
+    assert config.stage("qa").shell_waits is True
+    assert config.stage("x").shell_waits is False
+    assert cfg.from_dict(cfg.to_dict(config)) == config
+    with pytest.raises(cfg.ConfigError, match="shell_waits takes true or false"):
+        cfg.from_mapping({"stages": [{"name": "qa", "shell_waits": "yes"}]})
+
+
+def test_the_harness_tool_names_have_defaults_and_can_be_set() -> None:
+    assert cfg.DEFAULTS.stop_task_tool == "TaskStop"
+    assert cfg.DEFAULTS.background_flag == "run_in_background"
+    config = cfg.from_mapping({"harness": {"stop_task_tool": "KillTask"}})
+    assert config.stop_task_tool == "KillTask"
+    with pytest.raises(cfg.ConfigError):
+        cfg.from_mapping({"harness": {"background_flag": ""}})
+
+
+def test_the_supervisor_wait_limits_have_defaults_and_can_be_set() -> None:
+    # Value: protects=a host sets how long a wait may last before it is escalated, in
+    # loop.toml; fails_when=the [supervisor] keys are ignored or a bad value is accepted;
+    # why_new=CRB-28 wait time limit TODO; seam=none
+    assert cfg.DEFAULTS.wait_stale_after_s == 3600 and cfg.DEFAULTS.shell_wait_stale_after_s == 900
+    table = {"wait_stale_after_seconds": 1800, "shell_wait_stale_after_seconds": 300}
+    config = cfg.from_mapping({"supervisor": table})
+    assert (config.wait_stale_after_s, config.shell_wait_stale_after_s) == (1800, 300)
+    assert cfg.from_dict(cfg.to_dict(config)) == config
+    for bad in ("10", 0, True, 1.5):
+        with pytest.raises(cfg.ConfigError):
+            cfg.from_mapping({"supervisor": {"wait_stale_after_seconds": bad}})
+
+
+def test_loop_scan_reads_each_run_s_wait_limit(tmp_path: Path) -> None:
+    from datetime import timedelta
+
+    config = cfg.from_mapping({"supervisor": {"wait_stale_after_seconds": 600}})
+    now = datetime(2026, 9, 16, 10, 0, 0, tzinfo=UTC)
+    at = (now - timedelta(minutes=20)).isoformat()
+    state = {"status": "running", "waiting_on": ["a1"], "waiting_since": at, "updated_at": at}
+    assert ss._wait_stale(state, now, config) is True
+    assert ss._wait_stale(state, now, cfg.DEFAULTS) is False
+    assert ss._wait_stale(state, now, cfg.DEFAULTS, wait_stale_after=600) is True

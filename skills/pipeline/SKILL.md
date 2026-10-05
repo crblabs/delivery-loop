@@ -39,6 +39,20 @@ End the last turn of a stage with exactly one of these as the final line:
 A turn that ends without a token is sent back with the stage's instructions. A
 few turns in a row without one pause the run for a person.
 
+## Waiting for background work
+
+If you started background work (an agent, or a command run in the background),
+end your turn without a token, for example with one line saying what you wait
+for. The loop waits for it, and its notification wakes you. Do not wait in the
+shell: a foreground `sleep`, `wait`, polling loop or `tail -f` is denied. Write
+`<promise>STAGE DONE</promise>` only once every background task has reported or
+been stopped with `TaskStop`. A background command counts as waited on only in
+the turn that started it; an agent counts until it reports. A command that
+never ends on its own, such as a dev server, never wakes you: stop it with
+`TaskStop` before you end a turn to wait, or the run waits until a person looks.
+(`TaskStop` is Claude Code's name; a loop.toml can name another harness's tool
+as `stop_task_tool`, and the loop's refusal text names it.)
+
 ## What the loop guards
 
 - Some files are enforcement files: `loop.toml`, `.git`, and

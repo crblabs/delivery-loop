@@ -522,3 +522,395 @@ def test_the_dash_base_is_origin_head_when_the_repository_has_one(
     assert te._dash_base(clone, {"start_head": "abc"}) == "origin/HEAD"
     assert te._dash_base(origin, {"start_head": "abc"}) == "abc"
     assert te._dash_base(origin, {}) is None
+
+
+# --- Waiting on background tasks ----------------------------------------------
+
+
+def _wait(run: rs.Run, message: str, tasks: tuple[str, ...], session: str = "s1"):
+    return te.handle_turn_end(te.TurnEnd(session, message, "p1", tasks), run)
+
+
+def test_a_turn_that_waits_on_a_background_task_ends_without_an_attempt(start_run) -> None:
+    # Value: protects=the CRB-28 acceptance: an obedient wait is neither refused nor
+    # counted; fails_when=a no-token turn with a running task is blocked or counted;
+    # why_new=CRB-28; seam=none
+    run, _ = start_run()
+    verdict = _wait(run, "Waiting for the spec reviewer.", ("a1",))
+    assert verdict == te.TurnEndVerdict(block=False, tasks=("a1",))
+    state = _state(run)
+    assert state["attempts"]["autoplan"] == 0 and state["total_attempts"] == 0
+    assert state["waiting_on"] == ["a1"] and state["waiting_since"] is not None
+    assert state["wait_turns"]["autoplan"] == 1
+    assert state["history"][-1] | {"at": None} == {
+        "at": None,
+        "event": "wait",
+        "stage": "autoplan",
+        "tasks": ["a1"],
+    }
+
+
+def test_the_wait_clears_when_the_task_reports(start_run) -> None:
+    run, _ = start_run()
+    _wait(run, "Waiting.", ("a1",))
+    verdict = _wait(run, "still thinking", ())
+    assert verdict.block and verdict.reinject.startswith("The stage is not finished")
+    state = _state(run)
+    assert state["waiting_on"] == [] and state["waiting_since"] is None
+
+
+def test_done_is_refused_while_a_background_task_runs(start_run, tmp_path) -> None:
+    # Value: protects=the next stage never starts beside a running reviewer; fails_when=
+    # STAGE DONE advances with a task pending; why_new=CRB-28; seam=none
+    run, _ = start_run()
+    plan = tmp_path / "plan.md"
+    plan.write_text("Plan.\n", encoding="utf-8")
+    verdict = _wait(run, f"PLAN: {plan}\n{DONE}", ("b1",))
+    assert verdict.block
+    assert "a background task is still running (b1)" in verdict.reinject
+    assert DEFAULTS.stop_task_tool in verdict.reinject
+    state = _state(run)
+    assert state["current_stage"] == "autoplan" and state["attempts"]["autoplan"] == 1
+
+
+def test_a_refused_stage_done_at_the_attempt_cap_never_releases_a_running_task(start_run) -> None:
+    # Value: protects=review red team: one early STAGE DONE after two misses must not let a
+    # resume release a reviewer that still works, so the stage advances beside it;
+    # fails_when=_no_token sets wait_capped; why_new=review; seam=none
+    run, _ = start_run()
+    for _ in range(2):
+        assert _end(run, "thinking").block
+    assert _wait(run, "Waiting.", ("a1", "a2")).waiting
+    verdict = _wait(run, DONE, ("a2",))
+    assert verdict.pause_reason == "no_message"
+    card = _state(run)["pending_question"]
+    assert "turns that were not accepted (last: a background task is still running" in card
+    assert "Younger, still waited on: a2 (0 min)" in card
+    rs.resume(run, "person")
+    state = _state(run)
+    assert state["released_tasks"] == [] and state["waiting_on"] == ["a2"]
+    assert _wait(run, DONE, ("a2",)).block
+
+
+def test_the_wait_cap_pauses_with_a_card_naming_the_tasks(start_run) -> None:
+    # Value: protects=the interim wait limit and its card; fails_when=waits never stop or
+    # stop early; why_new=CRB-28; seam=none
+    run, _ = start_run()
+    for _ in range(rs.MAX_WAITS):
+        assert _wait(run, "Waiting.", ("a1", "b2")).waiting
+    _age_tasks(run, 40, "a1", "b2")
+    verdict = _wait(run, "Waiting.", ("a1", "b2"))
+    assert verdict.pause_reason == "no_message" and not verdict.waiting
+    state = _state(run)
+    assert state["wait_capped"] is True
+    assert state["attempts"]["autoplan"] == 0 and state["total_attempts"] == 0
+    card = state["pending_question"]
+    assert f"waited {rs.MAX_WAITS} turns" in card and "(a1, b2)" in card
+    assert "a1 (40 min), b2 (40 min)" in card
+    assert DEFAULTS.resume_command in card and DEFAULTS.abort_command in card
+
+
+def test_waiting_since_runs_from_the_start_of_a_wait_until_nothing_is_pending(start_run) -> None:
+    # Value: protects=a task that never reports cannot hide behind newer ones from the
+    # supervisor's stale wait; fails_when=a new task restarts the clock; why_new=review
+    # adversarial; seam=none
+    run, _ = start_run()
+    _wait(run, "Waiting.", ("a1", "b2"))
+    first = _state(run)["waiting_since"]
+    _wait(run, "Waiting.", ("a1", "c3"))
+    assert _state(run)["waiting_since"] == first
+    _end(run, "thinking")
+    assert _state(run)["waiting_since"] is None
+
+
+def test_the_wait_count_restarts_when_nothing_is_pending(start_run) -> None:
+    # Value: protects=review red team: the cap bounds one wait, so a stage with several review
+    # rounds is not paused while healthy; fails_when=wait_turns counts the whole stage;
+    # why_new=review; seam=none
+    run, _ = start_run()
+    for _ in range(rs.MAX_WAITS):
+        assert _wait(run, "Waiting.", ("a1",)).waiting
+    assert _end(run, "Reviewed; next round.").block
+    assert _state(run)["wait_turns"]["autoplan"] == 0
+    for _ in range(rs.MAX_WAITS):
+        assert _wait(run, "Waiting.", ("b1",)).waiting
+
+
+def test_a_guard_pause_records_what_the_run_waits_on(start_run) -> None:
+    # Value: protects=the waiting fields are current whatever the verdict; fails_when=the
+    # record moves after the guard check; why_new=review plan audit; seam=none
+    run, worktree = start_run()
+    _end(run, "thinking")
+    (worktree / "loop.toml").write_text("# changed\n", encoding="utf-8")
+    verdict = _wait(run, "Waiting.", ("a1",))
+    assert verdict.pause_reason == "guard_changed"
+    assert _state(run)["waiting_on"] == ["a1"]
+
+
+def test_a_pause_still_records_what_the_run_waits_on(start_run) -> None:
+    run, _ = start_run()
+    verdict = _wait(run, CARD, ("a1",))
+    assert verdict.pause_reason == "needs_human"
+    assert _state(run)["waiting_on"] == ["a1"]
+
+
+def test_released_tasks_are_not_waited_on_again(start_run) -> None:
+    run, _ = start_run()
+    _wait(run, "Waiting.", ("a1",))
+    _age_tasks(run, 45, "a1")
+    rs.resume(run, "person", "s1")
+    assert _state(run)["released_tasks"] == ["a1"]
+    assert _wait(run, "still thinking", ("a1",)).block
+
+
+def test_the_wait_count_restarts_in_the_next_stage(start_run, tmp_path) -> None:
+    run, _ = start_run()
+    _wait(run, "Waiting.", ("a1",))
+    plan = tmp_path / "plan.md"
+    plan.write_text("Plan.\n", encoding="utf-8")
+    assert _wait(run, f"PLAN: {plan}\n{DONE}", ()).pause_reason == "gate"
+    assert _state(run)["wait_turns"]["implement"] == 0
+
+
+def test_a_run_started_before_the_wait_fields_can_still_wait(start_run) -> None:
+    # Value: protects=runs in flight when the plugin updates; fails_when=the rules index a
+    # field an old state lacks; why_new=CRB-28 CEO Sec 9; seam=none
+    run, _ = start_run()
+
+    def strip(state: dict) -> None:
+        for key in ("waiting_on", "waiting_since", "wait_turns", "wait_capped", "released_tasks"):
+            state.pop(key)
+        state["caps"] = {"attempts": rs.MAX_ATTEMPTS}
+
+    rs.update(run, strip)
+    assert _wait(run, "Waiting.", ("a1",)).waiting
+    assert _state(run)["wait_turns"] == {"autoplan": 1}
+
+
+def test_a_wait_on_shell_commands_alone_is_marked_for_the_faster_alarm(start_run) -> None:
+    # Value: protects=review D5: a dev server's wait reaches a person sooner; fails_when=
+    # the shell-only flag is lost or set beside an agent; why_new=review; seam=none
+    run, _ = start_run()
+    te.handle_turn_end(te.TurnEnd("s1", "Waiting.", "p1", ("b1",), ("b1",)), run)
+    assert _state(run)["waiting_shell_only"] is True
+    te.handle_turn_end(te.TurnEnd("s1", "Waiting.", "p1", ("a1", "b1"), ("b1",)), run)
+    assert _state(run)["waiting_shell_only"] is False
+    _end(run, "thinking")
+    assert _state(run)["waiting_shell_only"] is False
+
+
+def test_an_unread_task_list_refuses_stage_done_and_keeps_the_wait(start_run) -> None:
+    # Value: protects=review D11: a transcript the adapter could not read never lets the
+    # stage advance beside a reviewer, nor resets the wait clock; fails_when=a failed scan
+    # reads as no task; why_new=review red team; seam=none
+    run, _ = start_run()
+    assert _wait(run, "Waiting.", ("a1",)).waiting
+    since = _state(run)["waiting_since"]
+    unknown = te.TurnEnd("s1", DONE, "p1", (), (), tasks_unknown=True)
+    verdict = te.handle_turn_end(unknown, run)
+    assert verdict.block and "could not read which background tasks" in verdict.reinject
+    state = _state(run)
+    assert state["waiting_on"] == ["a1"] and state["waiting_since"] == since
+    assert state["attempts"]["autoplan"] == 1
+
+
+def _age_tasks(run: rs.Run, minutes: int, *tasks: str) -> None:
+    """Move when the run first saw these tasks pending back in time."""
+    from datetime import UTC, datetime, timedelta
+
+    at = (datetime.now(UTC) - timedelta(minutes=minutes)).isoformat()
+    rs.update(run, lambda s: s["task_since"].update(dict.fromkeys(tasks, at)))
+
+
+def _refuse_to_pause(run: rs.Run, tasks: tuple[str, ...]) -> None:
+    for _ in range(3):
+        _wait(run, DONE, tasks)
+
+
+def test_an_attempts_pause_releases_only_old_tasks(start_run) -> None:
+    # Value: protects=a task whose notification was lost is released even when the agent
+    # keeps writing STAGE DONE, and a reviewer started beside it never is; fails_when=a
+    # release ignores each task's own age; why_new=ship review red team; seam=none
+    run, _ = start_run()
+    _wait(run, "Waiting.", ("a1", "b1"))
+    _age_tasks(run, 45, "a1")
+    _refuse_to_pause(run, ("a1", "b1"))
+    card = _state(run)["pending_question"]
+    assert "Pending 30 min or more now: a1 (45 min)" in card and "may still be running" in card
+    assert "Younger, still waited on: b1 (0 min)" in card
+    assert DEFAULTS.resume_command in card
+    rs.resume(run, "person")
+    state = _state(run)
+    assert state["released_tasks"] == ["a1"] and state["waiting_on"] == ["b1"]
+    assert list(state["task_since"]) == ["b1"]
+    assert _wait(run, DONE, ("a1", "b1")).block and _state(run)["waiting_on"] == ["b1"]
+
+
+def test_quick_pauses_and_resumes_never_release_a_reviewer_that_still_runs(start_run) -> None:
+    # Value: protects=ship red team: no sequence of quick refusals and resumes, including
+    # a second resume while the run is idle and waiting, releases a young reviewer;
+    # fails_when=any resume releases by count instead of age; why_new=review; seam=none
+    run, _ = start_run()
+    _refuse_to_pause(run, ("a1",))
+    rs.resume(run, "person")
+    _wait(run, "Waiting.", ("a1",))
+    rs.resume(run, "person")
+    _refuse_to_pause(run, ("a1",))
+    rs.resume(run, "person")
+    assert _state(run)["released_tasks"] == []
+    assert _wait(run, DONE, ("a1",)).block
+
+
+def test_a_task_started_beside_an_old_wait_is_never_released_by_it(start_run) -> None:
+    # Value: protects=ship review: a reviewer launched seconds ago cannot borrow the age of
+    # an older wait; fails_when=the age is the wait's, not the task's; why_new=ship red
+    # team; seam=none
+    from datetime import UTC, datetime, timedelta
+
+    run, _ = start_run()
+    _wait(run, "Waiting.", ("a1",))
+    old = (datetime.now(UTC) - timedelta(minutes=45)).isoformat()
+    rs.update(run, lambda s: s.update(waiting_since=old))
+    _refuse_to_pause(run, ("a1", "b1"))
+    rs.resume(run, "person")
+    assert _state(run)["released_tasks"] == []
+    assert _wait(run, DONE, ("b1",)).block
+
+
+def test_many_quick_waits_never_release_a_reviewer_that_still_runs(start_run) -> None:
+    # Value: protects=ship red team: an agent that reaches the wait cap in seconds (a quick
+    # background command each turn) cannot get a live reviewer released; fails_when=the
+    # wait cap releases every pending task; why_new=ship review; seam=none
+    run, _ = start_run()
+    for i in range(rs.MAX_WAITS + 1):
+        _wait(run, "Waiting.", ("r1", f"sh{i}"))
+    state = _state(run)
+    assert state["status"] == "awaiting_human"
+    assert DEFAULTS.resume_command in state["pending_question"]
+    rs.resume(run, "person")
+    assert _state(run)["released_tasks"] == []
+    assert _wait(run, DONE, ("r1",)).block
+
+
+def test_a_wait_cap_releases_the_old_task_and_keeps_the_young_one(start_run) -> None:
+    run, _ = start_run()
+    for _ in range(rs.MAX_WAITS):
+        _wait(run, "Waiting.", ("a1", "b1"))
+    _age_tasks(run, 45, "a1")
+    _wait(run, "Waiting.", ("a1", "b1"))
+    rs.resume(run, "person")
+    state = _state(run)
+    assert state["released_tasks"] == ["a1"] and state["waiting_on"] == ["b1"]
+
+
+def test_a_task_that_grows_old_during_a_pause_is_released_by_the_resume(start_run) -> None:
+    # Value: protects=ship red team: the lost-notification case is released once the task is
+    # 30 min old, even if it was younger when the run paused; fails_when=stuck is decided
+    # at the pause; why_new=ship review; seam=none
+    run, _ = start_run()
+    _wait(run, "Waiting.", ("lost",))
+    _age_tasks(run, 20, "lost")
+    _refuse_to_pause(run, ("lost",))
+    _age_tasks(run, 60, "lost")
+    rs.resume(run, "person")
+    assert _state(run)["released_tasks"] == ["lost"]
+
+
+@pytest.mark.parametrize(("minutes", "released"), [(29, []), (30, ["a1"])])
+def test_a_task_is_released_from_thirty_minutes_on(start_run, minutes: int, released) -> None:
+    # Value: protects=the STUCK_AFTER_S boundary; fails_when=the floor or its >= moves;
+    # why_new=mutation check; seam=none
+    run, _ = start_run()
+    _wait(run, "Waiting.", ("a1",))
+    _age_tasks(run, minutes, "a1")
+    _refuse_to_pause(run, ("a1",))
+    rs.resume(run, "person")
+    assert _state(run)["released_tasks"] == released
+
+
+def test_a_task_keeps_its_first_seen_time_while_pending(start_run) -> None:
+    run, _ = start_run()
+    _wait(run, "Waiting.", ("a1",))
+    first = _state(run)["task_since"]["a1"]
+    _wait(run, "Waiting.", ("a1", "b1"))
+    since = _state(run)["task_since"]
+    assert since["a1"] == first and set(since) == {"a1", "b1"}
+    _refuse_to_pause(run, ("a1", "b1"))
+    rs.resume(run, "person")
+    assert _state(run)["task_since"]["a1"] == first
+    _wait(run, "Waiting.", ("b1",))
+    assert set(_state(run)["task_since"]) == {"b1"}
+    _end(run, "thinking")
+    assert _state(run)["task_since"] == {}
+
+
+def test_a_turn_end_records_the_session_s_activity_file(start_run) -> None:
+    run, _ = start_run()
+    te.handle_turn_end(te.TurnEnd("s1", "x", "p1", activity_path="/t.jsonl"), run)
+    assert _state(run)["activity_path"] == "/t.jsonl"
+
+
+def test_a_resume_after_the_wait_cap_lets_a_new_wait_through(start_run) -> None:
+    # Value: protects=after a wait-cap resume the stage gets a fresh wait count, so a new
+    # reviewer's wait is let through; fails_when=resume stops resetting wait_turns and the
+    # next wait re-pauses at once; why_new=no test waited again after a cap resume; seam=none
+    run, _ = start_run()
+    for _ in range(rs.MAX_WAITS):
+        _wait(run, "Waiting.", ("a1",))
+    _age_tasks(run, 40, "a1")
+    _wait(run, "Waiting.", ("a1",))
+    assert _state(run)["wait_capped"] is True
+    rs.resume(run, "person")
+    verdict = _wait(run, "Waiting on the next reviewer.", ("c3",))
+    assert verdict.waiting and verdict.tasks == ("c3",)
+    assert _state(run)["wait_turns"]["autoplan"] == 1
+
+
+def test_a_released_task_is_forgotten_once_the_transcript_drops_it(start_run) -> None:
+    # Value: protects=released_tasks stays small on long runs without ever letting a
+    # released task back in; fails_when=ids are pruned while still pending, or never;
+    # why_new=accepted risk: released ids never trimmed; seam=none
+    run, _ = start_run()
+    _wait(run, "Waiting.", ("a1", "b1"))
+    _age_tasks(run, 45, "a1")
+    _refuse_to_pause(run, ("a1", "b1"))
+    rs.resume(run, "person")
+    assert _state(run)["released_tasks"] == ["a1"]
+    _wait(run, "Waiting.", ("a1", "b1"))
+    assert _state(run)["released_tasks"] == ["a1"]
+    unknown = te.TurnEnd("s1", "Waiting.", "p1", (), (), tasks_unknown=True)
+    te.handle_turn_end(unknown, run)
+    assert _state(run)["released_tasks"] == ["a1"]
+    _wait(run, "Waiting.", ("b1",))
+    assert _state(run)["released_tasks"] == []
+
+
+def test_a_stage_spends_a_bounded_number_of_turn_ends_waiting(start_run) -> None:
+    # Value: protects=an agent that keeps a trivial command in the background cannot wait
+    # forever across many short waits; fails_when=only one wait is bounded; why_new=accepted
+    # risk: restarting trivial background commands; seam=none
+    run, _ = start_run()
+    rs.update(run, lambda s: s["caps"].update(stage_waits=4))
+    for i in range(4):
+        assert _wait(run, "Waiting.", (f"sh{i}",)).waiting
+    verdict = _wait(run, "Waiting.", ("sh9",))
+    assert verdict.pause_reason == "no_message"
+    assert "spent 4 turn ends waiting" in _state(run)["pending_question"]
+    rs.resume(run, "person")
+    assert _state(run)["stage_waits"]["autoplan"] == 0
+
+
+def test_the_stage_wait_count_survives_a_wait_that_ends(start_run) -> None:
+    # Value: protects=caps.stage_waits counts across waits: a turn end with nothing pending
+    # restarts wait_turns only; fails_when=the empty turn end also zeroes stage_waits;
+    # why_new=the stage cap test never lets a wait end; seam=none
+    run, _ = start_run()
+    rs.update(run, lambda s: s["caps"].update(stage_waits=4))
+    for i in range(2):
+        assert _wait(run, "Waiting.", (f"sh{i}",)).waiting
+    assert _end(run, "Reviewed; next round.").block
+    assert _state(run)["wait_turns"]["autoplan"] == 0
+    assert _state(run)["stage_waits"]["autoplan"] == 2
+    for i in range(2, 4):
+        assert _wait(run, "Waiting.", (f"sh{i}",)).waiting
+    assert _wait(run, "Waiting.", ("sh9",)).pause_reason == "no_message"

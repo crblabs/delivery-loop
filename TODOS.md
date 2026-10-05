@@ -106,3 +106,45 @@ stops fixing after three cycles, so they are listed here.
   python3 3.10 or older first on PATH.
 - **Context:** `adapters/claude_code/hooks.py` `_pause_note`;
   `adapters/claude_code/bootstrap.py` `old_python_hook`.
+
+## End a background wait past its limit (CRB-28 follow-up, with CRB-10)
+
+- **What:** a timer outside the session that acts on a run whose wait passed
+  its limit, rather than only escalating it.
+- **Why:** CRB-28 escalates a stuck wait (`waiting_stale`, with the limits in
+  `[supervisor]` of `loop.toml`), but nothing outside the session can end or
+  release it; a person must resume or abort.
+- **Pros:** an unattended run stops holding a slot on a dead task.
+- **Cons:** the actor needs a person's authority (resume and abort are
+  person-only); a limit too short cuts real long reviews.
+- **Context:** CRB-10 is the place for the timer; CRB-28 provides
+  `waiting_since`, per-task `task_since`, and the escalation.
+- **Effort:** M (human) / S (CC). **Priority:** P2.
+- **Depends on:** CRB-28, CRB-10.
+
+## Known gaps from the CRB-28 ship review (CRB-28 follow-up)
+
+- **What:** the last ship review's findings, shipped as known issues.
+  - P1: a released agent that SendMessage resumes stays released, so STAGE DONE
+    can advance beside it; give a resumed agent a new instance id.
+  - P1: the first run's completion delivered after a SendMessage resume marks
+    the resumed agent finished; count launches against deliveries per task.
+  - P1: a Monitor whose event text or description contains `<status>...</status>`
+    counts as finished; read the status from the notification header only.
+  - P2: one shell word built from many short quoted pieces is still lexed in
+    quadratic time (37 s at 2 MB); placeholder the whole word. A NUL byte in
+    the line turns the placeholder pass off; pick a sentinel the line lacks.
+  - P2: the scan cache in the run dir is trusted as written (edit it from the
+    shell to hide a task), follows symlinks, and keeps no progress when a scan
+    runs past its budget; check it against a digest in state.json and use the
+    run dir's safe read and write helpers.
+  - P3: a busy Monitor reaches the 20-wait limit while healthy; the scanner
+    hardcodes Bash and run_in_background instead of the configured flag; the
+    scan cache keeps commands that never launched; `--wait-stale-after-seconds 0`
+    is ignored instead of refused.
+- **Why:** each can let a stage advance beside running work or stall the guard;
+  found by the CRB-28 ship review on 2026-10-05 and deferred to ship the branch.
+- **Context:** `adapters/claude_code/transcript_tasks.py`, `core/run_index.py`,
+  `core/turn_end.py`, `core/supervisor_scan.py`.
+- **Effort:** M / S. **Priority:** P1.
+- **Depends on:** CRB-28.

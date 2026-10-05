@@ -1,0 +1,2 @@
+{"type": "user", "isSidechain": false, "timestamp": "{T+70}", "sessionId": "s1", "message": {"role": "user", "content": [{"tool_use_id": "toolu_x", "type": "tool_result", "content": "<task-notification><task-id>baa2q82i2</task-id></task-notification>"}]}, "toolUseResult": {"stdout": "<task-id>baa2q82i2</task-id>", "stderr": "", "interrupted": false, "isImage": false, "noOutputExpected": false}}
+{"type": "user", "isSidechain": false, "timestamp": "{T+71}", "sessionId": "s1", "message": {"role": "user", "content": "<task-id>baa2q82i2</task-id>"}}

@@ -1,7 +1,7 @@
 """What the loop allows before a tool runs: capability 2 of ``docs/adapter-contract.md``.
 
 ``handle_pre_tool`` decides one tool call of a session in an active run's
-worktree. It holds three rules:
+worktree. It holds four rules:
 
   * An edit may not write where the run's own rules live: the plugin, the
     harness's user directory (``config.HARNESS_HOME``, which holds the user
@@ -20,6 +20,14 @@ worktree. It holds three rules:
     push of another branch, ``--all``, ``--mirror``, ``--delete`` or a ``+``
     refspec is denied. This policy reads the command text, so it is advisory: a
     determined shell line can hide a push. The README says so.
+
+  * A run never waits in a foreground shell: ``sleep``, ``wait``, ``watch``,
+    ``tail -f``, ``gh run watch``, ``gh pr checks --watch`` and polling loops
+    built from them are denied in the run's own session, because a foreground
+    wait holds the turn open and the harness holds task notifications until it
+    returns. Work started in the background, and a stage that sets
+    ``shell_waits``, are allowed. ``wait_command`` reads the lexed words, so a
+    commit message or an ``echo`` that only mentions a wait does not match.
 
 Nothing else in a shell command is checked here; the turn-end guard map catches
 a shell edit of a guarded file after the fact.
@@ -84,7 +92,8 @@ class PreToolCall:
     writes ``path``, ``shell`` for one that runs ``command``, ``publish`` for one
     that writes to the remote repository itself, ``other`` otherwise;
     ``tool_name`` is the harness's own name, for messages only. ``branch`` is the
-    branch a ``publish`` call names, if it names one."""
+    branch a ``publish`` call names, if it names one. ``background`` says the
+    harness runs the command in the background, so it holds no turn open."""
 
     session_id: str | None
     kind: str
@@ -93,6 +102,7 @@ class PreToolCall:
     command: str | None
     path: str | None
     branch: str | None = None
+    background: bool = False
 
 
 @dataclass(frozen=True)
@@ -389,6 +399,145 @@ def _check_push(command: str, run: rs.Run, state: dict) -> PreToolVerdict:
     return ALLOW
 
 
+# Lexing is only worth it when one of these names appears in the line.
+_WAIT_TRIGGER_RE = re.compile(r"(?<![\w.-])(?:sleep|wait|watch|tail|gh)(?![\w.-])")
+# Words that open a command inside a loop or a group; the command follows them.
+_SHELL_KEYWORDS = frozenset(("do", "then", "else", "elif", "while", "until", "if", "!", "{", "("))
+# Commands that run the command after them, with their options that take a
+# value, and how many plain arguments come before that command.
+_WAIT_WRAPPERS = {
+    "timeout": (("-s", "--signal", "-k", "--kill-after"), 1),
+    "nice": (("-n", "--adjustment"), 0),
+    "ionice": (("-c", "-n", "-p", "--class", "--classdata"), 0),
+    "sudo": (("-u", "-g", "-C", "-D", "-h", "-p", "-r", "-t", "-U"), 0),
+    "doas": (("-u", "-C"), 0),
+    "stdbuf": (("-i", "-o", "-e"), 0),
+    "xargs": (("-n", "-I", "-P", "-d", "-L", "-s", "-E", "-a"), 0),
+    "setsid": ((), 0),
+    "chrt": (("-p",), 1),
+    "taskset": (("-p",), 1),
+}
+# Quotes and backslashes the shell removes, so ``s\leep`` and ``sl''eep`` run sleep.
+_UNQUOTE_RE = re.compile(r"[\\'\"]")
+
+
+def _skip_wrapper(words: list[str]) -> list[str] | None:
+    """The command a known wrapper runs, or ``None`` when ``words`` is not one."""
+    found = _WAIT_WRAPPERS.get(os.path.basename(words[0]))
+    if found is None:
+        return None
+    with_value, positional = found
+    i = 1
+    while i < len(words) and words[i].startswith("-") and words[i] != "--":
+        i += 2 if words[i] in with_value else 1
+    i += words[i : i + 1] == ["--"]
+    return words[i + positional :]
+
+
+def _wait_in(words: list[str]) -> str | None:
+    """The wait one simple command runs, as its first words, or ``None``."""
+    i = 0
+    while i < len(words) and words[i] in _SHELL_KEYWORDS:
+        i += 1
+    words = words[i:]
+    # A case arm runs the command after its pattern: ``case x in x) sleep 5``.
+    if words[:1] == ["case"] and "in" in words:
+        words = words[words.index("in") + 1 :]
+    while words and len(words[0]) > 1 and words[0].endswith(")") and "(" not in words[0]:
+        words = words[1:]
+    if words:
+        words = [words[0].lstrip("({"), *words[1:]]
+    words = ri.strip_prefix([w for w in words if w])
+    for _ in range(ri.NEST_MAX + 1):
+        if not words:
+            return None
+        inner = _skip_wrapper(words)
+        if inner is None:
+            break
+        words = ri.strip_prefix(inner)
+    if not words:
+        return None
+    program, args = os.path.basename(words[0]), words[1:]
+    shown = " ".join(words[:3]).rstrip(")};")
+    if program in ("sleep", "wait", "watch"):
+        return shown
+    if program == "tail":
+        for arg in args:
+            if arg == "--follow" or arg.startswith("--follow="):
+                return shown
+            if arg.startswith("-") and not arg.startswith("--") and set(arg[1:]) & set("fF"):
+                return shown
+    if program == "gh":
+        if args[:2] == ["run", "watch"]:
+            return shown
+        watching = any(
+            a == "--watch" or (a.startswith("--watch=") and a != "--watch=false") for a in args
+        )
+        if args[:2] in (["pr", "checks"], ["run", "view"]) and watching:
+            return shown
+    return None
+
+
+def wait_command(command: object, depth: int = 0) -> str | None:
+    """The first foreground wait a shell line runs, as its first words, else ``None``.
+
+    Read from the lexed commands of every line, behind loop keywords, groups,
+    ``timeout`` and the usual wrappers (``nice``, ``sudo``, ``stdbuf``, ``xargs``
+    ...), and from nested shells (``bash -c``, ``$(...)``). Here-document bodies
+    are skipped: they are text fed to a command, such as a commit message that
+    says "wait for CI". Advisory, like every shell rule: a wait the text does not
+    show (a script, ``python -c``) passes.
+    """
+    if not isinstance(command, str) or depth > ri.NEST_MAX:
+        return None
+    if not _WAIT_TRIGGER_RE.search(_UNQUOTE_RE.sub("", command.replace("\\\n", ""))):
+        return None
+    text = ri.strip_heredocs(command)
+    killed = False
+    for words in ri.segments(text):
+        found = _wait_in(words)
+        # ``kill $pid; wait $pid`` reaps a process it just ended: it returns at once.
+        if found is not None and not (killed and found.split()[0] == "wait"):
+            return found
+        head = ri.strip_prefix(words)
+        killed = killed or (bool(head) and os.path.basename(head[0]) == "kill")
+    for inner in ri.nested_shells(text):
+        found = wait_command(inner, depth + 1)
+        if found is not None:
+            return found
+    return None
+
+
+def ci_watch(command: object) -> bool:
+    """Whether a shell line is a CI watch (``gh run watch``, ``gh pr checks
+    --watch``): a wait that ends on its own when CI does, run in the background
+    as the wait rule asks. A wait on one is judged like an agent's, not like a
+    dev server's."""
+    found = wait_command(command)
+    return found is not None and found.split()[0] == "gh"
+
+
+def _check_wait(call: PreToolCall, run: rs.Run, state: dict) -> PreToolVerdict | None:
+    """A foreground wait in the run's own session, unless its stage allows one."""
+    if call.background or state.get("status") != "running":
+        return None
+    if call.session_id is None or call.session_id != state.get("session_id"):
+        return None
+    if run.config.stages[state["current"]].shell_waits:
+        return None
+    found = wait_command(call.command)
+    if found is None:
+        return None
+    return _deny(
+        f"`{found}` in a foreground shell",
+        "a delivery-loop run never waits in a shell: a foreground wait holds the turn open, "
+        "and the harness holds task notifications until it returns",
+        f"start the work with {run.config.background_flag} and end your turn; its "
+        "notification wakes this session. A stage that needs a shell wait, such as a dev "
+        "server check, sets shell_waits = true in its [[stages]] entry",
+    )
+
+
 def _current_branch(run: rs.Run) -> str | None:
     return rs.detect_branch(run.worktree)
 
@@ -407,5 +556,9 @@ def handle_pre_tool(call: PreToolCall, run: rs.Run, state: dict | None = None) -
     if call.kind == "publish":
         return _check_publish(call, run, state)
     if call.kind == "shell" and call.command:
-        return _check_gh(call.command) or _check_push(call.command, run, state)
+        return (
+            _check_gh(call.command)
+            or _check_wait(call, run, state)
+            or _check_push(call.command, run, state)
+        )
     return ALLOW

@@ -123,6 +123,47 @@ that ends without either is sent back with the stage's instructions, and three
 in a row pause the run. The `pipeline` skill in `skills/pipeline/SKILL.md` is the
 agent's half of that contract.
 
+### Background work
+
+A stage can start work in the background: a skill's reviewer agent, a command
+run with Claude Code's `run_in_background`, or a `Monitor`. The agent then
+ends its turn without a token, and the task's notification wakes the session
+when the task reports. The Stop hook reads the session transcript for the
+tasks the agent started that have not reported or been stopped: every
+background agent and Monitor, an agent woken again with `SendMessage`, and the
+background commands started in the turn that is ending. A command from an
+earlier turn, such as a dev server, does not hold a later turn open. An agent
+that stopped with background work of its own still running says so in its
+notification and stays waited on until it reports again. While one runs:
+
+- A turn that ends without a token is let through and spends no attempt. You
+  see "delivery-loop: waiting for background task(s) ..." in the session, and
+  `delivery-loop status` shows the tasks, since when, and the wait count.
+- `<promise>STAGE DONE</promise>` is refused, so the next stage never starts
+  beside a reviewer that still works. A command that never ends on its own,
+  such as a dev server, is stopped with `TaskStop` first. The refusal spends an
+  attempt; three in a row pause the run.
+- After 20 waiting turn ends in one wait, or 60 in the whole stage, the run
+  pauses with a card naming the tasks. A turn end with nothing running ends the
+  wait and restarts its count; the stage's count restarts at a resume or the
+  next stage.
+- At either pause, the card gives each task's age: how long the run has seen
+  it pending. `/delivery-loop:pipeline resume` releases the tasks pending 30
+  minutes or more at the moment you resume, and keeps waiting on younger ones,
+  so an agent cannot hurry a working reviewer into a release.
+
+The wait relies on the session staying open. A headless `claude -p` session
+exits at the end of the turn, so its run stays `running` while it waits, and
+the supervisor escalates it as `waiting_stale` once it has waited an hour with
+no turn end for an hour; resume it in an interactive session. A wait on
+background commands alone is escalated after 15 minutes instead, since a
+command that never ends on its own, such as a dev server, never wakes the
+session; a background CI watch (`gh run watch`, `gh pr checks --watch`) ends on
+its own and keeps the hour. `[supervisor]` `wait_stale_after_seconds` and
+`shell_wait_stale_after_seconds` in `loop.toml` set both limits. `/compact` keeps the same transcript, so a wait survives it. A new
+session (after `/clear`, or a `--resume` that starts a new session id) has no
+record of the old one's tasks, so adopting a run there drops the wait.
+
 ## What the guard covers
 
 During a run, before an edit tool writes a file:
@@ -149,8 +190,17 @@ that opens the pull request, only for the run's own branch, and a `merge` tool
 never.
 An MCP tool that writes under another name is not checked.
 
-A shell command is not checked before it runs, with three exceptions, and all
-read the command text, so all are advisory. `git push` is allowed in the stage
+A shell command is not checked before it runs, with four exceptions, and all
+read the command text, so all are advisory. In the run's own session, a
+foreground wait is refused: `sleep`, `wait`, `watch`, `tail -f`, `gh run watch`,
+`gh pr checks --watch`, and a polling loop built from them (`until curl ...; do
+sleep 1; done`), on any line of the command or in a nested shell. A foreground
+wait holds the turn open, and Claude Code holds a task's notification until it
+returns, so the loop never waits in a shell: start the work with
+`run_in_background` and end the turn. A stage that needs a shell wait, such as
+a QA stage waiting for a dev server, sets `shell_waits = true` in its
+`[[stages]]` entry. A line that only mentions a wait (`echo sleep`, a commit
+message) is not refused. `git push` is allowed in the stage
 that opens the pull request, for the run's own branch, to `origin`: never
 forced, deleting or redirected with `-c`. `gh pr merge` and a merge through
 `gh api` are refused: a merge is a person's call. Other `gh` commands that
@@ -193,8 +243,41 @@ rest is in `TODOS.md`.
 - **A run paused with `guard_changed`.** `delivery-loop status` lists the
   changed files. Check them. `/delivery-loop:pipeline resume` accepts them as
   the new baseline; `abort` ends the run.
-- **A run paused with `no_message`.** The agent ended three turns without a
-  token. Read the session, then resume or abort.
+- **A run paused with `no_message`.** The agent ended three turns that the
+  loop did not accept: no token, a missing `PLAN:` or `PR:` line, a dirty tree,
+  a banned dash, or `STAGE DONE` while a background task runs. Read the
+  session, then resume or abort.
+- **A run waiting on background tasks.** `delivery-loop status` shows the task
+  ids, since when, and the wait count. Nothing to do while they run. If one
+  will never report (its process died), `/delivery-loop:pipeline resume` in the
+  run's own session (or the CLI in a terminal) releases it once it has been
+  pending 30 minutes, and the stage goes on. A resume from a new session adopts
+  the run instead, and the new session's transcript decides what it waits on.
+- **A run paused with `no_message` beside background tasks** (the 20-wait
+  limit, or three refused `STAGE DONE`). The card names the tasks with their
+  ages. `/delivery-loop:pipeline resume` releases the ones pending 30 minutes
+  or more at that moment; check that they are not still running first.
+  Younger ones are still waited on, and a later resume releases them once they
+  are 30 minutes old. `/delivery-loop:pipeline abort` ends the run.
+- **The supervisor escalates `waiting_stale`.** A run has waited over an hour,
+  with no turn end and no write to the session transcript for an hour either
+  (`[supervisor] wait_stale_after_seconds` in `loop.toml`, or
+  `loop-scan --wait-stale-after-seconds`), on tasks that have not reported;
+  15 minutes when it waits on background commands alone
+  (`shell_wait_stale_after_seconds`, `--shell-wait-stale-after-seconds`),
+  which is usually a dev server left running. Check the session; resume releases the
+  tasks. A runbook that reads questions with `loop-transcript` does so for these
+  runs too.
+- **`STAGE DONE` refused because the loop could not read the tasks.** The
+  session transcript was missing, unreadable, or too slow to scan (the events
+  log shows `scan: unreadable` or `scan: slow`), so the loop refuses to advance
+  rather than guess that no reviewer runs. Check the file; three refusals in a
+  row pause the run.
+- **The session crashed while it waited.** Its tasks died with it and never
+  report, and nothing wakes the run, so it stays `running` until the
+  supervisor escalates `waiting_stale`. Resume it: in a new session the resume
+  adopts the run and its transcript starts with no tasks; in the same session
+  (`claude --resume` keeping its id) the resume releases the dead tasks.
 - **A run paused with `gate`.** A stage that asks for a person is done, the
   plan stage by default. Read its output, then resume to go on.
 - **The hooks seem silent.** Run `/delivery-loop:pipeline doctor`, and check

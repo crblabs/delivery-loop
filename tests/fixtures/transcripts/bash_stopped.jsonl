@@ -1,0 +1,1 @@
+{"type": "user", "isSidechain": false, "timestamp": "{T+60}", "sessionId": "s1", "message": {"role": "user", "content": [{"tool_use_id": "toolu_x", "type": "tool_result", "content": "ok"}]}, "toolUseResult": {"message": "Successfully stopped task: baa2q82i2 (sleep 600)", "task_id": "baa2q82i2", "task_type": "local_bash", "command": "sleep 600"}}

@@ -287,3 +287,35 @@ def test_promotion_floor_keeps_its_reason_over_a_permission_prompt():
     decision = sd.decide(record, question=question)
     assert decision["action"] == "escalate"
     assert decision["reason"] == "data_promotion"
+
+
+def _waiting(**over) -> dict:
+    record = {
+        "condition": "ok",
+        "status": "running",
+        "is_stale": False,
+        "is_wait_stale": True,
+        "waiting_on": ["a1", "b2"],
+        "wait_age_s": 5400.0,
+    }
+    record.update(over)
+    return record
+
+
+@pytest.mark.parametrize("outcome", [None, "none", "missing", "unreadable"])
+def test_a_stuck_wait_escalates_whatever_the_transcript_says(outcome) -> None:
+    # Value: protects=a wait whose task never reports reaches a person; fails_when=it falls
+    # into the silent running_stale_no_gate noop; why_new=CRB-28; seam=none
+    question = None if outcome is None else {"outcome": outcome}
+    decision = sd.decide(_waiting(), question=question)
+    assert decision["action"] == "escalate" and decision["reason"] == "waiting_stale"
+    assert "90 min" in decision["notify"] and "a1, b2" in decision["notify"]
+
+
+def test_a_pending_question_outranks_a_stuck_wait() -> None:
+    decision = sd.decide(_waiting(), question={"outcome": "pending"})
+    assert decision["reason"] == "hidden_gate"
+
+
+def test_a_wait_that_is_not_stuck_is_left_alone() -> None:
+    assert sd.decide(_waiting(is_wait_stale=False))["reason"] == "running"
