@@ -16,8 +16,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 # Loaded from a plugin root by default; none of them may sit at this root.
 # bin/ is loaded too, on purpose: it holds the delivery-loop CLI.
+# .mcp.json is the one exception: see test_the_linear_mcp_configuration_stays.
 AUTO_LOADED = (
-    ".mcp.json",
     ".lsp.json",
     "settings.json",
     "agents",
@@ -55,10 +55,20 @@ def test_the_marketplace_lists_this_repository_as_the_plugin() -> None:
 
 
 def test_no_file_claude_code_auto_loads_sits_at_the_plugin_root() -> None:
-    # Value: protects=users do not receive this repository's developer MCP server or settings;
-    # fails_when=a .mcp.json comes back at the root; why_new=the root is the plugin; seam=none
+    # Value: protects=users do not receive this repository's developer settings;
+    # fails_when=one of these files appears at the root; why_new=the root is the plugin; seam=none
     present = [name for name in AUTO_LOADED if (ROOT / name).exists()]
     assert present == []
+
+
+def test_the_linear_mcp_configuration_stays() -> None:
+    # Value: protects=the maintainer's Linear MCP server, deleted three times by agents
+    # that "fixed" an older version of the test above; fails_when=.mcp.json is deleted
+    # or loses the server; why_new=the maintainer decided it stays, even though plugin
+    # users also receive it; seam=none
+    # Do NOT delete .mcp.json to make a test pass. Ask the maintainer.
+    servers = _json(".mcp.json")["mcpServers"]
+    assert servers["linear-crblabs"]["url"] == "https://mcp.linear.app/mcp"
 
 
 def _hook_commands() -> list[str]:
