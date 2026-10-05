@@ -46,6 +46,13 @@ SETTINGS = {"enabledPlugins": {"delivery-loop@crblabs": False}}
 DONE = "<promise>STAGE DONE</promise>"
 # A foreground wait in a shell command: what the loop must never need.
 SHELL_WAIT_RE = re.compile(r"(^|[;&|(\s])(sleep|wait|until|watch)\s|\btail\s+-f\b")
+# Text a command writes is not a command it runs: heredoc bodies and quoted strings.
+HEREDOC_RE = re.compile(r"<<-?\s*(['\"]?)(\w+)\1[^\n]*\n.*?\n\s*\2\b", re.DOTALL)
+QUOTED_RE = re.compile(r"'[^']*'|\"(?:[^\"\\]|\\.)*\"", re.DOTALL)
+
+
+def _waits_in(command: str) -> bool:
+    return bool(SHELL_WAIT_RE.search(QUOTED_RE.sub("''", HEREDOC_RE.sub("", command))))
 
 
 @dataclass
@@ -109,7 +116,7 @@ class Result:
 
 def _check_common(r: Result) -> None:
     r.expect(r.state.get("status") == "done", f"run ended as {r.state.get('status')!r}")
-    waits = [c for c in r.shell_commands() if SHELL_WAIT_RE.search(c)]
+    waits = [c for c in r.shell_commands() if _waits_in(c)]
     r.expect(not waits, f"the agent waited in a foreground shell: {waits[:2]}")
     errors = [e for e in r.events if e.get("decision") == "error"]
     r.expect(not errors, f"a hook failed: {errors[:2]}")
