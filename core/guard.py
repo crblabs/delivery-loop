@@ -22,7 +22,8 @@ worktree. It holds four rules:
     determined shell line can hide a push. The README says so.
 
   * A run never waits in a foreground shell: ``sleep``, ``wait``, ``watch``,
-    ``tail -f``, ``gh run watch``, ``gh pr checks --watch`` and polling loops
+    ``tail -f``, a code host's CI watch (``gh run watch``, ``glab ci trace``,
+    see ``core.forges``) and polling loops
     built from them are denied in the run's own session, because a foreground
     wait holds the turn open and the harness holds task notifications until it
     returns. Work started in the background, and a stage that sets
@@ -49,6 +50,7 @@ from core.config import (
     user_config_dir,
     user_git_configs,
 )
+from core.forges import CLIS, FORGES, by_cli
 from core.pipeline_loop_paths import classify_loop_path, is_carveout
 
 _GUARD_DOC = f"{ri.README_URL}what-the-guard-covers"
@@ -282,8 +284,6 @@ def _forbidden_flags(flags: list[str]) -> list[str]:
 _MERGE_RE = re.compile(r"merge", re.I)
 # A code host's write of repository content, which lands on a branch.
 _CONTENT_WRITE_RE = re.compile(r"file|commit|push", re.I)
-# The REST endpoints that merge: a pull request's /merge, a repository's /merges.
-_MERGE_PATH_RE = re.compile(r"/merges?(?:$|[/?])")
 
 
 def _publishing(run: rs.Run, state: dict) -> bool:
@@ -324,18 +324,17 @@ def _check_publish(call: PreToolCall, run: rs.Run, state: dict) -> PreToolVerdic
     return ALLOW
 
 
-def _check_gh(command: str) -> PreToolVerdict | None:
-    """``gh pr merge`` or a merge through ``gh api``: never from a run."""
-    for args in ri.gh_calls(command):
-        merge = args[:2] == ["pr", "merge"] or (
-            args[:1] == ["api"] and any(_MERGE_PATH_RE.search(a) for a in args[1:])
-        )
-        if merge:
-            return _deny(
-                "gh " + " ".join(args[:2]),
-                "a merge lands the work on a shared branch, and that is a person's call",
-                "open the pull request and leave the merge to a person",
-            )
+def _check_merge(command: str) -> PreToolVerdict | None:
+    """A merge through any code host's CLI (``gh pr merge``, ``glab mr merge``, a
+    merge endpoint through its ``api``): never from a run."""
+    for forge in FORGES:
+        for args in ri.program_calls(command, forge.cli):
+            if forge.is_merge(args):
+                return _deny(
+                    f"{forge.cli} " + " ".join(args[:2]),
+                    "a merge lands the work on a shared branch, and that is a person's call",
+                    f"open the {forge.change} and leave the merge to a person",
+                )
     return None
 
 
@@ -400,7 +399,9 @@ def _check_push(command: str, run: rs.Run, state: dict) -> PreToolVerdict:
 
 
 # Lexing is only worth it when one of these names appears in the line.
-_WAIT_TRIGGER_RE = re.compile(r"(?<![\w.-])(?:sleep|wait|watch|tail|gh)(?![\w.-])")
+_WAIT_TRIGGER_RE = re.compile(
+    r"(?<![\w.-])(?:sleep|wait|watch|tail|" + "|".join(map(re.escape, CLIS)) + r")(?![\w.-])"
+)
 # Words that open a command inside a loop or a group; the command follows them.
 _SHELL_KEYWORDS = frozenset(("do", "then", "else", "elif", "while", "until", "if", "!", "{", "("))
 # Commands that run the command after them, with their options that take a
@@ -467,14 +468,9 @@ def _wait_in(words: list[str]) -> str | None:
                 return shown
             if arg.startswith("-") and not arg.startswith("--") and set(arg[1:]) & set("fF"):
                 return shown
-    if program == "gh":
-        if args[:2] == ["run", "watch"]:
-            return shown
-        watching = any(
-            a == "--watch" or (a.startswith("--watch=") and a != "--watch=false") for a in args
-        )
-        if args[:2] in (["pr", "checks"], ["run", "view"]) and watching:
-            return shown
+    forge = by_cli(program)
+    if forge is not None and forge.is_ci_watch(args):
+        return shown
     return None
 
 
@@ -509,12 +505,12 @@ def wait_command(command: object, depth: int = 0) -> str | None:
 
 
 def ci_watch(command: object) -> bool:
-    """Whether a shell line is a CI watch (``gh run watch``, ``gh pr checks
-    --watch``): a wait that ends on its own when CI does, run in the background
-    as the wait rule asks. A wait on one is judged like an agent's, not like a
-    dev server's."""
+    """Whether a shell line is a CI watch (``gh run watch``, ``glab ci trace``
+    ...): a wait that ends on its own when CI does, run in the background as the
+    wait rule asks. A wait on one is judged like an agent's, not like a dev
+    server's."""
     found = wait_command(command)
-    return found is not None and found.split()[0] == "gh"
+    return found is not None and found.split()[0] in CLIS
 
 
 def _check_wait(call: PreToolCall, run: rs.Run, state: dict) -> PreToolVerdict | None:
@@ -557,7 +553,7 @@ def handle_pre_tool(call: PreToolCall, run: rs.Run, state: dict | None = None) -
         return _check_publish(call, run, state)
     if call.kind == "shell" and call.command:
         return (
-            _check_gh(call.command)
+            _check_merge(call.command)
             or _check_wait(call, run, state)
             or _check_push(call.command, run, state)
         )

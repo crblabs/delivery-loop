@@ -608,6 +608,11 @@ def gh_calls(command: str) -> list[list[str]]:
     return _calls(command, "gh")
 
 
+def program_calls(command: str, program: str) -> list[list[str]]:
+    """Every invocation of ``program`` in a shell line, as its arguments after it."""
+    return _calls(command, program)
+
+
 def git_calls(command: str) -> list[list[str]]:
     """Every git invocation in a shell line, as its arguments after ``git``."""
     return _calls(command, "git")

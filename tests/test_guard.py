@@ -153,6 +153,14 @@ def test_a_code_host_tool_publishes_only_in_the_publishing_stage(start_run) -> N
         ("gh api repos/o/r/merges -f base=main -f head=x", False),
         ("gh pr view 7 --json mergeable", True),
         ("gh pr create --fill", True),
+        # Value: protects=GitLab hosts get the same merge rule; fails_when=the guard only
+        # knows gh; why_new=core.forges added glab; seam=none
+        ("glab mr merge 7 --squash", False),
+        ("glab mr accept 7", False),
+        ("cd x && glab api -X PUT projects/1/merge_requests/7/merge", False),
+        ("glab mr view 7", True),
+        ("glab mr create --fill --yes", True),
+        ("glab api projects/1/merge_requests/7", True),
     ],
 )
 def test_no_run_merges_through_gh(start_run, command: str, allowed: bool) -> None:
@@ -383,6 +391,9 @@ WAITS = [
     "chrt 10 sleep 5",
     "gh pr checks --watch=true",
     "gh run view 1 --watch",
+    "glab ci trace",
+    "glab ci status --live",
+    "glab pipeline status -l",
     "s\\leep 600",
     "sl''eep 600",
     'cat <<< "x"\nsleep 30',
@@ -411,6 +422,8 @@ NOT_WAITS = [
     "gh pr checks",
     "pip install watchdog",
     "gh pr checks --watch=false",
+    "glab ci status",
+    "glab ci list",
     "nice -n 5 make",
     "cat <<-'E'\n\tsleep 30\n\tE",
     "srv & pid=$!; kill $pid; wait $pid",
