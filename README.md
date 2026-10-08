@@ -158,7 +158,7 @@ the supervisor escalates it as `waiting_stale` once it has waited an hour with
 no turn end for an hour; resume it in an interactive session. A wait on
 background commands alone is escalated after 15 minutes instead, since a
 command that never ends on its own, such as a dev server, never wakes the
-session; a background CI watch (`gh run watch`, `gh pr checks --watch`) ends on
+session; a background CI watch (`gh run watch`, `glab ci trace`) ends on
 its own and keeps the hour. `[supervisor]` `wait_stale_after_seconds` and
 `shell_wait_stale_after_seconds` in `loop.toml` set both limits. `/compact` keeps the same transcript, so a wait survives it. A new
 session (after `/clear`, or a `--resume` that starts a new session id) has no
@@ -192,8 +192,9 @@ An MCP tool that writes under another name is not checked.
 
 A shell command is not checked before it runs, with four exceptions, and all
 read the command text, so all are advisory. In the run's own session, a
-foreground wait is refused: `sleep`, `wait`, `watch`, `tail -f`, `gh run watch`,
-`gh pr checks --watch`, and a polling loop built from them (`until curl ...; do
+foreground wait is refused: `sleep`, `wait`, `watch`, `tail -f`, a CI watch
+(`gh run watch`, `gh pr checks --watch`, `glab ci trace`, `glab ci status
+--live`), and a polling loop built from them (`until curl ...; do
 sleep 1; done`), on any line of the command or in a nested shell. A foreground
 wait holds the turn open, and Claude Code holds a task's notification until it
 returns, so the loop never waits in a shell: start the work with
@@ -202,9 +203,11 @@ a QA stage waiting for a dev server, sets `shell_waits = true` in its
 `[[stages]]` entry. A line that only mentions a wait (`echo sleep`, a commit
 message) is not refused. `git push` is allowed in the stage
 that opens the pull request, for the run's own branch, to `origin`: never
-forced, deleting or redirected with `-c`. `gh pr merge` and a merge through
-`gh api` are refused: a merge is a person's call. Other `gh` commands that
-write to the remote are not checked. And a shell line that runs
+forced, deleting or redirected with `-c`. A merge through a code host's CLI is
+refused: `gh pr merge`, `glab mr merge`, and a merge endpoint through `gh api`
+or `glab api`. A merge is a person's call. Other `gh` and `glab` commands that
+write to the remote are not checked. Each host is one module in `core/forges/`,
+behind one interface. And a shell line that runs
 `delivery-loop resume` or `abort`, directly, behind a wrapper or in a nested
 shell, is refused early with an explanation; a line that only mentions them,
 such as a commit message, is not. The CLI also refuses both outside a terminal,

@@ -30,6 +30,7 @@ import re
 import sys
 
 from core import run_index as ri
+from core.forges import FORGES
 
 COMMAND_NAME = "delivery-loop:pipeline"
 EDIT_TOOLS = ("Edit", "Write", "MultiEdit", "NotebookEdit")
@@ -249,7 +250,11 @@ def old_python_hook(kind: str, payload: dict) -> dict | None:
         command = tool_input.get("command") if isinstance(tool_input, dict) else None
         publishes = isinstance(command, str) and (
             any(a[:1] == ["push"] for a in ri.git_calls(command))
-            or any(a[:2] == ["pr", "merge"] or a[:1] == ["api"] for a in ri.gh_calls(command))
+            or any(
+                forge.is_merge(a) or a[:1] == ["api"]
+                for forge in FORGES
+                for a in ri.program_calls(command, forge.cli)
+            )
         )
         if kind_of(tool) in ("edit", "publish") or publishes:
             return {"deny": ri.old_python_message()}
