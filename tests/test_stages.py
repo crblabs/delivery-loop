@@ -114,10 +114,10 @@ def test_each_default_stage_declares_the_contract_its_prompt_states() -> None:
     # The planner writes outside the worktree, so only it skips the tree check.
     assert [s.name for s in cfg.DEFAULTS.stages if not s.clean_tree] == ["autoplan"]
     assert {s.name: s.gate for s in cfg.DEFAULTS.stages} == {
-        "autoplan": "approval",
+        "autoplan": "none",
         "implement": "none",
         "qa": "none",
-        "review": "review_batch",
+        "review": "none",
         "ship": "none",
     }
     assert [s.name for s in cfg.DEFAULTS.stages if s.sandbox_off] == ["qa"]

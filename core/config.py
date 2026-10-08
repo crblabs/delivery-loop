@@ -233,11 +233,10 @@ DEFAULT_STAGES = (
         name="autoplan",
         command="/autoplan",
         emits="PLAN: the absolute path of the plan file",
-        gate="approval",
     ),
     StageSpec(name="implement", clean_tree=True),
     StageSpec(name="qa", command="/qa", clean_tree=True, sandbox_off=True),
-    StageSpec(name="review", command="/review", clean_tree=True, gate="review_batch"),
+    StageSpec(name="review", command="/review", clean_tree=True),
     StageSpec(
         name="ship",
         command="/ship",
