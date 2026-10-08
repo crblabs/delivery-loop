@@ -321,7 +321,8 @@ def test_a_pause_shows_the_person_its_card(start_run, tmp_path) -> None:
     # where they are; fails_when=the pause is silent; why_new=final re-review; seam=none
     _, worktree = start_run()
     plan = tmp_path / "plan.md"
-    plan.write_text("plan", encoding="utf-8")
+    # No default stage has a gate; a plan that declares loop edits still pauses.
+    plan.write_text("```loop-edits\nstages/qa.md\n```\n", encoding="utf-8")
     out = json.loads(ch.run_stop(_stop(worktree, f"PLAN: {plan}\n{rs.DONE_TOKEN}")).stdout)
     assert out["systemMessage"].startswith("delivery-loop paused this run (gate).")
     assert f"Plan read: {plan}" in out["systemMessage"]

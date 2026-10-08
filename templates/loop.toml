@@ -186,8 +186,9 @@ prompt = "autoplan.md"
 emits = "PLAN: the absolute path of the plan file"
 # The planner writes outside the worktree, so the tree is not checked here.
 clean_tree = false
-# The one stop a clean run makes: the final approval question on the plan.
-gate = "approval"
+# No stop: the skill asks its own questions. A plan that declares loop edits
+# still pauses for a person, whatever the gate.
+gate = "none"
 
 [[stages]]
 name = "implement"
@@ -219,8 +220,7 @@ command = "/review"
 prompt = "review.md"
 emits = ""
 clean_tree = true
-# The review asks its questions in one batch, when it has any.
-gate = "review_batch"
+gate = "none"
 
 [[stages]]
 name = "ship"

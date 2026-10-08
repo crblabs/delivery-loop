@@ -315,9 +315,10 @@ def _advance(run: rs.Run, state: dict, message: str) -> TurnEndVerdict:
                 )
             state["plan_path"] = str(path)
             edits = parse_loop_edits_block(text, config)
-            if stage.gate != "none":
-                # The plan unlocks nothing until a person approves it at the
-                # gate; resume reads it again then.
+            if stage.gate != "none" or edits:
+                # The plan unlocks nothing until a person approves it: a gated
+                # stage always pauses, and a plan that declares loop edits pauses
+                # even when its stage has no gate.
                 state["pending_loop_edits"] = edits
             else:
                 state["declared_loop_edits"] = edits
@@ -341,8 +342,9 @@ def _advance(run: rs.Run, state: dict, message: str) -> TurnEndVerdict:
     state["attempts"][state["current_stage"]] = 0
     state.setdefault("wait_turns", {})[state["current_stage"]] = 0
     state.setdefault("stage_waits", {})[state["current_stage"]] = 0
-    if stage.gate != "none":
-        rs.pause(state, "gate", _gate_card(stage.name, stage.gate, state, config))
+    if stage.gate != "none" or state.get("pending_loop_edits"):
+        gate = stage.gate if stage.gate != "none" else "the plan unlocks loop files"
+        rs.pause(state, "gate", _gate_card(stage.name, gate, state, config))
         return TurnEndVerdict(block=False, pause_reason="gate")
     return _block(state, rs.state_text(run, state))
 

@@ -108,19 +108,21 @@ def test_a_plan_unlocks_nothing_until_the_gate_is_approved(start_run, tmp_path) 
     assert write(qa) and not write(review)
 
 
-def test_a_later_gate_does_not_read_the_plan_again(start_run, tmp_path) -> None:
-    # Value: protects=approving the review gate unlocks nothing new; fails_when=every gate
-    # resume re-reads a plan file the agent can edit; why_new=cycle-2 review; seam=none
+def test_a_plan_without_loop_edits_runs_through_and_unlocks_nothing_later(
+    start_run, tmp_path
+) -> None:
+    # Value: protects=no default stage pauses, and a plan the agent edits after it was
+    # read unlocks nothing; fails_when=a gate comes back or the plan is read again;
+    # why_new=the default gates were removed; seam=none
     run, worktree = start_run()
     plan = tmp_path / "plan.md"
     plan.write_text("No loop files.\n", encoding="utf-8")
-    _end(run, f"PLAN: {plan}\n{DONE}")
-    rs.resume(run, "person")
+    assert _end(run, f"PLAN: {plan}\n{DONE}").pause_reason is None
     plan.write_text("```loop-edits\nstages/qa.md\n```\n", encoding="utf-8")
     while _state(run)["status"] == "running":
-        _end(run, DONE)
-    assert _state(run)["paused_reason"] == "gate"
-    rs.resume(run, "person")
+        pr = "PR: https://github.com/o/r/pull/1\n" if _state(run)["current_stage"] == "ship" else ""
+        assert _end(run, pr + DONE).pause_reason is None
+    assert _state(run)["status"] == "done"
     assert _state(run)["declared_loop_edits"] == []
 
 
@@ -668,7 +670,7 @@ def test_the_wait_count_restarts_in_the_next_stage(start_run, tmp_path) -> None:
     _wait(run, "Waiting.", ("a1",))
     plan = tmp_path / "plan.md"
     plan.write_text("Plan.\n", encoding="utf-8")
-    assert _wait(run, f"PLAN: {plan}\n{DONE}", ()).pause_reason == "gate"
+    assert _wait(run, f"PLAN: {plan}\n{DONE}", ()).pause_reason is None
     assert _state(run)["wait_turns"]["implement"] == 0
 
 
